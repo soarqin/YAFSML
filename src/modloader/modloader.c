@@ -53,7 +53,10 @@ static void before_game_main(void) {
 }
 
 static bool modloader_init(void) {
+    wchar_t remote_init[2];
+    bool remote_init_mode;
     if (InterlockedCompareExchange(&modloader_initialized, 1, 0) != 0) return false;
+    remote_init_mode = GetEnvironmentVariableW(L"YAFSML_REMOTE_INIT", remote_init, 2) != 0;
     load_winhttp_proxy();
     load_dxgi_proxy();
     load_dinput8_proxy();
@@ -65,10 +68,11 @@ static bool modloader_init(void) {
     ml_window_flash_install();
     extdlls_prepare();
     gamehook_install();
-    if (orig_entrypoint == NULL && !hook_game_entrypoint()) {
+    if (!remote_init_mode && orig_entrypoint == NULL && !hook_game_entrypoint()) {
         ML_LOG_WARN(L"modloader", L"could not install game entrypoint hook; before-main work is disabled");
         return false;
     }
+    if (remote_init_mode) before_game_main();
     if (ml_game_context_get() != NULL &&
         ml_game_context_get()->runtime_ready_trigger == ML_RUNTIME_READY_STEAM_API_INIT) {
         if (!ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_RUNTIME_INIT,

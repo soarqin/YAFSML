@@ -1,6 +1,6 @@
 include(GenerateVersionInfo)
 
-set(YAFSML_VERSION "0.7.4")
+set(YAFSML_VERSION "0.8.0")
 
 add_subdirectory(process)
 add_subdirectory(game)
