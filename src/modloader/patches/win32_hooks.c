@@ -27,9 +27,9 @@
  * game's save backup rotation (e.g. .sl2 <-> .sl2.bak) stays consistent with
  * the redirected save.
  *
- * Every hook is transparent: it routes the path(s), calls the real API exactly
- * once, and otherwise falls back to the original path unchanged, matching the
- * behavior of the original per-game CreateFile/CopyFile hooks.
+ * Every hook routes the path(s) and calls the real API exactly once. Paths that
+ * do not match a mapping remain unchanged; save paths whose explicit mapping
+ * cannot be produced fail closed instead of opening the primary save.
  */
 
 #define ML_WIN32_HOOK_COUNT 15
@@ -154,39 +154,50 @@ static void build_hook_specs(ml_hook_spec_t specs[ML_WIN32_HOOK_COUNT], bool res
     specs[14] = (ml_hook_spec_t){ hook_targets[14], replace_file_w_hooked, (void **)&old_replace_file_w };
 }
 
-/* Returns the path the game should actually open, or NULL to use the original
- * path unchanged. Never signals failure: when save routing matches a save file
- * but cannot produce a target, the caller falls back to the original path,
- * exactly as the original Elden Ring CreateFile hook did. */
-static const wchar_t *route_wide(const wchar_t *path, DWORD access, DWORD disposition) {
-    const wchar_t *mapped = NULL;
-    if (vfs_recursion_guard_active()) return NULL;
-    if (ml_save_mapping_route(path, &mapped)) return mapped;
-    mapped = vfs_route_writable_path(path);
-    return mapped != NULL ? mapped : mods_file_route_read(path, access, disposition);
+typedef enum path_route_result_e {
+    PATH_ROUTE_UNCHANGED,
+    PATH_ROUTE_MAPPED,
+    PATH_ROUTE_DENIED,
+} path_route_result_t;
+
+static path_route_result_t route_wide(const wchar_t *path, DWORD access, DWORD disposition,
+                                      const wchar_t **mapped) {
+    *mapped = NULL;
+    if (vfs_recursion_guard_active()) return PATH_ROUTE_UNCHANGED;
+    if (ml_save_mapping_route(path, mapped)) {
+        return *mapped != NULL ? PATH_ROUTE_MAPPED : PATH_ROUTE_DENIED;
+    }
+    *mapped = vfs_route_writable_path(path);
+    if (*mapped == NULL) *mapped = mods_file_route_read(path, access, disposition);
+    return *mapped != NULL ? PATH_ROUTE_MAPPED : PATH_ROUTE_UNCHANGED;
 }
 
-/* Routes both endpoints of a copy through the save mapping. Transparent: an
- * endpoint that is not a mapped save file yields NULL and the caller keeps the
- * original path. */
-static void route_copy_paths(LPCWSTR existing_path, LPCWSTR new_path,
+static bool route_copy_paths(LPCWSTR existing_path, LPCWSTR new_path,
                              const wchar_t **mapped_existing, const wchar_t **mapped_new) {
+    bool existing_handled;
+    bool new_handled;
     *mapped_existing = NULL;
     *mapped_new = NULL;
-    ml_save_mapping_route(existing_path, mapped_existing);
-    ml_save_mapping_route(new_path, mapped_new);
+    existing_handled = ml_save_mapping_route(existing_path, mapped_existing);
+    new_handled = ml_save_mapping_route(new_path, mapped_new);
+    return (!existing_handled || *mapped_existing != NULL) &&
+           (!new_handled || *mapped_new != NULL);
 }
 
-/* Routes a single (possibly NULL) save path. Transparent, as route_copy_paths. */
-static void route_save_path(LPCWSTR path, const wchar_t **mapped) {
+static bool route_save_path(LPCWSTR path, const wchar_t **mapped) {
     *mapped = NULL;
-    if (path != NULL) ml_save_mapping_route(path, mapped);
+    return path == NULL || !ml_save_mapping_route(path, mapped) || *mapped != NULL;
 }
 
 static HANDLE WINAPI create_file_w_hooked(LPCWSTR path, DWORD access, DWORD share,
                                            LPSECURITY_ATTRIBUTES security, DWORD disposition,
                                            DWORD flags, HANDLE template_file) {
-    const wchar_t *mapped = route_wide(path, access, disposition);
+    const wchar_t *mapped;
+    path_route_result_t route = route_wide(path, access, disposition, &mapped);
+    if (route == PATH_ROUTE_DENIED) {
+        SetLastError(ERROR_CANNOT_MAKE);
+        return INVALID_HANDLE_VALUE;
+    }
     return old_create_file_w(mapped != NULL ? mapped : path, access, share, security, disposition, flags, template_file);
 }
 
@@ -194,11 +205,17 @@ static HANDLE WINAPI create_file_a_hooked(LPCSTR path, DWORD access, DWORD share
                                            LPSECURITY_ATTRIBUTES security, DWORD disposition,
                                            DWORD flags, HANDLE template_file) {
     wchar_t *wide = ml_path_from_ansi(path);
-    const wchar_t *mapped = wide != NULL ? route_wide(wide, access, disposition) : NULL;
+    const wchar_t *mapped = NULL;
+    path_route_result_t route = wide != NULL
+        ? route_wide(wide, access, disposition, &mapped) : PATH_ROUTE_UNCHANGED;
     /* Free the temporary before the real call so GetLastError() reflects the
      * API result, not the deallocation. `mapped` is owned by the VFS / save
      * mapping and never aliases `wide`. */
     ml_mem_free(wide);
+    if (route == PATH_ROUTE_DENIED) {
+        SetLastError(ERROR_CANNOT_MAKE);
+        return INVALID_HANDLE_VALUE;
+    }
     if (mapped != NULL) {
         return old_create_file_w(mapped, access, share, security, disposition, flags, template_file);
     }
@@ -207,14 +224,24 @@ static HANDLE WINAPI create_file_a_hooked(LPCSTR path, DWORD access, DWORD share
 
 static HANDLE WINAPI create_file_2_hooked(LPCWSTR path, DWORD access, DWORD share, DWORD disposition,
                                            LPCREATEFILE2_EXTENDED_PARAMETERS parameters) {
-    const wchar_t *mapped = route_wide(path, access, disposition);
+    const wchar_t *mapped;
+    path_route_result_t route = route_wide(path, access, disposition, &mapped);
+    if (route == PATH_ROUTE_DENIED) {
+        SetLastError(ERROR_CANNOT_MAKE);
+        return INVALID_HANDLE_VALUE;
+    }
     return old_create_file_2(mapped != NULL ? mapped : path, access, share, disposition, parameters);
 }
 
 static BOOL WINAPI delete_file_w_hooked(LPCWSTR path) {
     const wchar_t *mapped = NULL;
+    bool save_handled;
     if (vfs_recursion_guard_active()) return old_delete_file_w(path);
-    ml_save_mapping_route(path, &mapped);
+    save_handled = ml_save_mapping_route(path, &mapped);
+    if (save_handled && mapped == NULL) {
+        SetLastError(ERROR_CANNOT_MAKE);
+        return FALSE;
+    }
     if (mapped == NULL) mapped = vfs_route_writable_path(path);
     return old_delete_file_w(mapped != NULL ? mapped : path);
 }
@@ -222,10 +249,16 @@ static BOOL WINAPI delete_file_w_hooked(LPCWSTR path) {
 static BOOL WINAPI delete_file_a_hooked(LPCSTR path) {
     wchar_t *wide;
     const wchar_t *mapped = NULL;
+    bool save_handled;
     if (vfs_recursion_guard_active()) return old_delete_file_a(path);
     wide = ml_path_from_ansi(path);
     if (wide == NULL) return old_delete_file_a(path);
-    ml_save_mapping_route(wide, &mapped);
+    save_handled = ml_save_mapping_route(wide, &mapped);
+    if (save_handled && mapped == NULL) {
+        ml_mem_free(wide);
+        SetLastError(ERROR_CANNOT_MAKE);
+        return FALSE;
+    }
     if (mapped == NULL) mapped = vfs_route_writable_path(wide);
     /* Free before the real call so GetLastError() reflects the delete, not the
      * deallocation; `mapped` does not alias `wide`. */
@@ -257,7 +290,10 @@ static BOOL WINAPI copy_file_w_hooked(LPCWSTR existing_path, LPCWSTR new_path, B
     const wchar_t *mapped_existing = NULL;
     const wchar_t *mapped_new = NULL;
     if (vfs_recursion_guard_active()) return old_copy_file_w(existing_path, new_path, fail_if_exists);
-    route_copy_paths(existing_path, new_path, &mapped_existing, &mapped_new);
+    if (!route_copy_paths(existing_path, new_path, &mapped_existing, &mapped_new)) {
+        SetLastError(ERROR_CANNOT_MAKE);
+        return FALSE;
+    }
     return old_copy_file_w(mapped_existing != NULL ? mapped_existing : existing_path,
                            mapped_new != NULL ? mapped_new : new_path, fail_if_exists);
 }
@@ -270,7 +306,10 @@ static BOOL WINAPI copy_file_ex_w_hooked(LPCWSTR existing_path, LPCWSTR new_path
     if (vfs_recursion_guard_active()) {
         return old_copy_file_ex_w(existing_path, new_path, progress, data, cancel, flags);
     }
-    route_copy_paths(existing_path, new_path, &mapped_existing, &mapped_new);
+    if (!route_copy_paths(existing_path, new_path, &mapped_existing, &mapped_new)) {
+        SetLastError(ERROR_CANNOT_MAKE);
+        return FALSE;
+    }
     return old_copy_file_ex_w(mapped_existing != NULL ? mapped_existing : existing_path,
                               mapped_new != NULL ? mapped_new : new_path,
                               progress, data, cancel, flags);
@@ -281,7 +320,9 @@ static HRESULT WINAPI copy_file_2_hooked(PCWSTR existing_path, PCWSTR new_path,
     const wchar_t *mapped_existing = NULL;
     const wchar_t *mapped_new = NULL;
     if (vfs_recursion_guard_active()) return old_copy_file_2(existing_path, new_path, parameters);
-    route_copy_paths(existing_path, new_path, &mapped_existing, &mapped_new);
+    if (!route_copy_paths(existing_path, new_path, &mapped_existing, &mapped_new)) {
+        return HRESULT_FROM_WIN32(ERROR_CANNOT_MAKE);
+    }
     return old_copy_file_2(mapped_existing != NULL ? mapped_existing : existing_path,
                            mapped_new != NULL ? mapped_new : new_path, parameters);
 }
@@ -300,7 +341,12 @@ static BOOL WINAPI copy_file_a_hooked(LPCSTR existing_path, LPCSTR new_path, BOO
         ml_mem_free(wide_new);
         return old_copy_file_a(existing_path, new_path, fail_if_exists);
     }
-    route_copy_paths(wide_existing, wide_new, &mapped_existing, &mapped_new);
+    if (!route_copy_paths(wide_existing, wide_new, &mapped_existing, &mapped_new)) {
+        ml_mem_free(wide_existing);
+        ml_mem_free(wide_new);
+        SetLastError(ERROR_CANNOT_MAKE);
+        return FALSE;
+    }
     result = mapped_existing != NULL || mapped_new != NULL
         ? old_copy_file_w(mapped_existing != NULL ? mapped_existing : wide_existing,
                           mapped_new != NULL ? mapped_new : wide_new, fail_if_exists)
@@ -328,7 +374,12 @@ static BOOL WINAPI copy_file_ex_a_hooked(LPCSTR existing_path, LPCSTR new_path,
         ml_mem_free(wide_new);
         return old_copy_file_ex_a(existing_path, new_path, progress, data, cancel, flags);
     }
-    route_copy_paths(wide_existing, wide_new, &mapped_existing, &mapped_new);
+    if (!route_copy_paths(wide_existing, wide_new, &mapped_existing, &mapped_new)) {
+        ml_mem_free(wide_existing);
+        ml_mem_free(wide_new);
+        SetLastError(ERROR_CANNOT_MAKE);
+        return FALSE;
+    }
     result = mapped_existing != NULL || mapped_new != NULL
         ? old_copy_file_ex_w(mapped_existing != NULL ? mapped_existing : wide_existing,
                              mapped_new != NULL ? mapped_new : wide_new, progress, data, cancel, flags)
@@ -342,8 +393,11 @@ static BOOL WINAPI move_file_ex_w_hooked(LPCWSTR existing_path, LPCWSTR new_path
     const wchar_t *mapped_existing = NULL;
     const wchar_t *mapped_new = NULL;
     if (vfs_recursion_guard_active()) return old_move_file_ex_w(existing_path, new_path, flags);
-    route_save_path(existing_path, &mapped_existing);
-    route_save_path(new_path, &mapped_new);
+    if (!route_save_path(existing_path, &mapped_existing) ||
+        !route_save_path(new_path, &mapped_new)) {
+        SetLastError(ERROR_CANNOT_MAKE);
+        return FALSE;
+    }
     return old_move_file_ex_w(mapped_existing != NULL ? mapped_existing : existing_path,
                               mapped_new != NULL ? mapped_new : new_path, flags);
 }
@@ -357,9 +411,12 @@ static BOOL WINAPI replace_file_w_hooked(LPCWSTR replaced_path, LPCWSTR replacem
     if (vfs_recursion_guard_active()) {
         return old_replace_file_w(replaced_path, replacement_path, backup_path, flags, exclude, reserved);
     }
-    route_save_path(replaced_path, &mapped_replaced);
-    route_save_path(replacement_path, &mapped_replacement);
-    route_save_path(backup_path, &mapped_backup);
+    if (!route_save_path(replaced_path, &mapped_replaced) ||
+        !route_save_path(replacement_path, &mapped_replacement) ||
+        !route_save_path(backup_path, &mapped_backup)) {
+        SetLastError(ERROR_CANNOT_MAKE);
+        return FALSE;
+    }
     return old_replace_file_w(mapped_replaced != NULL ? mapped_replaced : replaced_path,
                               mapped_replacement != NULL ? mapped_replacement : replacement_path,
                               mapped_backup != NULL ? mapped_backup : backup_path,

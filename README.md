@@ -11,6 +11,7 @@ external ModEngine-compatible DLL loading.
 | Game | Launcher target | Status |
 | --- | --- | --- |
 | Elden Ring | `eldenring` | Stable |
+| Elden Ring Nightreign | `nightreign` | Stable |
 | Sekiro: Shadows Die Twice | `sekiro` | Stable |
 | Dark Souls III | `darksouls3` | Experimental adapter; dearxan is not required or scheduled |
 
@@ -54,7 +55,7 @@ These options are outside a section:
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `game` | `eldenring` | Select the standalone launcher's game when `--launch-target` is omitted. Accepted values include `eldenring`, `sekiro`, `darksouls3`, and their aliases. |
+| `game` | `eldenring` | Select the standalone launcher's game when `--launch-target` is omitted. Accepted values include `eldenring`, `nightreign`, `sekiro`, `darksouls3`, and their aliases. |
 
 ### `[patch]`
 
@@ -66,8 +67,8 @@ does not require or include Arxan neutralization.
 | --- | --- | --- |
 | `skip_intro` | `1` | Skip the intro logo. |
 | `prevent_regulation_save_write` | `1` | Prevent raw modded or oversized `regulation.bin` data from being written to saves. |
-| `patch_mem` | `1` | Replace the Dantelion allocator with mimalloc. |
-| `patch_mem_heap_size` | `0` | Dedicated mimalloc heap size in MB; `0` uses the default 12288 MB heap. |
+| `patch_mem` | `1` | Replace the Dantelion allocator with mimalloc. Nightreign does not support this patch, matching me3. |
+| `patch_mem_heap_size` | `0` | Dedicated mimalloc heap size in MB; `0` uses the current game's default when `patch_mem` is supported. |
 | `boot_boost` | `1` | Cache decrypted BHD headers to reduce archive startup time. |
 | `replace_save_filename` | Empty | Replace a save filename; a leading dot replaces only its extension. |
 | `replace_seamless_coop_save_filename` | Empty | Replace the additional Seamless Co-op save filename. |
@@ -112,14 +113,14 @@ contain the same file, the later declaration overrides the earlier one.
 ### ModEngine2 TOML compatibility
 
 If `YAFSML.ini` is absent, the loader looks for the game-specific
-ModEngine2 file: `config_eldenring.toml`, `config_sekiro.toml`, or
-`config_darksouls3.toml`. The `-c` launcher option or `YAFSML_CONFIG`
+ModEngine2 file: `config_eldenring.toml`, `config_nightreign.toml`,
+`config_sekiro.toml`, or `config_darksouls3.toml`. The `-c` launcher option or `YAFSML_CONFIG`
 environment variable can select another configuration path.
 
 ## Launcher options
 
 ```text
--t, --launch-target <game>  Select eldenring, sekiro, or darksouls3.
+-t, --launch-target <game>  Select eldenring, nightreign, sekiro, or darksouls3.
 -p, --game-path <path>      Game executable or game directory.
 -c, --config <path>         Configuration file or directory.
 -d, --modloader-dll <path> Loader DLL to inject.

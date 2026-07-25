@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added stable Elden Ring Nightreign support, including launcher and process detection, Steam App ID `2622380`, `%APPDATA%\Nightreign` save mapping, FD4 host capabilities, Dantelion asset and Wwise routing, and me3-compatible aliases `nr` and `nightrein`.
+
+### Changed
+
+- Skip the Dantelion mimalloc replacement for Nightreign, matching me3 commit `6563ebb` where the memory patch is unsupported for this game.
+
 ## [0.7.4] - 2026-07-24
 
 ### Changed

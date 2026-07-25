@@ -16,6 +16,10 @@ int main(void) {
               ML_LAUNCHER_GAME_CONFIG_FOUND);
     EXPECT_EQ(game->id, ML_GAME_SEKIRO);
 
+    EXPECT_EQ(ml_launcher_game_from_ini_string("game=nightrein\n", &game, invalid_key, 64),
+              ML_LAUNCHER_GAME_CONFIG_FOUND);
+    EXPECT_EQ(game->id, ML_GAME_NIGHTREIGN);
+
     game = NULL;
     EXPECT_EQ(ml_launcher_game_from_ini_string("[elden_ring]\ngame=darksouls3\n",
                                                &game, invalid_key, 64),

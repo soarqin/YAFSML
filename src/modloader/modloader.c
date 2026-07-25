@@ -33,6 +33,9 @@
 HMODULE module_instance = NULL;
 typedef int (WINAPI*entrypoint_t)(void);
 static entrypoint_t orig_entrypoint = NULL;
+static volatile LONG modloader_initialized;
+static volatile LONG before_main_reached;
+static void *entrypoint_hook_target;
 
 static void load_extdlls_after_runtime(ml_lifecycle_phase_t phase, void *userp) {
     (void)phase;
@@ -40,7 +43,17 @@ static void load_extdlls_after_runtime(ml_lifecycle_phase_t phase, void *userp) 
     extdlls_load_all();
 }
 
-static void modloader_init(void) {
+static bool hook_game_entrypoint(void);
+
+static void before_game_main(void) {
+    if (entrypoint_hook_target != NULL) MH_DisableHook(entrypoint_hook_target);
+    if (InterlockedCompareExchange(&before_main_reached, 1, 0) != 0) return;
+    ml_lifecycle_advance(ML_LIFECYCLE_PHASE_BEFORE_MAIN);
+    extdlls_load_early();
+}
+
+static bool modloader_init(void) {
+    if (InterlockedCompareExchange(&modloader_initialized, 1, 0) != 0) return false;
     load_winhttp_proxy();
     load_dxgi_proxy();
     load_dinput8_proxy();
@@ -52,7 +65,10 @@ static void modloader_init(void) {
     ml_window_flash_install();
     extdlls_prepare();
     gamehook_install();
-    extdlls_load_early();
+    if (orig_entrypoint == NULL && !hook_game_entrypoint()) {
+        ML_LOG_WARN(L"modloader", L"could not install game entrypoint hook; before-main work is disabled");
+        return false;
+    }
     if (ml_game_context_get() != NULL &&
         ml_game_context_get()->runtime_ready_trigger == ML_RUNTIME_READY_STEAM_API_INIT) {
         if (!ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_RUNTIME_INIT,
@@ -63,18 +79,38 @@ static void modloader_init(void) {
         /* Preserve loading for unsupported game contexts without a runtime trigger. */
         extdlls_load_all();
     }
+    return true;
 }
 
 __declspec(dllexport) DWORD WINAPI YAFSMLInit(LPVOID parameter) {
     UNREFERENCED_PARAMETER(parameter);
     if (MH_Initialize() != MH_OK) return 0;
-    modloader_init();
+    if (!modloader_init()) return 0;
     return 1;
 }
 
 int WINAPI new_entrypoint(void) {
-    modloader_init();
+    if (InterlockedCompareExchange(&modloader_initialized, 0, 0) == 0) {
+        (void)modloader_init();
+    }
+    before_game_main();
     return orig_entrypoint();
+}
+
+static bool hook_game_entrypoint(void) {
+    void *entrypoint;
+    MH_STATUS status;
+    if (orig_entrypoint != NULL) return true;
+    entrypoint = get_module_entrypoint(NULL);
+    if (entrypoint == NULL) return false;
+    status = MH_CreateHook(entrypoint, new_entrypoint, (LPVOID *)&orig_entrypoint);
+    if (status != MH_OK && status != MH_ERROR_ALREADY_CREATED) return false;
+    status = MH_EnableHook(entrypoint);
+    if (status == MH_OK || status == MH_ERROR_ENABLED) {
+        entrypoint_hook_target = entrypoint;
+        return true;
+    }
+    return false;
 }
 
 BOOL APIENTRY DllMain(const HMODULE module, const DWORD ul_reason_for_call, LPVOID reserved) {
@@ -90,12 +126,7 @@ BOOL APIENTRY DllMain(const HMODULE module, const DWORD ul_reason_for_call, LPVO
             }
             {
                 if (MH_Initialize() != MH_OK) break;
-                void *old_entrypoint = get_module_entrypoint(NULL);
-                if (old_entrypoint == NULL ||
-                    MH_CreateHook(old_entrypoint, new_entrypoint, (LPVOID*)&orig_entrypoint) != MH_OK ||
-                    MH_EnableHook(old_entrypoint) != MH_OK) {
-                    return FALSE;
-                }
+                if (!hook_game_entrypoint()) return FALSE;
             }
             break;
         case DLL_PROCESS_DETACH:

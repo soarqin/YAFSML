@@ -202,6 +202,35 @@ int main(void) {
         RemoveDirectoryW(er_root);
     }
 
+    {
+        const ml_game_descriptor_t *nightreign = ml_game_by_id(ML_GAME_NIGHTREIGN);
+        wchar_t nr_root[MAX_PATH];
+        wchar_t nr_account[MAX_PATH];
+        wchar_t nr_sl2[MAX_PATH];
+        EXPECT_NOT_NULL(nightreign);
+        lstrcpyW(nr_root, root); PathAppendW(nr_root, L"Nightreign");
+        EXPECT_TRUE(CreateDirectoryW(nr_root, NULL));
+        lstrcpyW(nr_account, nr_root); PathAppendW(nr_account, L"76561198000000000");
+        EXPECT_TRUE(CreateDirectoryW(nr_account, NULL));
+        lstrcpyW(nr_sl2, nr_account); PathAppendW(nr_sl2, L"NR0000.sl2");
+        EXPECT_TRUE(create_empty_file(nr_sl2));
+
+        vfs_init();
+        EXPECT_TRUE(ml_save_mapping_init(nightreign, L"nightreign-test.sl2"));
+        mapped = NULL;
+        EXPECT_TRUE(ml_save_mapping_route(nr_sl2, &mapped));
+        EXPECT_NOT_NULL(mapped);
+        EXPECT_TRUE(wcsstr(mapped, L"nightreign-test.sl2") != NULL);
+        EXPECT_TRUE(PathFileExistsW(mapped));
+
+        DeleteFileW(vfs_route_writable_path(nr_sl2));
+        ml_save_mapping_uninit();
+        vfs_uninit();
+        DeleteFileW(nr_sl2);
+        RemoveDirectoryW(nr_account);
+        RemoveDirectoryW(nr_root);
+    }
+
     RemoveDirectoryW(root);
     SetEnvironmentVariableW(L"APPDATA", old_length != 0 && old_length < MAX_PATH ? old_appdata : NULL);
     printf("smoke_save_mapping: all tests passed\n");

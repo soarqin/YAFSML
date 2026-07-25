@@ -45,6 +45,7 @@ add_project(modloader_dll SHARED
     patches/asset_sig.c patches/asset_sig.h
     patches/asset_hooks.c patches/asset_hooks.h
     patches/eldenring.c patches/eldenring.h
+    patches/nightreign.c patches/nightreign.h
     patches/sekiro.c patches/sekiro.h
     patches/darksouls3.c patches/darksouls3.h
 

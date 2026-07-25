@@ -831,26 +831,32 @@ static void __cdecl file_step_init_hooked(void *this_ptr, fd4_time_t *time) {
 
 bool ml_asset_hooks_install(const ml_game_descriptor_t *game, void *image_base, size_t image_size) {
     void *step;
+    const wchar_t *step_name;
     if (game == NULL || game->file_step_name == NULL || image_base == NULL || image_size == 0 ||
         vfs_entry_count() == 0) return true;
     if (file_step_hook_installed) return true;
     game_image_base = image_base;
     game_image_size = image_size;
     game_stl_abi = game->stl_abi;
-    step = fd4_step_find(game->file_step_name);
+    step_name = game->file_step_name;
+    step = fd4_step_find(step_name);
+    if (step == NULL && wcscmp(step_name, L"SprjFileStep::STEP_Init") != 0) {
+        step_name = L"SprjFileStep::STEP_Init";
+        step = fd4_step_find(step_name);
+    }
     if (step == NULL) {
-        ML_LOG_WARN(L"asset-hooks", L"%ls not found for %ls; Dantelion VFS disabled",
+        ML_LOG_WARN(L"asset-hooks", L"%ls and SprjFileStep::STEP_Init not found for %ls; Dantelion VFS disabled",
                     game->file_step_name, game->title);
         return false;
     }
     if (ml_hook_install(step, file_step_init_hooked, (void **)&old_file_step_init) != ML_HOOK_APPLIED) {
         ML_LOG_WARN(L"asset-hooks", L"%ls hook failed for %ls",
-                    game->file_step_name, game->title);
+                    step_name, game->title);
         return false;
     }
     file_step_hook_installed = true;
     file_step_hook_target = step;
-    ML_LOG_INFO(L"asset-hooks", L"%ls hook applied for %ls", game->file_step_name, game->title);
+    ML_LOG_INFO(L"asset-hooks", L"%ls hook applied for %ls", step_name, game->title);
     return true;
 }
 

@@ -41,6 +41,7 @@ int main(void) {
     uint8_t cached[64] = { 0 };
     test_bhd5_holder_t holder = { previous, 0, NULL };
     const ml_game_descriptor_t *ds3 = ml_game_by_id(ML_GAME_DARK_SOULS_3);
+    const ml_game_descriptor_t *nightreign = ml_game_by_id(ML_GAME_NIGHTREIGN);
 
     EXPECT_EQ(sizeof(mount_pattern), 42);
     EXPECT_TRUE(ml_asset_hooks_test_match_mount_ebl(mount_pattern, sizeof(mount_pattern),
@@ -68,6 +69,8 @@ int main(void) {
     invalid[40] = 0x73;
     EXPECT_TRUE(!ml_asset_hooks_test_match_mount_ebl(invalid, sizeof(invalid), NULL, NULL));
     EXPECT_NOT_NULL(ds3);
+    EXPECT_NOT_NULL(nightreign);
+    EXPECT_EQ(nightreign->ebl_bhd_holder_offset, 0xB0);
     EXPECT_TRUE(!ml_asset_hooks_loose_params_present(ml_game_by_id(ML_GAME_SEKIRO)));
     EXPECT_TRUE(!ml_asset_hooks_loose_params_present(ds3));
     EXPECT_TRUE(ml_asset_hooks_is_loose_param_path(ds3,

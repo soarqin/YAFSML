@@ -14,9 +14,10 @@
 
 typedef enum ml_game_id_e {
     ML_GAME_UNKNOWN = 0,
-    ML_GAME_ELDEN_RING,
-    ML_GAME_SEKIRO,
     ML_GAME_DARK_SOULS_3,
+    ML_GAME_SEKIRO,
+    ML_GAME_ELDEN_RING,
+    ML_GAME_NIGHTREIGN,
 } ml_game_id_t;
 
 typedef enum ml_stl_abi_e {

@@ -100,13 +100,11 @@ int main(void) {
     file = ml_win32_file_hooks_test_create_file_w(writable_route, GENERIC_WRITE, 0, OPEN_EXISTING, 0);
     EXPECT_TRUE(file != INVALID_HANDLE_VALUE);
     CloseHandle(file);
-    /* When save routing reports "handled" but yields no target, the hook must
-     * fall back to the real API transparently rather than fabricating a
-     * failure/last-error. save_fail was deleted above, so the real CreateFileW
-     * fails with ERROR_FILE_NOT_FOUND — the genuine error, not ERROR_CANNOT_MAKE. */
+    /* An explicit save mapping that cannot produce its alternate path must not
+     * fall through to the primary save. */
     file = ml_win32_file_hooks_test_create_file_w(save_fail, GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING, 0);
     EXPECT_TRUE(file == INVALID_HANDLE_VALUE);
-    EXPECT_EQ(GetLastError(), ERROR_FILE_NOT_FOUND);
+    EXPECT_EQ(GetLastError(), ERROR_CANNOT_MAKE);
     recursion_active = true;
     file = ml_win32_file_hooks_test_create_file_w(read_route, GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING, 0);
     EXPECT_TRUE(file == INVALID_HANDLE_VALUE);

@@ -25,6 +25,20 @@ static SRWLOCK mapping_lock = SRWLOCK_INIT;
 static wchar_t *save_root;
 static save_mapping_entry_t mappings[SAVE_MAPPING_MAX];
 static size_t mapping_count;
+static bool mapping_failed;
+static wchar_t failed_extensions[SAVE_MAPPING_MAX][16];
+static size_t failed_extension_count;
+
+static void remember_failed_extension(const wchar_t *extension) {
+    if (extension == NULL || extension[0] != L'.' || wcslen(extension) >= 16) return;
+    for (size_t i = 0; i < failed_extension_count; i++) {
+        if (lstrcmpiW(failed_extensions[i], extension) == 0) return;
+    }
+    if (failed_extension_count < SAVE_MAPPING_MAX) {
+        lstrcpynW(failed_extensions[failed_extension_count], extension, 16);
+        failed_extension_count++;
+    }
+}
 
 static wchar_t *join_path(const wchar_t *left, const wchar_t *right) {
     size_t left_length;
@@ -160,13 +174,27 @@ bool ml_save_mapping_init_root(const ml_game_descriptor_t *game) {
     wchar_t *appdata;
     wchar_t *joined;
     wchar_t *canonical;
-    if (game == NULL || game->save_root_name == NULL) return false;
+    AcquireSRWLockExclusive(&mapping_lock);
+    mapping_failed = false;
+    failed_extension_count = 0;
+    ReleaseSRWLockExclusive(&mapping_lock);
+    if (game == NULL || game->save_root_name == NULL) {
+        AcquireSRWLockExclusive(&mapping_lock);
+        mapping_failed = true;
+        ReleaseSRWLockExclusive(&mapping_lock);
+        return false;
+    }
     appdata = environment_value(L"APPDATA");
     joined = appdata == NULL ? NULL : join_path(appdata, game->save_root_name);
     canonical = joined == NULL ? NULL : canonicalize_path(joined);
     ml_mem_free(joined);
     ml_mem_free(appdata);
-    if (canonical == NULL) return false;
+    if (canonical == NULL) {
+        AcquireSRWLockExclusive(&mapping_lock);
+        mapping_failed = true;
+        ReleaseSRWLockExclusive(&mapping_lock);
+        return false;
+    }
 
     AcquireSRWLockExclusive(&mapping_lock);
     ml_mem_free(save_root);
@@ -184,6 +212,9 @@ bool ml_save_mapping_add_extension(const wchar_t *extension, const wchar_t *over
         ML_LOG_WARN(L"save-mapping", L"extension mapping rejected: extension=%ls override=%ls",
                     extension == NULL ? L"<null>" : extension,
                     override_name == NULL ? L"<null>" : override_name);
+        AcquireSRWLockExclusive(&mapping_lock);
+        if (save_root != NULL) remember_failed_extension(extension);
+        ReleaseSRWLockExclusive(&mapping_lock);
         return false;
     }
     AcquireSRWLockExclusive(&mapping_lock);
@@ -194,6 +225,8 @@ bool ml_save_mapping_add_extension(const wchar_t *extension, const wchar_t *over
         mappings[mapping_count].override_name[63] = L'\0';
         mapping_count++;
         result = true;
+    } else {
+        remember_failed_extension(extension);
     }
     ReleaseSRWLockExclusive(&mapping_lock);
     ML_LOG_INFO(L"save-mapping", L"extension mapping %ls -> %ls: %ls",
@@ -220,7 +253,9 @@ bool ml_save_mapping_route(const wchar_t *path, const wchar_t **mapped_path) {
     wchar_t *target_name = NULL;
     wchar_t *root_snapshot;
     save_mapping_entry_t snapshot[SAVE_MAPPING_MAX];
+    wchar_t failed_snapshot[SAVE_MAPPING_MAX][16];
     size_t snapshot_count;
+    size_t failed_count;
     const wchar_t *override_name = NULL;
     const wchar_t *logical_ext;
     const wchar_t *source_name;
@@ -228,6 +263,7 @@ bool ml_save_mapping_route(const wchar_t *path, const wchar_t **mapped_path) {
     const wchar_t *registered;
     const wchar_t *raw_ext;
     bool interesting;
+    bool setup_failed_snapshot;
     size_t i;
 
     if (mapped_path != NULL) *mapped_path = NULL;
@@ -236,9 +272,24 @@ bool ml_save_mapping_route(const wchar_t *path, const wchar_t **mapped_path) {
     AcquireSRWLockShared(&mapping_lock);
     root_snapshot = save_root == NULL ? NULL : ml_mem_strdup_w(save_root);
     snapshot_count = mapping_count;
+    setup_failed_snapshot = mapping_failed;
+    failed_count = failed_extension_count;
     memcpy(snapshot, mappings, snapshot_count * sizeof(snapshot[0]));
+    memcpy(failed_snapshot, failed_extensions, failed_count * sizeof(failed_snapshot[0]));
     ReleaseSRWLockShared(&mapping_lock);
     if (root_snapshot == NULL || snapshot_count == 0) {
+        bool failed = raw_ext != NULL && setup_failed_snapshot &&
+            (lstrcmpiW(raw_ext, L".sl2") == 0 || lstrcmpiW(raw_ext, L".bak") == 0);
+        for (i = 0; !failed && raw_ext != NULL && i < failed_count; i++) {
+            failed = lstrcmpiW(raw_ext, failed_snapshot[i]) == 0 ||
+                     (lstrcmpiW(raw_ext, L".bak") == 0 &&
+                      lstrcmpiW(failed_snapshot[i], L".sl2") == 0);
+        }
+        if (failed) {
+            *mapped_path = NULL;
+            ml_mem_free(root_snapshot);
+            return true;
+        }
         ml_mem_free(root_snapshot);
         return false;
     }
@@ -279,6 +330,18 @@ bool ml_save_mapping_route(const wchar_t *path, const wchar_t **mapped_path) {
     }
     if (backup) PathRemoveExtensionW(logical_source);
     logical_ext = PathFindExtensionW(logical_source);
+    if (setup_failed_snapshot || failed_count != 0) {
+        bool failed = setup_failed_snapshot;
+        for (i = 0; !failed && i < failed_count; i++) {
+            failed = lstrcmpiW(logical_ext, failed_snapshot[i]) == 0;
+        }
+        if (failed) {
+            *mapped_path = NULL;
+            ml_mem_free(logical_source);
+            ml_mem_free(source);
+            return true;
+        }
+    }
     for (i = 0; i < snapshot_count; i++) {
         if (lstrcmpiW(logical_ext, snapshot[i].extension) == 0) {
             override_name = snapshot[i].override_name;
@@ -307,6 +370,9 @@ bool ml_save_mapping_route(const wchar_t *path, const wchar_t **mapped_path) {
     }
     ml_mem_free(target_name);
     if (target == NULL) {
+        AcquireSRWLockExclusive(&mapping_lock);
+        remember_failed_extension(logical_ext);
+        ReleaseSRWLockExclusive(&mapping_lock);
         ml_mem_free(logical_source);
         ml_mem_free(source);
         return true;
@@ -338,6 +404,7 @@ bool ml_save_mapping_route(const wchar_t *path, const wchar_t **mapped_path) {
             ML_LOG_INFO(L"save-mapping", L"seeded renamed save from original: %ls -> %ls copied=%d err=%lu",
                         source, target, copied ? 1 : 0, copied ? 0 : GetLastError());
             if (!copied && GetLastError() != ERROR_FILE_EXISTS) {
+                remember_failed_extension(logical_ext);
                 vfs_recursion_guard_leave();
                 ReleaseSRWLockExclusive(&mapping_lock);
                 ml_mem_free(target);
@@ -348,11 +415,12 @@ bool ml_save_mapping_route(const wchar_t *path, const wchar_t **mapped_path) {
             vfs_recursion_guard_leave();
         }
         if (vfs_register_writable_path(path, target)) registered = vfs_route_writable_path(path);
+        if (registered == NULL) remember_failed_extension(logical_ext);
     }
     *mapped_path = registered;
     ReleaseSRWLockExclusive(&mapping_lock);
     if (registered == NULL) {
-        ML_LOG_WARN(L"save-mapping", L"route %ls: target=%ls computed but writable registration returned NULL (falling back to original path)",
+        ML_LOG_WARN(L"save-mapping", L"route %ls: target=%ls computed but writable registration returned NULL (primary save access denied)",
                     path, target);
     }
     ml_mem_free(target);
@@ -366,5 +434,7 @@ void ml_save_mapping_uninit(void) {
     ml_mem_free(save_root);
     save_root = NULL;
     mapping_count = 0;
+    mapping_failed = false;
+    failed_extension_count = 0;
     ReleaseSRWLockExclusive(&mapping_lock);
 }

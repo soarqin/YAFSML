@@ -15,6 +15,7 @@
 #include "patches/darksouls3.h"
 #include "patches/eldenring.h"
 #include "patches/logo.h"
+#include "patches/nightreign.h"
 #include "patches/properties.h"
 #include "patches/regulation.h"
 #include "patches/sekiro.h"
@@ -53,6 +54,20 @@ static void install_allocator_after_runtime(ml_lifecycle_phase_t phase, void *us
     (void)ml_allocator_install_after_runtime((const ml_game_descriptor_t *)userp);
 }
 
+static void install_allocator_before_main(ml_lifecycle_phase_t phase, void *userp) {
+    const ml_game_descriptor_t *game = (const ml_game_descriptor_t *)userp;
+    bool applied;
+    (void)phase;
+    applied = ml_allocator_install_before_main(game);
+    if (!applied && game != NULL && game->id == ML_GAME_DARK_SOULS_3) {
+        ML_LOG_WARN(L"darksouls3", L"heap allocator capability HOOK_FAILED stage=system_allocator");
+    }
+    if (applied && !ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_RUNTIME_INIT,
+                                          install_allocator_after_runtime, userp)) {
+        ML_LOG_WARN(L"allocator", L"heap allocator capability HOOK_FAILED: could not schedule after-runtime stage");
+    }
+}
+
 bool gamehook_install() {
     bool schedule_heap_allocator = false;
     if (!ml_game_context_init()) {
@@ -62,21 +77,19 @@ bool gamehook_install() {
     const ml_game_descriptor_t *game = ml_game_context_get();
     bool common_applied;
     bool adapter_applied;
-    if (config.patch_mem) {
+    if (config.patch_mem && game->allocator_strategy != ML_ALLOCATOR_STRATEGY_UNSUPPORTED) {
         if (config.patch_mem_dedicated_heap &&
             !mimalloc_dl_allocator_prepare(config.patch_mem_heap_size)) {
             ML_LOG_WARN(L"allocator", L"dedicated mimalloc heap unavailable; using the default mimalloc heap");
         }
-        bool system_allocator_applied = ml_allocator_install_before_main(game);
-        schedule_heap_allocator = system_allocator_applied;
-        if (!system_allocator_applied && game->id == ML_GAME_DARK_SOULS_3) {
-            ML_LOG_WARN(L"darksouls3", L"heap allocator capability HOOK_FAILED stage=system_allocator");
-        }
-    } else {
+        schedule_heap_allocator = true;
+    } else if (!config.patch_mem) {
         ML_LOG_INFO(L"allocator", L"heap allocators SKIPPED_DISABLED for %ls", game->title);
+    } else {
+        ML_LOG_INFO(L"allocator", L"heap allocators SKIPPED_UNSUPPORTED for %ls", game->title);
     }
-    ml_lifecycle_advance(ML_LIFECYCLE_PHASE_BEFORE_MAIN);
-    if (game->id != ML_GAME_ELDEN_RING && game->id != ML_GAME_SEKIRO &&
+    if (game->id != ML_GAME_ELDEN_RING && game->id != ML_GAME_NIGHTREIGN &&
+        game->id != ML_GAME_SEKIRO &&
         game->id != ML_GAME_DARK_SOULS_3) {
         ML_LOG_WARN(L"gamehook", L"%ls adapter is not implemented; game hooks are disabled", game->title);
         return false;
@@ -88,9 +101,9 @@ bool gamehook_install() {
         ML_LOG_WARN(L"logo", L"could not schedule Logo redirect");
     }
     if (schedule_heap_allocator &&
-        !ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_RUNTIME_INIT,
-                               install_allocator_after_runtime, (void *)game)) {
-        ML_LOG_WARN(L"allocator", L"heap allocator capability HOOK_FAILED: could not schedule after-runtime stage");
+        !ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_BEFORE_MAIN,
+                               install_allocator_before_main, (void *)game)) {
+        ML_LOG_WARN(L"allocator", L"heap allocator capability HOOK_FAILED: could not schedule before-main stage");
     }
     if (!ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_RUNTIME_INIT, install_properties_after_runtime, (void *)game)) {
         ML_LOG_WARN(L"properties", L"could not schedule installation");
@@ -101,10 +114,12 @@ bool gamehook_install() {
     }
     steamapi_init();
     common_applied = common_install_file_routing(game) && common_install_ime() &&
-                     common_install_wwise();
+                     (game->id == ML_GAME_NIGHTREIGN || common_install_wwise());
     adapter_applied = game->id == ML_GAME_ELDEN_RING
         ? eldenring_install()
-        : game->id == ML_GAME_SEKIRO ? sekiro_install() : darksouls3_install();
+        : game->id == ML_GAME_NIGHTREIGN
+            ? nightreign_install()
+            : game->id == ML_GAME_SEKIRO ? sekiro_install() : darksouls3_install();
     return common_applied && adapter_applied;
 }
 
@@ -112,6 +127,8 @@ void gamehook_uninstall() {
     const ml_game_descriptor_t *game = ml_game_context_get();
     if (game != NULL && game->id == ML_GAME_ELDEN_RING) {
         eldenring_uninstall();
+    } else if (game != NULL && game->id == ML_GAME_NIGHTREIGN) {
+        nightreign_uninstall();
     } else if (game != NULL && game->id == ML_GAME_SEKIRO) {
         sekiro_uninstall();
     } else if (game != NULL && game->id == ML_GAME_DARK_SOULS_3) {

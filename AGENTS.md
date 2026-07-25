@@ -2,7 +2,7 @@
 
 ## What this repo is
 
-A Windows-only C11 mod loader for FromSoftware games (`YAFSML`). Elden Ring and Sekiro are stable; Dark Souls III is experimental. Produces two artifacts:
+A Windows-only C11 mod loader for FromSoftware games (`YAFSML`). Elden Ring, Elden Ring Nightreign, and Sekiro are stable; Dark Souls III is experimental. Produces two artifacts:
 - `YAFSML.exe` — standalone launcher (`modloader_launcher`, WIN32 subsystem)
 - `YAFSML.dll` — injected DLL (`modloader_dll`, proxy for `dxgi.dll` / `dinput8.dll` / `winhttp.dll`)
 
@@ -52,7 +52,7 @@ src/
   common/         khash_wstr.h — wide-string hash table adapter (shared header, no .c)
   game/           Game registry, descriptors, aliases, and current-process context
   modloader/      Core DLL: config, mod loading, file cache, game hooks, proxy stubs
-    patches/      Shared host capabilities plus Elden Ring, Sekiro, and Dark Souls III adapters
+    patches/      Shared host capabilities plus Elden Ring, Nightreign, Sekiro, and Dark Souls III adapters
     proxy/        Proxy DLL stubs for dxgi/dinput8/winhttp
   launcher/       Standalone EXE: injects the DLL into the game process
   steam/          Steam API helpers (locate game folder via VDF; achievement reset support)
