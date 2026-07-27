@@ -15,10 +15,11 @@ external ModEngine-compatible DLL loading.
 | Sekiro: Shadows Die Twice | `sekiro` | Stable |
 | Dark Souls III | `darksouls3` | Experimental adapter; Arxan neutralization is enabled |
 
-Elden Ring remains the primary target. The `sekiro` target is selected with
-`--launch-target sekiro`. When `--launch-target` is omitted, the launcher reads
-the top-level `game=...` value from `YAFSML.ini`; if the value is absent, it
-starts Elden Ring. An explicit `--launch-target` always takes precedence.
+Elden Ring remains the primary target. Select another game with
+`--launch-target nightreign`, `--launch-target sekiro`, or
+`--launch-target darksouls3`. When `--launch-target` is omitted, the launcher
+reads the top-level `game=...` value from `YAFSML.ini`; if the value is absent,
+it starts Elden Ring. An explicit `--launch-target` always takes precedence.
 
 ## Installation
 
@@ -80,7 +81,12 @@ me3 commit `6563ebb`; Dark Souls III forces Arxan neutralization on.
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `cpu_affinity` | `0` | Select the game process CPU affinity strategy: `0` all logical cores, `1` all except the first, `2` efficient cores, `3` performance cores, or `4` performance cores except the first logical core. Do not use `2`, `3`, or `4` on Intel Ultra CPUs with Elden Ring 1.16.2 or later. |
+| `cpu_affinity` | `0` | Select the game process CPU affinity strategy: `0` leaves affinity unchanged, `1` uses all logical cores except the first, `2` uses efficient cores, `3` uses performance cores, and `4` uses performance cores except their first logical core. Strategies `1` through `4` are applied asynchronously after game data initialization in all four games. Unsupported processor-group layouts or an empty selected mask leave affinity unchanged. Do not use `2`, `3`, or `4` on Intel Ultra CPUs with Elden Ring 1.16.2 or later. |
+
+The game-data-ready trigger is optional. If its hook cannot be installed, the loader
+keeps the current affinity and continues with runtime initialization, VFS, logo,
+property, regulation, and external-DLL capabilities. The affinity worker is joined
+during unload.
 
 ### `[log]`
 
@@ -145,5 +151,7 @@ See [CHANGELOG.md](CHANGELOG.md).
 - [toml-c](https://github.com/arp242/toml-c): ModEngine2 TOML compatibility.
 - [wingetopt](https://github.com/alex85k/wingetopt): command-line parsing.
 - [mimalloc](https://github.com/microsoft/mimalloc): loader allocator.
+- [dearxan](https://github.com/tremwil/dearxan): Arxan analysis and neutralization behavior ported to C11.
+- [Zydis](https://github.com/zyantific/zydis): x86/x86-64 disassembly used by the dearxan port.
 - [libofdf](https://github.com/Jan200101/libofdf): Steam library discovery.
 - [LZMA SDK](https://7-zip.org/sdk.html): public-domain compression SDK.

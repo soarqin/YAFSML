@@ -2,7 +2,7 @@
 
 ## 1. 文档目的
 
-本文记录 YAFSML 从「Elden Ring 专用加载器」演进为支持 Elden Ring、Sekiro: Shadows Die Twice 与 Dark Souls III 的 FromSoftware 模组加载器的设计、完成状态与后续计划。
+本文记录 YAFSML 从「Elden Ring 专用加载器」演进为支持 Elden Ring、Elden Ring Nightreign、Sekiro: Shadows Die Twice 与 Dark Souls III 的 FromSoftware 模组加载器的设计、完成状态与后续计划。
 
 项目已直接重命名为 YAFSML（Yet Another FromSoftware Mod Loader）。二进制和配置文件使用 `YAFSML` 名称，不保留旧名称兼容入口。
 
@@ -15,6 +15,7 @@ me3 对照仓库、分支与同步提交以 [`docs/me3-repo.md`](me3-repo.md) �
 | 游戏 | Steam App ID | 可执行文件 | 首期支持等级 |
 | --- | ---: | --- | --- |
 | Elden Ring | `1245620` | `Game\\eldenring.exe` | 稳定支持，现有行为必须回归 |
+| Elden Ring Nightreign | `2622380` | `Game\\nightreign.exe` | 稳定支持 |
 | Sekiro: Shadows Die Twice | `814380` | `sekiro.exe` | 稳定支持 |
 | Dark Souls III | `374320` | `Game\\DarkSoulsIII.exe` | 实验性支持 |
 
@@ -76,8 +77,8 @@ Dark Souls III 已完成阶段 9，并继续保持实验性支持。项目现已
 
 当前核心架构已完成多游戏拆分，但产品支持范围仍不完整：
 
-- launcher 已由 Game Registry 驱动，并支持 Elden Ring、Sekiro 与实验性的 Dark Souls III 目标。
-- Elden Ring、Sekiro 与 Dark Souls III 均具有独立 adapter；Dark Souls III 保持实验性，并强制启用 Arxan 中和。
+- launcher 已由 Game Registry 驱动，并支持 Elden Ring、Nightreign、Sekiro 与实验性的 Dark Souls III 目标。
+- 四款游戏均具有独立 adapter；Dark Souls III 保持实验性，并强制启用 Arxan 中和。
 - 配置使用顶层 `game=...` 选择启动目标，并将加载器设置分为 `[patch]`、`[tweak]`、`[log]`、`[dll]` 和 `[mod]` section。
 - VFS 已改为启动时扫描、last-wins 索引、分域缓存、显式可写映射和统一 Win32/Dantelion 路由。
 - 无模组时跳过普通资源查询；存档文件名替换仍可按需独立安装文件 Hook。
@@ -94,7 +95,7 @@ Dark Souls III 已完成阶段 9，并继续保持实验性支持。项目现已
 - `modengine_ext_init` 的兼容加载和逆序卸载路径。
 - 供内部 Host 功能使用的生命周期状态，不属于扩展 ABI。
 
-三游戏共用的白闪修复已移入内部 Host capability，并在 `PRE_ENTRY_SAFE` 阶段 Hook `RegisterClassExW`，将窗口类背景刷替换为黑色。Logo 策略已成为显式 game trait；Elden Ring 在 `AFTER_RUNTIME_INIT` 阶段重定向 FD4 `TitleStep::STEP_BeginLogo`，不再修改版本相关的代码字节。DLRF 已具备运行时类、方法 resolver 和 invoker 地址解析，以及属性初始化引用扫描；真正的离线属性调用仍需游戏现场验证。Sekiro 与 Dark Souls III 使用 SPRJ Logo、allocator 和旧式 regulation 保护路径；Dark Souls III 已完成阶段 9 现场验收。
+四款游戏共用的白闪修复已移入内部 Host capability，并在 `PRE_ENTRY_SAFE` 阶段 Hook `RegisterClassExW`，将窗口类背景刷替换为黑色。Logo 策略已成为显式 game trait；Elden Ring 与 Nightreign 在 `AFTER_RUNTIME_INIT` 阶段重定向 FD4 `TitleStep::STEP_BeginLogo`，不再修改版本相关的代码字节。DLRF 已具备运行时类、方法 resolver 和 invoker 地址解析，以及属性初始化引用扫描；真正的离线属性调用仍需游戏现场验证。Sekiro 与 Dark Souls III 使用 SPRJ Logo 和旧式 regulation 保护路径；Nightreign 不支持 allocator patch，其他三款游戏使用各自的 allocator 策略。Dark Souls III 已完成阶段 9 现场验收。
 
 ## 4. 强制前置兼容性修正
 
@@ -232,6 +233,7 @@ src/
 typedef enum ml_game_id_e {
     ML_GAME_UNKNOWN = 0,
     ML_GAME_ELDEN_RING,
+    ML_GAME_NIGHTREIGN,
     ML_GAME_SEKIRO,
     ML_GAME_DARK_SOULS_3,
 } ml_game_id_t;
@@ -268,7 +270,7 @@ typedef struct ml_game_descriptor_s {
 
 ### 5.3 生命周期
 
-统一使用四个阶段：
+统一使用五个阶段：
 
 | 阶段 | 目的 | 典型功能 |
 | --- | --- | --- |
@@ -276,6 +278,7 @@ typedef struct ml_game_descriptor_s {
 | `BEFORE_MAIN` | 游戏必要初始化或 Arxan 调度后 | system allocator、early native |
 | `AFTER_RUNTIME_INIT` | 游戏运行时静态对象可分析后 | RTTI、FD4、DLRF、普通 native、allocator、资产 Hook |
 | `AFTER_PROPERTIES_READY` | 游戏属性表可写后 | 离线属性和用户 property override |
+| `AFTER_GAME_DATA_READY` | 标题或文件初始化完成后 | 异步应用 CPU 亲和性 |
 
 现有 Elden Ring 使用 `SteamAPI_Init` 作为 `AFTER_RUNTIME_INIT` 触发点。该机制可保留，但不是唯一合法触发方式。每个 adapter 必须声明可靠触发点及其 fallback；未触发时日志必须明确报告，不得静默等待。
 
@@ -316,7 +319,7 @@ VFS core 使用 UTF-16 动态字符串，不使用 `MAX_PATH` 固定数组。所
 - 区分游戏虚拟路径、游戏根目录物理路径、package 物理路径与 fake UID。
 - 扫描目录时检测 symlink/junction 环，避免无限递归。
 
-适配器负责把游戏特有格式转换为 core 虚拟路径，例如 `data0:/...`、`sd:/...` 或根目录物理路径。VFS core 不应包含 Elden Ring、Sekiro 或 DS3 的路径字面量。
+适配器负责把游戏特有格式转换为 core 虚拟路径，例如 `data0:/...`、`sd:/...` 或根目录物理路径。VFS core 不应包含 Elden Ring、Nightreign、Sekiro 或 DS3 的路径字面量。
 
 ### 6.2 扫描、索引与优先级
 
@@ -436,7 +439,7 @@ DS3 的 BHD holder 偏移为 `0xC0`；Sekiro 与 Elden Ring 为 `0xB0`。该差�
 
 launcher 必须：
 
-- 支持 `--launch-target eldenring`、`sekiro`、`darksouls3` 及合理别名。
+- 支持 `--launch-target eldenring`、`nightreign`、`sekiro`、`darksouls3` 及合理别名。
 - 未指定 `--launch-target` 时读取 `YAFSML.ini` 顶层的 `game=...`；未配置时默认 Elden Ring，显式启动目标优先。
 - 保留 `--modengine-dll` 作为 `--modloader-dll` 别名。
 - 从显式 EXE、游戏目录、当前目录和 Steam library manifest 按固定优先级定位游戏。
@@ -460,19 +463,19 @@ DLL 进程内校验失败时，必须停止游戏专用 Hook，不能继续把�
 通过 DLRF 找到：
 
 - DS3、Sekiro：`SprjAutoControlAPI.SetGameProperty`。
-- Elden Ring：`CSAutoControlAPI.SetGameProperty`。
+- Elden Ring、Nightreign：`CSAutoControlAPI.SetGameProperty`。
 
 默认设置 `Menu.IsEnableOnlineMode=false`。用户显式 property override 后应用，保证用户配置覆盖内部默认值。DLRF 或 property-init Hook 失败时，日志必须显示离线保护没有真正应用。
 
 ### 7.4 跳 Logo 与白闪修复
 
 - DS3、Sekiro 使用 SPRJ title step 策略。
-- Elden Ring 使用 FD4 `TitleStep::STEP_BeginLogo` 策略。
-- 三游戏都 Hook `RegisterClassExW`，将窗口类背景刷改为黑色，避免启动白闪。
+- Elden Ring、Nightreign 使用 FD4 `TitleStep::STEP_BeginLogo` 策略。
+- 四款游戏都 Hook `RegisterClassExW`，将窗口类背景刷改为黑色，避免启动白闪。
 
 ### 7.5 Mimalloc allocator patch
 
-三游戏均实现：
+除 Nightreign 外的三款游戏均实现：
 
 1. 在 `BEFORE_MAIN` 替换 system allocator getter。
 2. 在 `AFTER_RUNTIME_INIT` 查找 `CSMemoryImp` 或 `NS_SPRJ::CSMemoryImp`。
@@ -492,7 +495,7 @@ DLL 进程内校验失败时，必须停止游戏专用 Hook，不能继续把�
 
 ### 7.6 Regulation 保护
 
-- Elden Ring：Hook `CSRegulationStep::STEP_Idle`，调用原函数后取走并用游戏 allocator 释放 raw regulation buffer。
+- Elden Ring、Nightreign：Hook `CSRegulationStep::STEP_Idle`，调用原函数后取走并用游戏 allocator 释放 raw regulation buffer。
 - DS3、Sekiro：实现并验证旧式「阻止写 regulation 到存档」Hook。
 
 旧式 DS3/Sekiro 实现不得复制 me3 当前疑似错误的 `(s?-u)` 正则。必须使用正确模式、检查至少安装一个 Hook，并在零匹配时报告失败。
@@ -506,6 +509,19 @@ data1:/param/gameparam/gameparam.parambnd.dcx
 data1:/param/gameparam/gameparam_dlc1.parambnd.dcx
 data1:/param/gameparam/gameparam_dlc2.parambnd.dcx
 ```
+
+### 7.8 CPU 亲和性
+
+`cpu_affinity` 不再在进程早期立即应用。策略 `1` 至 `4` 在各 adapter 报告 `AFTER_GAME_DATA_READY` 后由独立 worker 异步应用，策略 `0` 保持现有亲和性。
+
+| 游戏 | 触发 step | 时机 |
+| --- | --- | --- |
+| Elden Ring | `TitleStep::STEP_InitMenu` | 原函数返回后 |
+| Nightreign | `TitleStep::STEP_InitMenu` | 原函数返回后 |
+| Sekiro | `SprjFileStep::STEP_Init` | 原函数返回后，与资产 FileStep Hook 共用安装路径 |
+| Dark Souls III | `TitleFlowStep::STEP_Init` | 原函数返回后 |
+
+触发 Hook 属于可选能力。安装失败时记录 warning 并保持现有 CPU 亲和性，不阻断 `AFTER_RUNTIME_INIT`、VFS、Logo、properties、regulation 或外部 DLL。卸载时先禁用 Hook，等待正在执行的调用结束，再移除 Hook；CPU worker 也会在卸载期间等待完成。
 
 ## 8. 分阶段实施计划
 
@@ -548,7 +564,7 @@ data1:/param/gameparam/gameparam_dlc2.parambnd.dcx
 
 ### 阶段 3：分析服务与生命周期
 
-目标：为三游戏 host 功能提供可验证的共同基础。
+目标：为多游戏 Host 功能提供可验证的共同基础。
 
 工作项：
 
@@ -611,7 +627,7 @@ data1:/param/gameparam/gameparam_dlc2.parambnd.dcx
 
 完成条件：ModEngine extension 行为不退化；不再导出或依赖项目自定义扩展 ABI，且跨游戏加载不会把 ER 专用逻辑应用到其他游戏。
 
-完成状态：已完成。项目自定义扩展 ABI、对应 fixture 和初始化分支已移除；项目自带扩展 DLL 已从当前仓库拆出；ModEngine extension 的加载、attach、逆序 detach 行为保持兼容。白闪、Logo、离线属性、allocator 和 regulation 已拆分为由 game trait 选择的内部 Host capability；FD4 与 SPRJ Logo、FD4 与旧式 SPRJ regulation 保护，以及三游戏 allocator 策略均具备独立安装路径。
+完成状态：已完成。项目自定义扩展 ABI、对应 fixture 和初始化分支已移除；项目自带扩展 DLL 已从当前仓库拆出；ModEngine extension 的加载、attach、逆序 detach 行为保持兼容。白闪、Logo、离线属性、allocator 和 regulation 已拆分为由 game trait 选择的内部 Host capability；FD4 与 SPRJ Logo、FD4 与旧式 SPRJ regulation 保护均具备独立安装路径，Elden Ring、Sekiro 与 Dark Souls III 具有各自的 allocator 策略，Nightreign 明确标记为不支持该补丁。
 
 ### 阶段 8：Sekiro 稳定支持
 
@@ -650,7 +666,7 @@ data1:/param/gameparam/gameparam_dlc2.parambnd.dcx
 
 自动开发状态：已完成。新增独立 Dark Souls III adapter，以 `SteamAPI_Init` 触发 `AFTER_RUNTIME_INIT`，接入 Win32 VFS、独立存档、Wwise、SPRJ FileStep、Dantelion/BND/EBL、`0xC0` BHD holder、BootBoost、离线属性、SPRJ Logo、白闪、DS3 debug allocator getter、`0x78` allocator table 和旧式 regulation 保护。Dantelion string/vector/device 路径已按 descriptor 支持 MSVC 2012 与 MSVC 2015 ABI；检测到三种 loose parambnd 任一覆盖时，会在属性初始化后应用 `Game.Debug.EnableRegulationFile=false`。当前启动日志明确标注实验性支持和强制 Arxan 中和，并报告 adapter、文件路由、runtime-ready 和 deferred capability 状态。
 
-阶段 9 验收状态：已完成（2026-07-18）。依据 Cinders 与 Dark Souls III 现场日志，已确认 loose param、SPRJ FileStep、Win32 文件路由、Dantelion/BND/EBL、BootBoost、独立存档、离线属性、mimalloc allocator 和 regulation protection 的请求状态与实际结果；其中 `CSMemoryImp::deinit` 的 Hook 失败按 me3 语义作为可选项跳过，最终 heap allocator capability 仍为 `APPLIED`。Wwise 在当前 Cinders 内容中没有匹配的 `.bnk`/`.wem` 条目，因此正确报告为 `NOT_REQUESTED`。`skip_intro` 已按 me3 的 after-runtime 登记顺序修正。dearxan C11 实现加入后，自动测试增至 42 项；Dark Souls III 仍保持实验性支持，并需要重新执行现场验收。
+阶段 9 验收状态：已完成（2026-07-18）。依据 Cinders 与 Dark Souls III 现场日志，已确认 loose param、SPRJ FileStep、Win32 文件路由、Dantelion/BND/EBL、BootBoost、独立存档、离线属性、mimalloc allocator 和 regulation protection 的请求状态与实际结果；其中 `CSMemoryImp::deinit` 的 Hook 失败按 me3 语义作为可选项跳过，最终 heap allocator capability 仍为 `APPLIED`。Wwise 在当前 Cinders 内容中没有匹配的 `.bnk`/`.wem` 条目，因此正确报告为 `NOT_REQUESTED`。`skip_intro` 已按 me3 的 after-runtime 登记顺序修正。dearxan C11 实现加入后，自动测试增至 43 项；Dark Souls III 仍保持实验性支持。
 
 ### 阶段 10：稳定化、发布与文档
 
@@ -663,7 +679,7 @@ data1:/param/gameparam/gameparam_dlc2.parambnd.dcx
 - 检查 launcher、DLL、extension 的游戏元数据一致性。
 - 统一 YAFSML 项目名、二进制名、配置文件名、发布包和文档。
 
-阶段 10 当前状态：进行中。重命名已完成：项目、Windows 版本资源、`YAFSML.exe`、`YAFSML.dll`、`YAFSML.ini`、环境变量、远程初始化导出、dist 归档和 GitHub Release 工作流均已直接切换到 YAFSML，不保留旧名称兼容入口。启动器已支持配置文件顶层 `game=...`，并按显式 `--launch-target`、配置值、Elden Ring 默认值的顺序选择游戏。Debug 构建、32 项 CTest 和 dist 内容检查已通过。剩余内容是三游戏统一发布验证、GitHub Release 实际运行复核、功能矩阵和已知限制整理；Dark Souls III 继续保留实验性标记。
+阶段 10 当前状态：进行中。重命名已完成：项目、Windows 版本资源、`YAFSML.exe`、`YAFSML.dll`、`YAFSML.ini`、环境变量、远程初始化导出、dist 归档和 GitHub Release 工作流均已直接切换到 YAFSML，不保留旧名称兼容入口。启动器已支持配置文件顶层 `game=...`，并按显式 `--launch-target`、配置值、Elden Ring 默认值的顺序选择游戏。Nightreign 已加入稳定支持；四款游戏的 CPU 亲和性均延迟至 game-data-ready step 后异步应用。Debug 构建、43 项 CTest 和 dist 内容检查已通过。剩余内容是四游戏统一发布验证、GitHub Release 实际运行复核、功能矩阵和已知限制整理；Dark Souls III 继续保留实验性标记。
 
 ## 9. 测试计划
 
@@ -671,7 +687,7 @@ data1:/param/gameparam/gameparam_dlc2.parambnd.dcx
 
 | 范围 | 用例 |
 | --- | --- |
-| Launcher/Game Registry | 三游戏 alias、App ID、EXE、工作目录、Steam 环境变量、显式路径和 Steam fallback |
+| Launcher/Game Registry | 四游戏 alias、App ID、EXE、工作目录、Steam 环境变量、显式路径和 Steam fallback |
 | Config | 默认值、game section 隔离、INI/TOML 顺序、UTF-8、相对路径、错误输入 |
 | VFS path | 分隔符、大小写、`.`、`..`、尾部 NUL、Unicode、长路径、symlink/junction 环 |
 | VFS mapping | last-wins、命中/未命中缓存、generation、fake UID、可写映射、recursion guard |
@@ -714,17 +730,17 @@ Dark Souls III 额外测试：
 当前配置模板位于 `src/YAFSML.ini`，发布包会将其复制为
 `YAFSML.ini`。独立启动器在未指定 `--launch-target` 时读取顶层 `game=...`，
 未配置时默认 Elden Ring；显式启动目标优先。加载器的通用补丁位于 `[patch]`，
-CPU 亲和性策略位于 `[tweak]`，日志设置位于 `[log]`，外部 DLL 和模组目录分别位于
+CPU 亲和性策略位于 `[tweak]`，并在四款游戏各自的 game-data-ready step 后异步应用；日志设置位于 `[log]`，外部 DLL 和模组目录分别位于
 `[dll]` 和 `[mod]`。Dark Souls III adapter 会安装实验性的共享 Host 与游戏适配 Hook，
 并强制启用 Arxan 中和，实际能力以状态日志和目标版本现场验证为准。全部选项、外部 DLL
 顺序和启动器参数已同步到仓库根目录的中英文 README。
 
-ModEngine2 TOML fallback 仍按 Game Registry 选择 `config_eldenring.toml`、`config_sekiro.toml` 或 `config_darksouls3.toml`。
+ModEngine2 TOML fallback 仍按 Game Registry 选择 `config_eldenring.toml`、`config_nightreign.toml`、`config_sekiro.toml` 或 `config_darksouls3.toml`。
 
 ### 10.2 当前实现状态修正
 
 前文阶段记录中的历史批次说明保留作为开发轨迹；当前代码和测试结果以本节及
-README 为准。阶段 9 当前 Debug 构建已通过 32 项 CTest。VFS fake UID 采用稳定的
+README 为准。当前 Debug 构建已通过 43 项 CTest。VFS fake UID 采用稳定的
 `\\me3??<entry-index>` 字符串，UID 在 VFS 生命周期内保持有效；缓存命中不复制
 字符串。无模组时跳过普通 VFS 查询，但配置的存档文件名替换仍安装所需的文件 Hook。
 
@@ -779,8 +795,8 @@ README 为准。阶段 9 当前 Debug 构建已通过 32 项 CTest。VFS fake UI
 
 后续按以下顺序推进：
 
-1. 完成三游戏的统一发布验证：标准 Steam 路径、显式 `--game-path`、launcher 注入、proxy DLL、native DLL 生命周期和各游戏受支持资源类型。
+1. 完成四游戏的统一发布验证：标准 Steam 路径、显式 `--game-path`、launcher 注入、proxy DLL、native DLL 生命周期和各游戏受支持资源类型。
 2. 完善发布包与功能矩阵：检查 dist 规则、游戏元数据、配置说明、已知限制和实验性支持标记。
 3. 完成 YAFSML 重命名后的发布元数据和文档复核。
 
-任何阶段完成前，不提前在下一个阶段复制游戏特定 signature 或 patch。每阶段必须先满足对应自动测试与 Elden Ring/Sekiro/DS3 的适用验收条件，再进入下一阶段。
+任何阶段完成前，不提前在下一个阶段复制游戏特定 signature 或 patch。每阶段必须先满足对应自动测试与 Elden Ring/Nightreign/Sekiro/DS3 的适用验收条件，再进入下一阶段。

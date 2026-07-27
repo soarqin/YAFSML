@@ -5,16 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.0] - 2026-07-27
 
 ### Added
 
 - Added a C11 static-library port of dearxan v0.5.3, including SteamStub 3.1 handling, Arxan analysis and patching, process-wide scheduling, and the v0.5.3 proxy-DLL entry detection behavior.
 - Added `disable_arxan`; Dark Souls III always enables Arxan neutralization.
+- Added game-data-ready lifecycle triggers for Elden Ring, Elden Ring Nightreign, Sekiro, and Dark Souls III.
+- Added asynchronous CPU affinity application after game data initialization, with processor-topology validation and unload-time worker synchronization.
 
 ### Changed
 
 - Matched me3 commit `6563ebb` before-main scheduling: early external DLLs now load after the Arxan entry stub or MSVC security-cookie initialization, even when Arxan neutralization is disabled.
+- Deferred CPU affinity until each game's verified data-ready step instead of applying it during early process initialization.
 
 ### Fixed
 
@@ -225,7 +228,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release.
 
-[Unreleased]: https://github.com/soarqin/YAFSML/compare/v0.7.4...HEAD
+[Unreleased]: https://github.com/soarqin/YAFSML/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/soarqin/YAFSML/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/soarqin/YAFSML/compare/v0.7.4...v0.8.0
 [0.7.4]: https://github.com/soarqin/YAFSML/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/soarqin/YAFSML/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/soarqin/YAFSML/compare/v0.7.1...v0.7.2

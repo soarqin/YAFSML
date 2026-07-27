@@ -15,7 +15,8 @@ DLL 加载。
 | Sekiro: Shadows Die Twice | `sekiro` | 稳定支持 |
 | Dark Souls III | `darksouls3` | 实验性适配器，启用 Arxan 中和 |
 
-Elden Ring 仍是主要目标。使用 `--launch-target sekiro` 选择 Sekiro；未指定
+Elden Ring 仍是主要目标。使用 `--launch-target nightreign`、
+`--launch-target sekiro` 或 `--launch-target darksouls3` 选择其他游戏。未指定
 `--launch-target` 时，启动器读取 `YAFSML.ini` 顶层的 `game=...`。未配置该值时
 默认启动 Elden Ring；显式启动目标始终优先。
 
@@ -74,7 +75,11 @@ Elden Ring 仍是主要目标。使用 `--launch-target sekiro` 选择 Sekiro；
 
 | 选项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `cpu_affinity` | `0` | 选择游戏进程的 CPU 亲和性策略：`0` 为所有逻辑核，`1` 为除第一个逻辑核外的所有逻辑核，`2` 为能效核，`3` 为性能核，`4` 为除第一个逻辑核外的性能核。在 Intel Ultra 系列 CPU 上运行《艾尔登法环》1.16.2 或更高版本时，不要使用 `2`、`3` 或 `4`。 |
+| `cpu_affinity` | `0` | 选择游戏进程的 CPU 亲和性策略：`0` 保持现有亲和性，`1` 使用除第一个逻辑核外的所有逻辑核，`2` 使用能效核，`3` 使用性能核，`4` 使用除第一个逻辑核外的性能核。四款游戏都会在游戏数据初始化后异步应用策略 `1` 至 `4`；不支持的处理器组布局或空掩码会保持现有亲和性。在 Intel Ultra 系列 CPU 上运行《艾尔登法环》1.16.2 或更高版本时，不要使用 `2`、`3` 或 `4`。 |
+
+游戏数据就绪触发器属于可选能力。如果无法安装对应 Hook，加载器会保持现有 CPU
+亲和性，并继续执行运行时初始化、VFS、Logo、属性、regulation 和外部 DLL
+能力。卸载时会等待亲和性工作线程完成。
 
 ### `[log]`
 
@@ -133,5 +138,7 @@ DLL 依赖普通条目，该依赖项也会提前加载。检测到循环依赖�
 - [toml-c](https://github.com/arp242/toml-c)：ModEngine2 TOML 兼容。
 - [wingetopt](https://github.com/alex85k/wingetopt)：命令行解析。
 - [mimalloc](https://github.com/microsoft/mimalloc)：加载器分配器。
+- [dearxan](https://github.com/tremwil/dearxan)：移植为 C11 的 Arxan 分析与中和实现。
+- [Zydis](https://github.com/zyantific/zydis)：dearxan 移植使用的 x86/x86-64 反汇编库。
 - [libofdf](https://github.com/Jan200101/libofdf)：Steam 库定位。
 - [LZMA SDK](https://7-zip.org/sdk.html)：公有领域压缩 SDK。
