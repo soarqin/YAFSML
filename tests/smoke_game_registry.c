@@ -10,6 +10,8 @@ int main(void) {
     EXPECT_NOT_NULL(game);
     EXPECT_EQ(game->id, ML_GAME_ELDEN_RING);
     EXPECT_EQ(game->steam_app_id, 1245620);
+    EXPECT_STREQ_W(game->game_data_ready_step_name, L"TitleStep::STEP_InitMenu");
+    EXPECT_EQ(game->game_data_ready_strategy, ML_GAME_DATA_READY_STEP_AFTER_ORIGINAL);
     EXPECT_STREQ_W(game->exe_relpaths[0], L"Game\\eldenring.exe");
     EXPECT_EQ(game->runtime_ready_trigger, ML_RUNTIME_READY_STEAM_API_INIT);
     EXPECT_EQ(game->logo_strategy, ML_LOGO_STRATEGY_FD4);
@@ -20,6 +22,8 @@ int main(void) {
     EXPECT_NOT_NULL(game);
     EXPECT_EQ(game->id, ML_GAME_NIGHTREIGN);
     EXPECT_EQ(game->steam_app_id, 2622380);
+    EXPECT_STREQ_W(game->game_data_ready_step_name, L"TitleStep::STEP_InitMenu");
+    EXPECT_EQ(game->game_data_ready_strategy, ML_GAME_DATA_READY_STEP_AFTER_ORIGINAL);
     EXPECT_STREQ_W(game->exe_relpaths[0], L"Game\\nightreign.exe");
     EXPECT_STREQ_W(game->save_root_name, L"Nightreign");
     EXPECT_STREQ_W(game->ini_section, L"nightreign");
@@ -39,6 +43,8 @@ int main(void) {
     EXPECT_NOT_NULL(game);
     EXPECT_EQ(game->id, ML_GAME_SEKIRO);
     EXPECT_EQ(game->steam_app_id, 814380);
+    EXPECT_STREQ_W(game->game_data_ready_step_name, L"SprjFileStep::STEP_Init");
+    EXPECT_EQ(game->game_data_ready_strategy, ML_GAME_DATA_READY_FILE_STEP_AFTER_ORIGINAL);
     EXPECT_STREQ_W(game->exe_relpaths[0], L"sekiro.exe");
     EXPECT_STREQ_W(game->save_root_name, L"Sekiro");
     EXPECT_STREQ_W(game->ini_section, L"sekiro");
@@ -54,6 +60,8 @@ int main(void) {
     game = ml_game_by_key(L"ds3");
     EXPECT_NOT_NULL(game);
     EXPECT_EQ(game->support_level, ML_SUPPORT_EXPERIMENTAL);
+    EXPECT_STREQ_W(game->game_data_ready_step_name, L"TitleFlowStep::STEP_Init");
+    EXPECT_EQ(game->game_data_ready_strategy, ML_GAME_DATA_READY_STEP_AFTER_ORIGINAL);
     EXPECT_EQ(game->stl_abi, ML_STL_ABI_MSVC2012);
     EXPECT_EQ(game->ebl_bhd_holder_offset, 0xC0);
     EXPECT_EQ(game->runtime_ready_trigger, ML_RUNTIME_READY_STEAM_API_INIT);

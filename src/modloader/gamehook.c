@@ -113,7 +113,8 @@ bool gamehook_install() {
                                install_allocator_before_main, (void *)game)) {
         ML_LOG_WARN(L"allocator", L"heap allocator capability HOOK_FAILED: could not schedule before-main stage");
     }
-    if (game->id == ML_GAME_ELDEN_RING && config.cpu_affinity_strategy != 0 &&
+    if (game->game_data_ready_strategy != ML_GAME_DATA_READY_UNSUPPORTED &&
+        config.cpu_affinity_strategy != 0 &&
         !ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_GAME_DATA_READY,
                                apply_process_settings_after_game_data, NULL)) {
         ML_LOG_WARN(L"common", L"could not schedule CPU affinity after game data initialization");

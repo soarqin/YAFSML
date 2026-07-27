@@ -54,6 +54,12 @@ typedef enum ml_regulation_strategy_e {
     ML_REGULATION_STRATEGY_SPRJ,
 } ml_regulation_strategy_t;
 
+typedef enum ml_game_data_ready_strategy_e {
+    ML_GAME_DATA_READY_UNSUPPORTED,
+    ML_GAME_DATA_READY_STEP_AFTER_ORIGINAL,
+    ML_GAME_DATA_READY_FILE_STEP_AFTER_ORIGINAL,
+} ml_game_data_ready_strategy_t;
+
 typedef struct ml_game_descriptor_s {
     ml_game_id_t id;
     const char *key;
@@ -69,6 +75,8 @@ typedef struct ml_game_descriptor_s {
     const wchar_t *file_step_name;
     const char *control_api_class;
     size_t ebl_bhd_holder_offset;
+    const wchar_t *game_data_ready_step_name;
+    ml_game_data_ready_strategy_t game_data_ready_strategy;
     ml_runtime_ready_trigger_t runtime_ready_trigger;
     ml_logo_strategy_t logo_strategy;
     ml_allocator_strategy_t allocator_strategy;
