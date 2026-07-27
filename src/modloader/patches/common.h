@@ -17,6 +17,8 @@ extern "C" {
 #endif
 
 extern void common_apply_process_settings(void);
+extern bool common_schedule_process_settings(void);
+extern void common_wait_for_process_settings(void);
 extern bool common_install_file_routing(const ml_game_descriptor_t *game);
 extern void common_uninstall_file_routing(void);
 extern bool common_install_ime(void);

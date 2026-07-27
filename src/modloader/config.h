@@ -24,6 +24,7 @@ typedef struct {
     bool patch_mem_dedicated_heap;
     uint32_t patch_mem_heap_size;
     bool boot_boost;
+    bool disable_arxan;
     wchar_t replaced_save_filename[64];
     wchar_t replaced_seamless_coop_save_filename[64];
     bool enable_ime;

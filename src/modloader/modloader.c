@@ -17,6 +17,8 @@
 
 #include "process/image.h"
 
+#include "dearxan.h"
+
 #include "patches/window_flash.h"
 
 #include "proxy/winhttp.h"
@@ -34,29 +36,48 @@ HMODULE module_instance = NULL;
 typedef int (WINAPI*entrypoint_t)(void);
 static entrypoint_t orig_entrypoint = NULL;
 static volatile LONG modloader_initialized;
-static volatile LONG before_main_reached;
 static void *entrypoint_hook_target;
+static volatile LONG before_main_result;
+static ULONGLONG dearxan_neuter_start;
 
 static void load_extdlls_after_runtime(ml_lifecycle_phase_t phase, void *userp) {
     (void)phase;
     (void)userp;
-    extdlls_load_all();
+    if (InterlockedCompareExchange(&before_main_result, 0, 0) == 1) {
+        extdlls_load_all();
+    } else {
+        ML_LOG_WARN(L"extdll", L"normal external DLL loading skipped because before-main work failed or did not run");
+    }
 }
 
 static bool hook_game_entrypoint(void);
 
-static void before_game_main(void) {
-    if (entrypoint_hook_target != NULL) MH_DisableHook(entrypoint_hook_target);
-    if (InterlockedCompareExchange(&before_main_reached, 1, 0) != 0) return;
+static void before_game_main(bool is_arxan_detected,
+                             bool is_executing_entrypoint, void *opaque) {
+    (void)opaque;
+    ML_LOG_INFO(L"dearxan", L"after-Arxan reached; detected=%ls blocking-entrypoint=%ls",
+                is_arxan_detected ? L"true" : L"false",
+                is_executing_entrypoint ? L"true" : L"false");
     ml_lifecycle_advance(ML_LIFECYCLE_PHASE_BEFORE_MAIN);
-    extdlls_load_early();
+    InterlockedExchange(&before_main_result,
+                        extdlls_load_early() ? 1 : -1);
+}
+
+static void after_neuter_arxan(const DearxanResult *result, void *opaque) {
+    if (result == NULL) return;
+    if (result->status == DearxanSuccess) {
+        ML_LOG_INFO(L"dearxan", L"Arxan neutralization completed in %llu ms",
+                    GetTickCount64() - dearxan_neuter_start);
+    } else {
+        ML_LOG_WARN(L"dearxan", L"Arxan neutralization failed: %hs",
+                    result->error_msg == NULL ? "unknown error" : result->error_msg);
+    }
+    before_game_main(result->is_arxan_detected,
+                     result->is_executing_entrypoint, opaque);
 }
 
 static bool modloader_init(void) {
-    wchar_t remote_init[2];
-    bool remote_init_mode;
     if (InterlockedCompareExchange(&modloader_initialized, 1, 0) != 0) return false;
-    remote_init_mode = GetEnvironmentVariableW(L"YAFSML_REMOTE_INIT", remote_init, 2) != 0;
     load_winhttp_proxy();
     load_dxgi_proxy();
     load_dinput8_proxy();
@@ -68,11 +89,19 @@ static bool modloader_init(void) {
     ml_window_flash_install();
     extdlls_prepare();
     gamehook_install();
-    if (!remote_init_mode && orig_entrypoint == NULL && !hook_game_entrypoint()) {
-        ML_LOG_WARN(L"modloader", L"could not install game entrypoint hook; before-main work is disabled");
-        return false;
+    {
+        const ml_game_descriptor_t *game = ml_game_context_get();
+        const bool disable_arxan = config.disable_arxan ||
+            (game != NULL && game->id == ML_GAME_DARK_SOULS_3);
+        ML_LOG_INFO(L"dearxan", L"Arxan neutralization requested=%ls effective=%ls",
+                    config.disable_arxan ? L"true" : L"false",
+                    disable_arxan ? L"true" : L"false");
+        if (disable_arxan) {
+            dearxan_neuter_start = GetTickCount64();
+            dearxan_neuter_arxan(after_neuter_arxan, NULL);
+        }
+        else dearxan_schedule_after_arxan(before_game_main, NULL);
     }
-    if (remote_init_mode) before_game_main();
     if (ml_game_context_get() != NULL &&
         ml_game_context_get()->runtime_ready_trigger == ML_RUNTIME_READY_STEAM_API_INIT) {
         if (!ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_RUNTIME_INIT,
@@ -94,11 +123,19 @@ __declspec(dllexport) DWORD WINAPI YAFSMLInit(LPVOID parameter) {
 }
 
 int WINAPI new_entrypoint(void) {
+    entrypoint_t entrypoint = (entrypoint_t)entrypoint_hook_target;
+    MH_STATUS status = entrypoint_hook_target != NULL
+        ? MH_DisableHook(entrypoint_hook_target) : MH_ERROR_NOT_CREATED;
+    if (status != MH_OK && status != MH_ERROR_DISABLED) {
+        ML_LOG_ERROR(L"modloader", L"could not disable bootstrap entrypoint hook");
+        return orig_entrypoint();
+    }
     if (InterlockedCompareExchange(&modloader_initialized, 0, 0) == 0) {
         (void)modloader_init();
     }
-    before_game_main();
-    return orig_entrypoint();
+    /* Run the restored image entrypoint, not MinHook's trampoline: the
+       dearxan scheduler patched its __security_init_cookie call in-place. */
+    return entrypoint();
 }
 
 static bool hook_game_entrypoint(void) {

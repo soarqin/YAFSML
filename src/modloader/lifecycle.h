@@ -16,6 +16,7 @@ typedef enum ml_lifecycle_phase_e {
     ML_LIFECYCLE_PHASE_BEFORE_MAIN,
     ML_LIFECYCLE_PHASE_AFTER_RUNTIME_INIT,
     ML_LIFECYCLE_PHASE_AFTER_PROPERTIES_READY,
+    ML_LIFECYCLE_PHASE_AFTER_GAME_DATA_READY,
 } ml_lifecycle_phase_t;
 
 typedef void (*ml_lifecycle_callback_t)(ml_lifecycle_phase_t phase, void *userp);

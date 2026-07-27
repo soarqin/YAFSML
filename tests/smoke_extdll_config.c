@@ -3,13 +3,19 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <shlwapi.h>
 
 #include "test_common.h"
 #include "modloader/extdll.h"
 
+static wchar_t fixture_path[MAX_PATH];
+
 void config_full_path(wchar_t *path, const wchar_t *filename) {
-    (void)filename;
-    lstrcpyW(path, L".");
+    if (filename != NULL && lstrcmpW(filename, L"extdll_fixture.dll") == 0) {
+        lstrcpyW(path, fixture_path);
+    } else {
+        lstrcpyW(path, L".");
+    }
 }
 
 static int expect_order(const char *first, const char *second, const char *third) {
@@ -20,6 +26,29 @@ static int expect_order(const char *first, const char *second, const char *third
 }
 
 int main(void) {
+    typedef LONG (*fixture_count_t)(void);
+    HMODULE fixture;
+    fixture_count_t init_count;
+    fixture_count_t connector_count;
+
+    EXPECT_TRUE(GetModuleFileNameW(NULL, fixture_path, MAX_PATH) != 0);
+    PathRemoveFileSpecW(fixture_path);
+    PathAppendW(fixture_path, L"extdll_fixture.dll");
+    extdlls_add_spec("fixture", "extdll_fixture.dll|early");
+    extdlls_test_load_at(0);
+    fixture = GetModuleHandleW(L"extdll_fixture.dll");
+    EXPECT_NOT_NULL(fixture);
+    init_count = (fixture_count_t)GetProcAddress(fixture, "extdll_fixture_init_count");
+    connector_count = (fixture_count_t)GetProcAddress(fixture, "extdll_fixture_connector_count");
+    EXPECT_NOT_NULL(init_count);
+    EXPECT_NOT_NULL(connector_count);
+    EXPECT_EQ(init_count(), 1);
+    EXPECT_EQ(connector_count(), 1);
+    extdlls_test_load_at(0);
+    EXPECT_EQ(init_count(), 1);
+    extdlls_unload_all();
+    EXPECT_NULL(GetModuleHandleW(L"extdll_fixture.dll"));
+
     extdlls_add_spec("plain", "plain.dll");
     extdlls_add_spec("early", "early.dll|early");
     extdlls_add_spec("delayed", "delayed.dll|delay,500|after,plain");

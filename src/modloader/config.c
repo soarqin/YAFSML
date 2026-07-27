@@ -60,6 +60,8 @@ static int ini_read_cb(void *user, const char *section,
             if (end != value && *end == '\0' && size <= UINT32_MAX) config.patch_mem_heap_size = (uint32_t)size;
         } else if (lstrcmpA(name, "boot_boost") == 0) {
             config.boot_boost = value_to_bool(value);
+        } else if (lstrcmpA(name, "disable_arxan") == 0) {
+            config.disable_arxan = value_to_bool(value);
         } else if (lstrcmpA(name, "replace_save_filename") == 0) {
             MultiByteToWideChar(CP_UTF8, 0, value, -1, config.replaced_save_filename, 64);
             config.replaced_save_filename[63] = L'\0';
@@ -125,6 +127,8 @@ bool config_load_toml(FILE *f) {
     if (value.ok && value.u.b) {
         ml_log_enable_console();
     }
+    value = toml_table_bool(me, "disable_arxan");
+    if (value.ok) config.disable_arxan = value.u.b;
     {
         toml_value_t log_level = toml_table_string(me, "log_level");
         if (log_level.ok) {

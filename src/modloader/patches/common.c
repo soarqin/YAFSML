@@ -170,8 +170,66 @@ static bool hook_wwise_archive_position_resolver() {
 }
 
 void common_apply_process_settings(void) {
+    uint64_t applied_mask = 0;
+    uint32_t error_code = ERROR_SUCCESS;
     if (config.cpu_affinity_strategy != 0) {
-        set_process_cpu_affinity_strategy(config.cpu_affinity_strategy);
+        if (set_process_cpu_affinity_strategy(config.cpu_affinity_strategy,
+                                              &applied_mask, &error_code)) {
+            ML_LOG_INFO(L"common", L"CPU affinity strategy %d APPLIED mask=0x%llx",
+                        config.cpu_affinity_strategy,
+                        (unsigned long long)applied_mask);
+        } else {
+            ML_LOG_WARN(L"common", L"CPU affinity strategy %d SKIPPED error=%lu",
+                        config.cpu_affinity_strategy,
+                        (unsigned long)error_code);
+        }
+    }
+}
+
+static DWORD WINAPI apply_process_settings_worker(void *parameter) {
+    (void)parameter;
+    ML_LOG_INFO(L"common", L"CPU affinity worker started thread=%lu",
+                (unsigned long)GetCurrentThreadId());
+    common_apply_process_settings();
+    return 0;
+}
+
+static SRWLOCK process_settings_worker_lock = SRWLOCK_INIT;
+static HANDLE process_settings_worker;
+
+bool common_schedule_process_settings(void) {
+    DWORD thread_id;
+    HANDLE thread;
+    if (config.cpu_affinity_strategy == 0) return true;
+    AcquireSRWLockExclusive(&process_settings_worker_lock);
+    if (process_settings_worker != NULL) {
+        ReleaseSRWLockExclusive(&process_settings_worker_lock);
+        return true;
+    }
+    thread = CreateThread(NULL, 0, apply_process_settings_worker, NULL, 0,
+                          &thread_id);
+    if (thread == NULL) {
+        ReleaseSRWLockExclusive(&process_settings_worker_lock);
+        ML_LOG_WARN(L"common", L"could not create CPU affinity worker error=%lu",
+                    (unsigned long)GetLastError());
+        return false;
+    }
+    process_settings_worker = thread;
+    ReleaseSRWLockExclusive(&process_settings_worker_lock);
+    ML_LOG_INFO(L"common", L"CPU affinity strategy %d scheduled asynchronously worker=%lu",
+                config.cpu_affinity_strategy, (unsigned long)thread_id);
+    return true;
+}
+
+void common_wait_for_process_settings(void) {
+    HANDLE thread;
+    AcquireSRWLockExclusive(&process_settings_worker_lock);
+    thread = process_settings_worker;
+    process_settings_worker = NULL;
+    ReleaseSRWLockExclusive(&process_settings_worker_lock);
+    if (thread != NULL) {
+        (void)WaitForSingleObject(thread, INFINITE);
+        CloseHandle(thread);
     }
 }
 
@@ -234,6 +292,7 @@ bool common_install_wwise(void) {
 
 void common_uninstall(void) {
     void **targets[2] = { &wwise_hook_target, &ime_hook_target };
+    common_wait_for_process_settings();
     for (size_t i = 0; i < 2; i++) {
         void *target = *targets[i];
         if (target == NULL) continue;

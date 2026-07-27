@@ -58,7 +58,7 @@ bool darksouls3_install(void) {
         game->support_level != ML_SUPPORT_EXPERIMENTAL ||
         game->runtime_ready_trigger != ML_RUNTIME_READY_STEAM_API_INIT) return false;
 
-    ML_LOG_WARN(L"darksouls3", L"experimental adapter enabled; dearxan is not required or scheduled");
+    ML_LOG_WARN(L"darksouls3", L"experimental adapter enabled; Arxan neutralization is forced on");
     if (ml_asset_hooks_loose_params_present(game)) {
         if (ml_properties_set_loose_params(true)) {
             ML_LOG_INFO(L"darksouls3", L"loose param property override scheduled");

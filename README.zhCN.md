@@ -13,7 +13,7 @@ DLL 加载。
 | Elden Ring | `eldenring` | 稳定支持 |
 | Elden Ring Nightreign | `nightreign` | 稳定支持 |
 | Sekiro: Shadows Die Twice | `sekiro` | 稳定支持 |
-| Dark Souls III | `darksouls3` | 实验性适配器，不包含 Arxan 中和 |
+| Dark Souls III | `darksouls3` | 实验性适配器，启用 Arxan 中和 |
 
 Elden Ring 仍是主要目标。使用 `--launch-target sekiro` 选择 Sekiro；未指定
 `--launch-target` 时，启动器读取 `YAFSML.ini` 顶层的 `game=...`。未配置该值时
@@ -55,7 +55,8 @@ Elden Ring 仍是主要目标。使用 `--launch-target sekiro` 选择 Sekiro；
 ### `[patch]`
 
 该 section 包含通用补丁设置。加载器仅对当前游戏应用受支持的设置。Dark Souls III
-仍为实验性适配，且不需要或包含 Arxan 中和。
+仍为实验性适配。项目包含 dearxan v0.5.3 的精简 C11 实现；其 before-main
+调度对齐 me3 `6563ebb`，Dark Souls III 会强制启用 Arxan 中和。
 
 | 选项 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -64,6 +65,7 @@ Elden Ring 仍是主要目标。使用 `--launch-target sekiro` 选择 Sekiro；
 | `patch_mem` | `1` | 使用 mimalloc 替换 Dantelion 分配器。按照 me3 的行为，Nightreign 不支持该补丁。 |
 | `patch_mem_heap_size` | `0` | mimalloc 专用堆大小，单位为 MB；`0` 在当前游戏支持 `patch_mem` 时使用对应默认值。 |
 | `boot_boost` | `1` | 缓存解密后的 BHD 标头，减少归档启动时间。 |
+| `disable_arxan` | `0` | 在 Arxan 入口桩完成后执行中和。Dark Souls III 始终启用此选项。 |
 | `replace_save_filename` | 留空 | 替换存档文件名；以点号开头时仅替换扩展名。 |
 | `replace_seamless_coop_save_filename` | 留空 | 替换 Seamless Co-op 使用的额外存档文件名。 |
 | `enable_ime` | `0` | 为需要非拉丁文字输入的模组保持 IME 启用。 |

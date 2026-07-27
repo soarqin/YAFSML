@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added a C11 static-library port of dearxan v0.5.3, including SteamStub 3.1 handling, Arxan analysis and patching, process-wide scheduling, and the v0.5.3 proxy-DLL entry detection behavior.
+- Added `disable_arxan`; Dark Souls III always enables Arxan neutralization.
+
+### Changed
+
+- Matched me3 commit `6563ebb` before-main scheduling: early external DLLs now load after the Arxan entry stub or MSVC security-cookie initialization, even when Arxan neutralization is disabled.
+
+### Fixed
+
+- Matched me3's ModEngine compatibility initializer ABI without dereferencing the returned extension object, and prevented duplicate external DLL initialization.
+
 ## [0.8.0] - 2026-07-25
 
 ### Added

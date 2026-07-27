@@ -49,6 +49,15 @@ static void install_regulation_after_runtime(ml_lifecycle_phase_t phase, void *u
     (void)ml_regulation_install((const ml_game_descriptor_t *)userp);
 }
 
+static void apply_process_settings_after_game_data(ml_lifecycle_phase_t phase,
+                                                   void *userp) {
+    (void)phase;
+    (void)userp;
+    if (!common_schedule_process_settings()) {
+        ML_LOG_WARN(L"common", L"could not create post-game-data CPU affinity worker");
+    }
+}
+
 static void install_allocator_after_runtime(ml_lifecycle_phase_t phase, void *userp) {
     (void)phase;
     (void)ml_allocator_install_after_runtime((const ml_game_descriptor_t *)userp);
@@ -94,7 +103,6 @@ bool gamehook_install() {
         ML_LOG_WARN(L"gamehook", L"%ls adapter is not implemented; game hooks are disabled", game->title);
         return false;
     }
-    common_apply_process_settings();
     /* me3 schedules the logo redirect before other after-runtime host work. */
     if (config.skip_intro &&
         !ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_RUNTIME_INIT, install_logo_after_runtime, (void *)game)) {
@@ -104,6 +112,11 @@ bool gamehook_install() {
         !ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_BEFORE_MAIN,
                                install_allocator_before_main, (void *)game)) {
         ML_LOG_WARN(L"allocator", L"heap allocator capability HOOK_FAILED: could not schedule before-main stage");
+    }
+    if (game->id == ML_GAME_ELDEN_RING && config.cpu_affinity_strategy != 0 &&
+        !ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_GAME_DATA_READY,
+                               apply_process_settings_after_game_data, NULL)) {
+        ML_LOG_WARN(L"common", L"could not schedule CPU affinity after game data initialization");
     }
     if (!ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_RUNTIME_INIT, install_properties_after_runtime, (void *)game)) {
         ML_LOG_WARN(L"properties", L"could not schedule installation");

@@ -77,6 +77,7 @@ jobs:
           Copy-Item "README.zhCN.md"             "$pkgDir/"
           Copy-Item "LICENSE"                    "$pkgDir/"
           Copy-Item "CHANGELOG.md"               "$pkgDir/"
+          Copy-Item "THIRD_PARTY_NOTICES.md"     "$pkgDir/"
           Copy-Item "build/bin/YAFSML.exe" "$pkgDir/"
           Copy-Item "build/bin/YAFSML.dll" "$pkgDir/"
           Copy-Item "src/YAFSML.ini"       "$pkgDir/"

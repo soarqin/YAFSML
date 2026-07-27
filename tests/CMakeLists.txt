@@ -33,6 +33,8 @@ set(SMOKE_smoke_win32_hooks_SOURCES
 set(SMOKE_smoke_win32_hooks_LIBRARIES minhook shlwapi)
 set(SMOKE_smoke_win32_hooks_DEFINITIONS ML_WIN32_HOOKS_TEST)
 set(SMOKE_smoke_lifecycle_SOURCES ${CMAKE_SOURCE_DIR}/src/modloader/lifecycle.c)
+set(SMOKE_smoke_cpu_affinity_LIBRARIES process)
+set(SMOKE_smoke_fd4_step_SOURCES ${CMAKE_SOURCE_DIR}/src/process/fd4_step_static.c)
 set(SMOKE_smoke_logo_SOURCES ${CMAKE_SOURCE_DIR}/src/modloader/patches/logo.c)
 set(SMOKE_smoke_dlrf_SOURCES ${CMAKE_SOURCE_DIR}/src/process/dlrf.c)
 set(SMOKE_smoke_rip_scan_SOURCES ${CMAKE_SOURCE_DIR}/src/process/rip_scan.c)
@@ -43,6 +45,24 @@ set(SMOKE_smoke_launcher_game_LIBRARIES inih shlwapi)
 set(SMOKE_smoke_extdll_config_SOURCES ${CMAKE_SOURCE_DIR}/src/modloader/extdll.c)
 set(SMOKE_smoke_extdll_config_LIBRARIES shlwapi)
 set(SMOKE_smoke_extdll_config_DEFINITIONS ML_EXTDLL_TEST)
+foreach(SMOKE_TARGET
+        smoke_dearxan_crypto
+        smoke_dearxan_abi
+        smoke_dearxan_entrypoint
+        smoke_dearxan_steamstub
+        smoke_dearxan_vm
+        smoke_dearxan_image
+        smoke_dearxan_analysis
+        smoke_dearxan_patch
+        smoke_dearxan_scheduler)
+    set(SMOKE_${SMOKE_TARGET}_LIBRARIES dearxan)
+endforeach()
+set(SMOKE_smoke_dearxan_vm_LIBRARIES dearxan Zydis)
+
+add_library(extdll_fixture SHARED fixtures/extdll_fixture.c)
+set_target_properties(extdll_fixture PROPERTIES
+    PREFIX ""
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
 foreach(SMOKE_TARGET smoke_vfs smoke_vfs_writable_mt smoke_vfs_generation_mt)
     set(SMOKE_${SMOKE_TARGET}_SOURCES ${CMAKE_SOURCE_DIR}/src/modloader/vfs.c)
@@ -85,3 +105,11 @@ foreach(SMOKE_SOURCE ${SMOKE_SOURCES})
     endif ()
     add_test(NAME ${SMOKE_TARGET} COMMAND ${SMOKE_TARGET})
 endforeach()
+
+add_dependencies(smoke_extdll_config extdll_fixture)
+
+add_executable(benchmark_dearxan_analysis EXCLUDE_FROM_ALL
+    benchmark_dearxan_analysis.c)
+target_link_libraries(benchmark_dearxan_analysis PRIVATE dearxan)
+target_include_directories(benchmark_dearxan_analysis PRIVATE
+    ${CMAKE_SOURCE_DIR}/src)

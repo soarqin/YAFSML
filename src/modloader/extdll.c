@@ -37,9 +37,12 @@ typedef struct extdll_t {
     int after_count;
     int after_capacity;
     HMODULE dll_module;
-    void *extension_object;
     uint32_t load_order;
+    bool module_load_attempted;
+    bool init_attempted;
 } extdll_t;
+
+static const unsigned char modengine_connector_shim;
 
 static extdll_t *extdlls = NULL;
 static int extdll_count = 0;
@@ -352,35 +355,35 @@ static HMODULE load_extdll_module(const extdll_t *extdll) {
     return LoadLibraryW(path);
 }
 
-static void load_extdll_one(int index) {
+static bool preload_extdll_one(int index) {
     extdll_t *extdll = &extdlls[index];
-    HMODULE dll;
-    if (extdll->dll_module != NULL) return;
-    dll = load_extdll_module(extdll);
-    extdll->dll_module = dll;
-    if (dll == NULL) {
+    if (extdll->module_load_attempted) return extdll->dll_module != NULL;
+    extdll->module_load_attempted = true;
+    extdll->dll_module = load_extdll_module(extdll);
+    if (extdll->dll_module == NULL) {
         ML_LOG_ERROR(L"extdll", L"cannot load external DLL %hs from `%ls`", extdll->name, extdll->base_path);
-        return;
+        return false;
     }
     extdll->load_order = (uint32_t)InterlockedIncrement(&load_counter);
     ML_LOG_INFO(L"extdll", L"loaded external DLL %hs from `%ls`", extdll->name, extdll->base_path);
-    extdll->extension_object = NULL;
+    return true;
+}
+
+static bool load_extdll_one(int index) {
+    extdll_t *extdll = &extdlls[index];
+    void *extension_object = NULL;
+    if (!preload_extdll_one(index)) return false;
+    if (extdll->init_attempted) return true;
+    extdll->init_attempted = true;
     {
-        FARPROC me_ext_init = GetProcAddress(dll, "modengine_ext_init");
-        if (me_ext_init == NULL) return;
-        if (!((bool(*)(void *, void **))me_ext_init)(NULL, &extdll->extension_object)) return;
-        ML_LOG_INFO(L"extdll", L"initialized external DLL %hs using ModEngine API", extdll->name);
-        if (extdll->extension_object == NULL) return;
-        {
-            void **vtable = *(void***)extdll->extension_object;
-            if (vtable == NULL) return;
-            /* Call ModEngineExtension::on_attach(). */
-            ((void(*)(void *))vtable[1])(extdll->extension_object);
-            /* Call ModEngineExtension::id() to get the extension ID. */
-            ML_LOG_INFO(L"extdll", L"attached extension ID: %hs",
-                        ((const char *(*)(void *))vtable[3])(extdll->extension_object));
-        }
+        FARPROC me_ext_init = GetProcAddress(extdll->dll_module, "modengine_ext_init");
+        if (me_ext_init == NULL) return true;
+        if (!((bool(*)(const void *, void **))me_ext_init)(
+                &modengine_connector_shim, &extension_object)) return false;
+        ML_LOG_INFO(L"extdll", L"invoked ModEngine compatibility initializer for external DLL %hs",
+                    extdll->name);
     }
+    return true;
 }
 
 static DWORD WINAPI extdlls_load_delayed(LPVOID parameter) {
@@ -399,32 +402,33 @@ static DWORD WINAPI extdlls_load_delayed(LPVOID parameter) {
     return 0;
 }
 
-static void extdlls_load(bool early) {
+static bool extdlls_load(bool early) {
     bool has_delayed = false;
+    bool loaded = true;
 
     if (ml_game_context_get() == NULL) {
         ML_LOG_WARN(L"extdll", L"external DLLs are disabled because the game context is unavailable");
-        return;
+        return false;
     }
     for (int i = 0; i < extdll_count; i++) {
         if ((extdlls[i].load_condition < 0) != early ||
             extdlls[i].load_condition > 0 ||
             extdlls[i].load_condition == EXTDLL_LOAD_AFTER_DELAY) continue;
-        load_extdll_one(i);
+        if (!load_extdll_one(i)) loaded = false;
     }
-    if (early) return;
+    if (early) return loaded;
     for (int i = 0; i < extdll_count; i++) {
         if (extdlls[i].load_condition <= 0 &&
             extdlls[i].load_condition != EXTDLL_LOAD_AFTER_DELAY) continue;
         has_delayed = true;
         break;
     }
-    if (!has_delayed || delayed_worker != NULL) return;
+    if (!has_delayed || delayed_worker != NULL) return loaded;
     if (delayed_cancel_event == NULL) {
         delayed_cancel_event = CreateEventW(NULL, TRUE, FALSE, NULL);
         if (delayed_cancel_event == NULL) {
             ML_LOG_ERROR(L"extdll", L"cannot create delayed external DLL worker event");
-            return;
+            return false;
         }
     }
     delayed_worker = CreateThread(NULL, 0, extdlls_load_delayed, NULL, 0, NULL);
@@ -433,14 +437,15 @@ static void extdlls_load(bool early) {
     } else {
         ML_LOG_INFO(L"extdll", L"scheduled delayed external DLL loading");
     }
+    return loaded;
 }
 
-void extdlls_load_early() {
-    extdlls_load(true);
+bool extdlls_load_early() {
+    return extdlls_load(true);
 }
 
 void extdlls_load_all() {
-    extdlls_load(false);
+    (void)extdlls_load(false);
 }
 
 void extdlls_unload_all() {
@@ -465,14 +470,6 @@ void extdlls_unload_all() {
         if (extdll == NULL) break;
         if (extdll->dll_module) {
             ML_LOG_INFO(L"extdll", L"uninitializing external DLL %hs", extdll->name);
-            if (extdll->extension_object) {
-                void **vtable = *(void***)extdll->extension_object;
-                if (vtable) {
-                    /* Call ModEngineExtension::on_detach(). */
-                    ((void(*)(void*))vtable[2])(extdll->extension_object);
-                }
-                extdll->extension_object = NULL;
-            }
             FreeLibrary(extdll->dll_module);
             extdll->dll_module = NULL;
             extdll->load_order = 0;
@@ -535,4 +532,9 @@ const char *extdlls_test_after_at(int index, int dependency) {
     if (index < 0 || index >= extdll_count || dependency < 0 || dependency >= extdlls[index].after_count) return NULL;
     return extdlls[index].after[dependency];
 }
+
+void extdlls_test_load_at(int index) {
+    if (index >= 0 && index < extdll_count) load_extdll_one(index);
+}
+
 #endif

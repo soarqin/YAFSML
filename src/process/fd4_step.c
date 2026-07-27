@@ -8,6 +8,7 @@
 
 #include "fd4_step.h"
 
+#include "fd4_step_static.h"
 #include "pe.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -139,6 +140,27 @@ static void fd4_step_build_for_image(void *image_base) {
     }
 }
 
+static bool fd4_step_find_static(void *image_base, const wchar_t *step_name,
+                                 fd4_step_static_result_t *result) {
+    const IMAGE_SECTION_HEADER *text;
+    const IMAGE_SECTION_HEADER *data;
+    const IMAGE_SECTION_HEADER *rdata;
+    fd4_step_static_sections_t sections = { 0 };
+
+    if (image_base == NULL || step_name == NULL || result == NULL) return false;
+    text = pe_section_by_name(image_base, ".text");
+    data = pe_section_by_name(image_base, ".data");
+    rdata = pe_section_by_name(image_base, ".rdata");
+    if (text == NULL || data == NULL || rdata == NULL) return false;
+
+    sections.text = pe_section_data(image_base, text, &sections.text_size);
+    sections.text_va = (uintptr_t)sections.text;
+    sections.data_va = (uintptr_t)pe_section_data(image_base, data, &sections.data_size);
+    sections.rdata = pe_section_data(image_base, rdata, &sections.rdata_size);
+    sections.rdata_va = (uintptr_t)sections.rdata;
+    return fd4_step_static_find(&sections, step_name, result);
+}
+
 static BOOL CALLBACK fd4_step_init_once(PINIT_ONCE init_once, PVOID parameter, PVOID *context) {
     (void)init_once;
     (void)parameter;
@@ -217,10 +239,19 @@ void **fd4_step_find_slot(const wchar_t *step_name) {
     fd4_step_rebuild_locked();
     slot = fd4_step_lookup_unlocked(step_name);
     ReleaseSRWLockExclusive(&fd4_step_lock);
+    if (slot == NULL) {
+        fd4_step_static_result_t result;
+        if (fd4_step_find_static(GetModuleHandleW(NULL), step_name, &result)) {
+            slot = result.slot;
+        }
+    }
     return slot;
 }
 
 void *fd4_step_find(const wchar_t *step_name) {
     void **slot = fd4_step_find_slot(step_name);
-    return slot != NULL ? *slot : NULL;
+    fd4_step_static_result_t result;
+    if (slot != NULL && *slot != NULL) return *slot;
+    return fd4_step_find_static(GetModuleHandleW(NULL), step_name, &result)
+        ? result.step : NULL;
 }

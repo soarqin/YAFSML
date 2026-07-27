@@ -18,7 +18,7 @@ me3 对照仓库、分支与同步提交以 [`docs/me3-repo.md`](me3-repo.md) �
 | Sekiro: Shadows Die Twice | `814380` | `sekiro.exe` | 稳定支持 |
 | Dark Souls III | `374320` | `Game\\DarkSoulsIII.exe` | 实验性支持 |
 
-Dark Souls III 已在不使用 dearxan 或等效 C 实现的情况下完成阶段 9。现场验收表明 Arxan 中和不是当前实验性 adapter 的必要条件。dearxan 记录为未安排项目，不作为阶段验收、发布或提升支持等级的前置条件；支持等级仍根据长期运行、回到标题、切图和调试器附加等稳定性验证决定。
+Dark Souls III 已完成阶段 9，并继续保持实验性支持。项目现已加入 dearxan v0.5.3 的 C11 实现；Dark Souls III 会强制启用 Arxan 中和。支持等级仍根据长期运行、回到标题、切图和调试器附加等稳定性验证决定。
 
 ### 2.2 VFS 的完成标准
 
@@ -62,7 +62,7 @@ Dark Souls III 已在不使用 dearxan 或等效 C 实现的情况下完成阶�
 ### 2.5 不纳入本计划的内容
 
 - Proton、Linux 和 macOS 支持。
-- dearxan、Arxan 反制或其他代码保护中和实现；当前为未安排项目。
+- dearxan v0.5.3 的 C11 实现与 Arxan 中和；before-main 调度采用 me3 `6563ebb` 的语义。
 - Sentry、联网遥测、自动更新器、安装器与网站基础设施。
 - me3 的 Rust closure Hook 框架和 rkyv 共享内存 RPC。
 - me3 `.me3` Profile 格式兼容。
@@ -77,7 +77,7 @@ Dark Souls III 已在不使用 dearxan 或等效 C 实现的情况下完成阶�
 当前核心架构已完成多游戏拆分，但产品支持范围仍不完整：
 
 - launcher 已由 Game Registry 驱动，并支持 Elden Ring、Sekiro 与实验性的 Dark Souls III 目标。
-- Elden Ring、Sekiro 与 Dark Souls III 均具有独立 adapter；Dark Souls III 保持实验性，且不包含 Arxan 中和。
+- Elden Ring、Sekiro 与 Dark Souls III 均具有独立 adapter；Dark Souls III 保持实验性，并强制启用 Arxan 中和。
 - 配置使用顶层 `game=...` 选择启动目标，并将加载器设置分为 `[patch]`、`[tweak]`、`[log]`、`[dll]` 和 `[mod]` section。
 - VFS 已改为启动时扫描、last-wins 索引、分域缓存、显式可写映射和统一 Win32/Dantelion 路由。
 - 无模组时跳过普通资源查询；存档文件名替换仍可按需独立安装文件 Hook。
@@ -636,7 +636,7 @@ data1:/param/gameparam/gameparam_dlc2.parambnd.dcx
 
 ### 阶段 9：Dark Souls III 实验性支持
 
-目标：完成除 dearxan 外的所有 me3 host 功能。
+目标：完成 Dark Souls III 的 me3 host 功能；后续加入 dearxan v0.5.3 的 C11 实现。
 
 工作项：
 
@@ -646,11 +646,11 @@ data1:/param/gameparam/gameparam_dlc2.parambnd.dcx
 - 实现 loose param property override。
 - 完成 VFS、Wwise、BootBoost、独立存档、离线属性、Logo、白闪、mimalloc 和旧式 regulation 保护。
 
-完成条件：所有功能都有明确状态日志，且至少一次实际 Hook 被验证安装。发布内容标注「实验性」和「不包含 Arxan 中和」。
+完成条件：所有功能都有明确状态日志，且至少一次实际 Hook 被验证安装。发布内容标注「实验性」；当前版本会强制启用 Arxan 中和。
 
-自动开发状态：已完成。新增独立 Dark Souls III adapter，以 `SteamAPI_Init` 触发 `AFTER_RUNTIME_INIT`，接入 Win32 VFS、独立存档、Wwise、SPRJ FileStep、Dantelion/BND/EBL、`0xC0` BHD holder、BootBoost、离线属性、SPRJ Logo、白闪、DS3 debug allocator getter、`0x78` allocator table 和旧式 regulation 保护。Dantelion string/vector/device 路径已按 descriptor 支持 MSVC 2012 与 MSVC 2015 ABI；检测到三种 loose parambnd 任一覆盖时，会在属性初始化后应用 `Game.Debug.EnableRegulationFile=false`。启动日志明确标注实验性支持、不包含 Arxan 中和，并报告 adapter、文件路由、runtime-ready 和 deferred capability 状态。
+自动开发状态：已完成。新增独立 Dark Souls III adapter，以 `SteamAPI_Init` 触发 `AFTER_RUNTIME_INIT`，接入 Win32 VFS、独立存档、Wwise、SPRJ FileStep、Dantelion/BND/EBL、`0xC0` BHD holder、BootBoost、离线属性、SPRJ Logo、白闪、DS3 debug allocator getter、`0x78` allocator table 和旧式 regulation 保护。Dantelion string/vector/device 路径已按 descriptor 支持 MSVC 2012 与 MSVC 2015 ABI；检测到三种 loose parambnd 任一覆盖时，会在属性初始化后应用 `Game.Debug.EnableRegulationFile=false`。当前启动日志明确标注实验性支持和强制 Arxan 中和，并报告 adapter、文件路由、runtime-ready 和 deferred capability 状态。
 
-阶段 9 验收状态：已完成（2026-07-18）。依据 Cinders 与 Dark Souls III 现场日志，已确认 loose param、SPRJ FileStep、Win32 文件路由、Dantelion/BND/EBL、BootBoost、独立存档、离线属性、mimalloc allocator 和 regulation protection 的请求状态与实际结果；其中 `CSMemoryImp::deinit` 的 Hook 失败按 me3 语义作为可选项跳过，最终 heap allocator capability 仍为 `APPLIED`。Wwise 在当前 Cinders 内容中没有匹配的 `.bnk`/`.wem` 条目，因此正确报告为 `NOT_REQUESTED`。`skip_intro` 已按 me3 的 after-runtime 登记顺序修正。Debug 构建和 32 项 CTest 均通过。现场验收表明 dearxan 不是阶段 9 的必要条件，相关实现记录为未安排项目。Dark Souls III 仍保持实验性支持。
+阶段 9 验收状态：已完成（2026-07-18）。依据 Cinders 与 Dark Souls III 现场日志，已确认 loose param、SPRJ FileStep、Win32 文件路由、Dantelion/BND/EBL、BootBoost、独立存档、离线属性、mimalloc allocator 和 regulation protection 的请求状态与实际结果；其中 `CSMemoryImp::deinit` 的 Hook 失败按 me3 语义作为可选项跳过，最终 heap allocator capability 仍为 `APPLIED`。Wwise 在当前 Cinders 内容中没有匹配的 `.bnk`/`.wem` 条目，因此正确报告为 `NOT_REQUESTED`。`skip_intro` 已按 me3 的 after-runtime 登记顺序修正。dearxan C11 实现加入后，自动测试增至 42 项；Dark Souls III 仍保持实验性支持，并需要重新执行现场验收。
 
 ### 阶段 10：稳定化、发布与文档
 
@@ -705,7 +705,7 @@ Dark Souls III 额外测试：
 
 - MSVC 2012 容器布局。
 - loose parambnd property override。
-- 不使用 dearxan 时，记录 Hook 的长期稳定性；dearxan 本身不作为验收前置条件。
+- 验证强制启用 dearxan 后的启动、回到标题、切图和调试器附加稳定性。
 
 ## 10. 发布门槛与风险控制
 
@@ -716,7 +716,7 @@ Dark Souls III 额外测试：
 未配置时默认 Elden Ring；显式启动目标优先。加载器的通用补丁位于 `[patch]`，
 CPU 亲和性策略位于 `[tweak]`，日志设置位于 `[log]`，外部 DLL 和模组目录分别位于
 `[dll]` 和 `[mod]`。Dark Souls III adapter 会安装实验性的共享 Host 与游戏适配 Hook，
-但不包含 Arxan 中和，实际能力以状态日志和目标版本现场验证为准。全部选项、外部 DLL
+并强制启用 Arxan 中和，实际能力以状态日志和目标版本现场验证为准。全部选项、外部 DLL
 顺序和启动器参数已同步到仓库根目录的中英文 README。
 
 ModEngine2 TOML fallback 仍按 Game Registry 选择 `config_eldenring.toml`、`config_sekiro.toml` 或 `config_darksouls3.toml`。
@@ -740,7 +740,7 @@ README 为准。阶段 9 当前 Debug 构建已通过 32 项 CTest。VFS fake UI
 - VFS 读取不会把写请求误导向普通 package 资源。
 - FileStep 重跑不会使用旧 generation 缓存。
 - 任何分析服务失败只影响其依赖功能。
-- DS3 在长期稳定性验证完成前保持实验性；dearxan 不作为必要条件。
+- DS3 在 dearxan 与长期稳定性验证完成前保持实验性。
 
 ### 10.4 主要风险
 
@@ -752,7 +752,7 @@ README 为准。阶段 9 当前 Debug 构建已通过 32 项 CTest。VFS fake UI
 | 缓存与初始化竞态 | 缓存分域、generation、冻结条目和锁；FileStep 前不缓存 |
 | allocator 混用或 ABI 偏差 | 先完成第 4 节强制 ABI 修正；system allocator 失败时禁止 heap patch |
 | Dantelion 内部布局随游戏变化 | 每游戏显式 traits、布局验证、版本化 signature 与现场测试 |
-| DS3 Arxan 恢复或阻止 Hook | 以状态日志和长期稳定性验证监测；dearxan 为未安排项目，不阻塞当前 adapter |
+| DS3 Arxan 恢复或阻止 Hook | 使用 dearxan 状态日志、自动分析测试和长期稳定性验证监测 |
 | 从 me3 复用源码的许可 | me3 提供 MIT/Apache-2.0 双许可；选择 MIT 路径时保留原版权和许可声明 |
 
 ## 11. 参考实现与关键文件

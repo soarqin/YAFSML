@@ -15,6 +15,7 @@
 #include <stdint.h>
 
 bool ml_asset_hooks_install(const ml_game_descriptor_t *game, void *image_base, size_t image_size);
+bool ml_asset_hooks_install_game_data_ready(void);
 bool ml_asset_hooks_uninstall(void);
 bool ml_asset_hooks_requested(void);
 bool ml_asset_hooks_test_match_mount_ebl(const uint8_t *bytes, size_t size,

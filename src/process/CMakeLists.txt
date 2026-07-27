@@ -1,5 +1,6 @@
 add_project(process STATIC
     fd4_step.c fd4_step.h
+    fd4_step_static.c fd4_step_static.h
     dlrf.c dlrf.h
     image.c image.h
     pe.c pe.h

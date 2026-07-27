@@ -19,14 +19,13 @@ typedef struct ml_phase_observer_s {
     ml_lifecycle_phase_t phase;
     ml_lifecycle_callback_t callback;
     void *userp;
-    bool invoked;
 } ml_phase_observer_t;
 
 static SRWLOCK observers_lock = SRWLOCK_INIT;
 static ml_phase_observer_t *observers;
 static size_t observer_count;
 static size_t observer_capacity;
-static volatile LONG current_phase;
+static volatile LONG reached_phases;
 
 void ml_lifecycle_init(void) {
     AcquireSRWLockExclusive(&observers_lock);
@@ -34,7 +33,7 @@ void ml_lifecycle_init(void) {
     observers = NULL;
     observer_count = 0;
     observer_capacity = 0;
-    InterlockedExchange(&current_phase, ML_LIFECYCLE_PHASE_UNKNOWN);
+    InterlockedExchange(&reached_phases, 0);
     ReleaseSRWLockExclusive(&observers_lock);
 }
 
@@ -43,19 +42,23 @@ void ml_lifecycle_uninit(void) {
 }
 
 ml_lifecycle_phase_t ml_lifecycle_current(void) {
-    return (ml_lifecycle_phase_t)InterlockedCompareExchange(&current_phase, 0, 0);
+    LONG reached = InterlockedCompareExchange(&reached_phases, 0, 0);
+    for (int phase = ML_LIFECYCLE_PHASE_AFTER_GAME_DATA_READY;
+         phase > ML_LIFECYCLE_PHASE_UNKNOWN; phase--) {
+        if ((reached & (1L << phase)) != 0) return (ml_lifecycle_phase_t)phase;
+    }
+    return ML_LIFECYCLE_PHASE_UNKNOWN;
 }
 
 bool ml_lifecycle_on_phase(ml_lifecycle_phase_t phase, ml_lifecycle_callback_t callback, void *userp) {
-    if (phase <= ML_LIFECYCLE_PHASE_UNKNOWN || phase > ML_LIFECYCLE_PHASE_AFTER_PROPERTIES_READY || callback == NULL) {
+    if (phase <= ML_LIFECYCLE_PHASE_UNKNOWN || phase > ML_LIFECYCLE_PHASE_AFTER_GAME_DATA_READY || callback == NULL) {
         return false;
     }
 
     AcquireSRWLockExclusive(&observers_lock);
-    if (phase <= ml_lifecycle_current()) {
+    if ((InterlockedCompareExchange(&reached_phases, 0, 0) & (1L << phase)) != 0) {
         ReleaseSRWLockExclusive(&observers_lock);
-        callback(phase, userp);
-        return true;
+        return false;
     }
     if (observer_count == observer_capacity) {
         size_t capacity = observer_capacity == 0 ? 8 : observer_capacity * 2;
@@ -69,19 +72,17 @@ bool ml_lifecycle_on_phase(ml_lifecycle_phase_t phase, ml_lifecycle_callback_t c
         observers = new_observers;
         observer_capacity = capacity;
     }
-    observers[observer_count++] = (ml_phase_observer_t){ phase, callback, userp, false };
+    observers[observer_count++] = (ml_phase_observer_t){ phase, callback, userp };
     ReleaseSRWLockExclusive(&observers_lock);
     return true;
 }
 
 bool ml_lifecycle_advance(ml_lifecycle_phase_t phase) {
-    ml_lifecycle_phase_t previous;
-    if (phase <= ML_LIFECYCLE_PHASE_UNKNOWN || phase > ML_LIFECYCLE_PHASE_AFTER_PROPERTIES_READY) return false;
+    LONG mask;
+    if (phase <= ML_LIFECYCLE_PHASE_UNKNOWN || phase > ML_LIFECYCLE_PHASE_AFTER_GAME_DATA_READY) return false;
 
-    previous = ml_lifecycle_current();
-    if (phase < previous) return false;
-    if (phase == previous) return true;
-    InterlockedExchange(&current_phase, phase);
+    mask = 1L << phase;
+    if ((InterlockedOr(&reached_phases, mask) & mask) != 0) return true;
 
     for (;;) {
         ml_lifecycle_callback_t callback = NULL;
@@ -90,11 +91,11 @@ bool ml_lifecycle_advance(ml_lifecycle_phase_t phase) {
 
         AcquireSRWLockExclusive(&observers_lock);
         for (size_t i = 0; i < observer_count; i++) {
-            if (!observers[i].invoked && observers[i].phase <= phase) {
-                observers[i].invoked = true;
+            if (observers[i].callback != NULL && observers[i].phase == phase) {
                 callback = observers[i].callback;
                 callback_phase = observers[i].phase;
                 userp = observers[i].userp;
+                observers[i].callback = NULL;
                 break;
             }
         }

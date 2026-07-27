@@ -4,8 +4,8 @@
 #include "modloader/lifecycle.h"
 
 static int callback_count;
-static ml_lifecycle_phase_t callback_phases[5];
-static int callback_tags[5];
+static ml_lifecycle_phase_t callback_phases[6];
+static int callback_tags[6];
 
 static void on_phase(ml_lifecycle_phase_t phase, void *userp) {
     int *tag = userp;
@@ -24,6 +24,7 @@ int main(void) {
     EXPECT_TRUE(ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_RUNTIME_INIT, on_phase, &first_runtime));
     EXPECT_TRUE(ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_RUNTIME_INIT, on_phase, &second_runtime));
     EXPECT_TRUE(ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_PROPERTIES_READY, on_phase, NULL));
+    EXPECT_TRUE(ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_GAME_DATA_READY, on_phase, NULL));
     EXPECT_TRUE(!ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_UNKNOWN, on_phase, NULL));
     EXPECT_TRUE(!ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_BEFORE_MAIN, NULL, NULL));
 
@@ -36,13 +37,23 @@ int main(void) {
     EXPECT_EQ(callback_tags[0], 10);
     EXPECT_EQ(callback_tags[1], 20);
     EXPECT_TRUE(ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_BEFORE_MAIN, on_phase, &immediate_count));
+    EXPECT_EQ(immediate_count, 0);
+    EXPECT_EQ(callback_count, 2);
+    EXPECT_TRUE(ml_lifecycle_advance(ML_LIFECYCLE_PHASE_BEFORE_MAIN));
     EXPECT_EQ(immediate_count, 1);
     EXPECT_EQ(callback_count, 3);
     EXPECT_EQ(callback_phases[2], ML_LIFECYCLE_PHASE_BEFORE_MAIN);
-    EXPECT_TRUE(!ml_lifecycle_advance(ML_LIFECYCLE_PHASE_BEFORE_MAIN));
+    EXPECT_TRUE(!ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_BEFORE_MAIN, on_phase, &immediate_count));
+    EXPECT_TRUE(ml_lifecycle_advance(ML_LIFECYCLE_PHASE_BEFORE_MAIN));
     EXPECT_TRUE(ml_lifecycle_advance(ML_LIFECYCLE_PHASE_AFTER_PROPERTIES_READY));
     EXPECT_EQ(callback_count, 4);
     EXPECT_EQ(callback_phases[3], ML_LIFECYCLE_PHASE_AFTER_PROPERTIES_READY);
+    EXPECT_TRUE(ml_lifecycle_advance(ML_LIFECYCLE_PHASE_AFTER_GAME_DATA_READY));
+    EXPECT_EQ(callback_count, 5);
+    EXPECT_EQ(callback_phases[4], ML_LIFECYCLE_PHASE_AFTER_GAME_DATA_READY);
+    EXPECT_EQ(ml_lifecycle_current(), ML_LIFECYCLE_PHASE_AFTER_GAME_DATA_READY);
+    EXPECT_TRUE(ml_lifecycle_advance(ML_LIFECYCLE_PHASE_AFTER_GAME_DATA_READY));
+    EXPECT_EQ(callback_count, 5);
 
     ml_lifecycle_uninit();
     printf("smoke_lifecycle: all tests passed\n");

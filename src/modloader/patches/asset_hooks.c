@@ -21,6 +21,7 @@
 #include "modloader/dl_allocator.h"
 #include "modloader/hook.h"
 #include "modloader/hook_batch.h"
+#include "modloader/lifecycle.h"
 #include "modloader/mod.h"
 #include "modloader/vfs.h"
 #include "game/game.h"
@@ -106,6 +107,11 @@ static bool pre_hooks_installed;
 static bool post_hooks_installed;
 static bool file_step_hook_installed;
 static void *file_step_hook_target;
+static fd4_step_fn_t old_game_data_ready_step_init;
+static void *game_data_ready_hook_target;
+static SRWLOCK game_data_ready_hook_lock = SRWLOCK_INIT;
+static volatile LONG game_data_ready_hook_shutting_down;
+static volatile LONG game_data_ready_hook_active;
 static void *mount_ebl_hook_target;
 static void *make_ebl_object_hook_target;
 
@@ -829,6 +835,54 @@ static void __cdecl file_step_init_hooked(void *this_ptr, fd4_time_t *time) {
                 pre_hooks_applied && post_hooks_applied ? L"APPLIED" : L"HOOK_FAILED");
 }
 
+static void __cdecl game_data_ready_step_init_hooked(void *this_ptr, fd4_time_t *time) {
+    fd4_step_fn_t original;
+    InterlockedIncrement(&game_data_ready_hook_active);
+    AcquireSRWLockShared(&game_data_ready_hook_lock);
+    original = old_game_data_ready_step_init;
+    if (original != NULL &&
+        InterlockedCompareExchange(&game_data_ready_hook_shutting_down, 0, 0) == 0) {
+        original(this_ptr, time);
+        if (InterlockedCompareExchange(&game_data_ready_hook_shutting_down, 0, 0) == 0) {
+            ML_LOG_INFO(L"asset-hooks", L"AFTER_GAME_DATA_READY reached at TitleStep::STEP_InitMenu");
+            if (!ml_lifecycle_advance(ML_LIFECYCLE_PHASE_AFTER_GAME_DATA_READY)) {
+                ML_LOG_WARN(L"asset-hooks", L"AFTER_GAME_DATA_READY lifecycle advance failed");
+            }
+        }
+    }
+    ReleaseSRWLockShared(&game_data_ready_hook_lock);
+    InterlockedDecrement(&game_data_ready_hook_active);
+}
+
+bool ml_asset_hooks_install_game_data_ready(void) {
+    HMODULE module;
+    void *step;
+    ml_hook_result_t result;
+    if (game_data_ready_hook_target != NULL) return true;
+    step = fd4_step_find(L"TitleStep::STEP_InitMenu");
+    if (step == NULL) {
+        ML_LOG_WARN(L"asset-hooks", L"TitleStep::STEP_InitMenu late-ready hook SIGNATURE_NOT_FOUND");
+        return false;
+    }
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                            GET_MODULE_HANDLE_EX_FLAG_PIN,
+                            (LPCWSTR)(uintptr_t)game_data_ready_step_init_hooked,
+                            &module)) {
+        ML_LOG_WARN(L"asset-hooks", L"could not pin late-ready hook module");
+        return false;
+    }
+    result = ml_hook_install(step, game_data_ready_step_init_hooked,
+                             (void **)&old_game_data_ready_step_init);
+    if (result != ML_HOOK_APPLIED) {
+        ML_LOG_WARN(L"asset-hooks", L"TitleStep::STEP_InitMenu late-ready hook %hs",
+                    ml_hook_result_name(result));
+        return false;
+    }
+    game_data_ready_hook_target = step;
+    ML_LOG_INFO(L"asset-hooks", L"TitleStep::STEP_InitMenu late-ready hook applied");
+    return true;
+}
+
 bool ml_asset_hooks_install(const ml_game_descriptor_t *game, void *image_base, size_t image_size) {
     void *step;
     const wchar_t *step_name;
@@ -878,6 +932,17 @@ static bool remove_asset_hooks(asset_hook_t *hooks, size_t count) {
 
 bool ml_asset_hooks_uninstall(void) {
     bool result = true;
+    InterlockedExchange(&game_data_ready_hook_shutting_down, 1);
+    AcquireSRWLockExclusive(&game_data_ready_hook_lock);
+    if (!remove_asset_hook(game_data_ready_hook_target)) result = false;
+    if (result) {
+        old_game_data_ready_step_init = NULL;
+        game_data_ready_hook_target = NULL;
+    }
+    ReleaseSRWLockExclusive(&game_data_ready_hook_lock);
+    while (InterlockedCompareExchange(&game_data_ready_hook_active, 0, 0) != 0) Sleep(0);
+    if (!result) return false;
+
     if (!remove_asset_hook(file_step_hook_target)) result = false;
     if (!remove_asset_hook(make_ebl_object_hook_target)) result = false;
     if (!remove_asset_hook(mount_ebl_hook_target)) result = false;
@@ -903,6 +968,7 @@ bool ml_asset_hooks_uninstall(void) {
     old_make_ebl_object = NULL;
     old_mount_ebl = NULL;
     file_step_hook_target = NULL;
+    InterlockedExchange(&game_data_ready_hook_shutting_down, 0);
     mount_ebl_hook_target = NULL;
     make_ebl_object_hook_target = NULL;
     pre_hooks_installed = false;
