@@ -80,12 +80,16 @@ static int ini_read_cb(void *user, const char *section,
         } else if (lstrcmpA(name, "log_file") == 0) {
             if (value_to_bool(value)) {
                 wchar_t *file = config_full_path_alloc(L"log\\YAFSML.log");
-                wchar_t *path = ml_mem_strdup_w(file);
-                PathRemoveFileSpecW(path);
-                CreateDirectoryW(path, NULL);
-                ml_mem_free(path);
-                ml_log_enable_file(file);
-                ml_mem_free(file);
+                wchar_t *path = file == NULL ? NULL : ml_mem_strdup_w(file);
+                if (path != NULL) {
+                    PathRemoveFileSpecW(path);
+                    CreateDirectoryW(path, NULL);
+                    ml_mem_free(path);
+                }
+                if (file != NULL) {
+                    ml_log_enable_file(file);
+                    ml_mem_free(file);
+                }
             }
         } else if (lstrcmpA(name, "log_level") == 0) {
             ml_log_level_t level;
@@ -102,7 +106,10 @@ static int ini_read_cb(void *user, const char *section,
     } else if (lstrcmpA(section, "dll") == 0) {
         extdlls_add_spec(name, value);
     } else if (lstrcmpA(section, "mod") == 0) {
-        MultiByteToWideChar(CP_UTF8, 0, value, -1, path, MAX_PATH);
+        if (MultiByteToWideChar(CP_UTF8, 0, value, -1, path, MAX_PATH) == 0) {
+            ML_LOG_ERROR(L"config", L"invalid mod path for %hs", name);
+            return 1;
+        }
         path[MAX_PATH - 1] = L'\0';
         mods_add(name, path);
     }

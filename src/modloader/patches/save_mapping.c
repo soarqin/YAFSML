@@ -270,6 +270,29 @@ bool ml_save_mapping_route(const wchar_t *path, const wchar_t **mapped_path) {
     if (path == NULL || mapped_path == NULL) return false;
     raw_ext = PathFindExtensionW(path);
     AcquireSRWLockShared(&mapping_lock);
+    /* Extension pre-filter. This function is on the CreateFile hot path, so
+     * reject uninteresting paths before the root strdup, the table snapshots and
+     * canonicalize_path (two GetFullPathNameW calls, which take the process
+     * current-directory lock).
+     *
+     * Every path through the rest of the function that returns something other
+     * than `false` requires `raw_ext` to be a mapped extension, a remembered
+     * failed extension, or `.bak` (the backup rotation, whose logical extension
+     * is the stem's). The one exception is `mapping_failed`, which fails closed
+     * for anything under the save root, so that case skips the fast path. */
+    if (!mapping_failed && raw_ext != NULL) {
+        bool may_match = false;
+        for (i = 0; !may_match && i < mapping_count; i++) {
+            may_match = lstrcmpiW(raw_ext, mappings[i].extension) == 0;
+        }
+        for (i = 0; !may_match && i < failed_extension_count; i++) {
+            may_match = lstrcmpiW(raw_ext, failed_extensions[i]) == 0;
+        }
+        if (!may_match && lstrcmpiW(raw_ext, L".bak") != 0) {
+            ReleaseSRWLockShared(&mapping_lock);
+            return false;
+        }
+    }
     root_snapshot = save_root == NULL ? NULL : ml_mem_strdup_w(save_root);
     snapshot_count = mapping_count;
     setup_failed_snapshot = mapping_failed;

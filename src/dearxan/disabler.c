@@ -64,6 +64,25 @@ static INIT_ONCE schedule_once = INIT_ONCE_STATIC_INIT;
 static dearxan_schedule_shared_t *schedule_shared;
 static HANDLE schedule_mapping;
 static HANDLE schedule_mutex;
+/* Manual-reset events shared by every module that links dearxan into this
+ * process, so a waiter blocks instead of spinning while another module drives the
+ * multi-second stub analysis. Latched once, never reset, so a late waiter still
+ * returns immediately. NULL when creation failed; callers then fall back to
+ * yielding. */
+static HANDLE schedule_drained_event;
+static HANDLE neuter_done_event;
+
+/* Wait for `state` to reach `target`. Blocks on `event` when it exists and always
+ * re-reads the state, so neither a missing event nor a missed signal can hang.
+ * The trailing sleep keeps a signalled-but-not-yet-visible state from turning into
+ * a spin on the manual-reset event. */
+static void wait_for_state(volatile LONG *state, LONG target, HANDLE event) {
+    while (InterlockedCompareExchange(state, target, target) != target) {
+        if (event != NULL) WaitForSingleObject(event, 50);
+        if (InterlockedCompareExchange(state, target, target) == target) break;
+        Sleep(1);
+    }
+}
 
 static void flush_callbacks(bool is_arxan_detected,
                             bool is_executing_entrypoint);
@@ -127,6 +146,8 @@ static BOOL CALLBACK initialize_schedule_mapping(PINIT_ONCE once, PVOID paramete
                                                  PVOID *context) {
     wchar_t name[96];
     wchar_t mutex_name[104];
+    wchar_t drained_name[112];
+    wchar_t neuter_name[112];
     dearxan_schedule_shared_t *shared;
     DWORD create_error;
     DWORD wait_result;
@@ -139,12 +160,28 @@ static BOOL CALLBACK initialize_schedule_mapping(PINIT_ONCE once, PVOID paramete
     swprintf_s(mutex_name, sizeof(mutex_name) / sizeof(mutex_name[0]),
                L"Local\\DEARXAN_SCHEDULED_AFTER_ARXAN_LOCK_%lu",
                (unsigned long)GetCurrentProcessId());
+    swprintf_s(drained_name, sizeof(drained_name) / sizeof(drained_name[0]),
+               L"Local\\DEARXAN_SCHEDULED_AFTER_ARXAN_DRAINED_%lu",
+               (unsigned long)GetCurrentProcessId());
+    swprintf_s(neuter_name, sizeof(neuter_name) / sizeof(neuter_name[0]),
+               L"Local\\DEARXAN_SCHEDULED_AFTER_ARXAN_NEUTERED_%lu",
+               (unsigned long)GetCurrentProcessId());
     schedule_mutex = CreateMutexW(NULL, FALSE, mutex_name);
     if (schedule_mutex == NULL) return FALSE;
+    schedule_drained_event = CreateEventW(NULL, TRUE, FALSE, drained_name);
+    neuter_done_event = CreateEventW(NULL, TRUE, FALSE, neuter_name);
     wait_result = WaitForSingleObject(schedule_mutex, INFINITE);
     if (wait_result != WAIT_OBJECT_0 && wait_result != WAIT_ABANDONED) {
         CloseHandle(schedule_mutex);
         schedule_mutex = NULL;
+        if (schedule_drained_event != NULL) {
+            CloseHandle(schedule_drained_event);
+            schedule_drained_event = NULL;
+        }
+        if (neuter_done_event != NULL) {
+            CloseHandle(neuter_done_event);
+            neuter_done_event = NULL;
+        }
         return FALSE;
     }
     schedule_mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL,
@@ -182,6 +219,14 @@ fail:
     ReleaseMutex(schedule_mutex);
     CloseHandle(schedule_mutex);
     schedule_mutex = NULL;
+    if (schedule_drained_event != NULL) {
+        CloseHandle(schedule_drained_event);
+        schedule_drained_event = NULL;
+    }
+    if (neuter_done_event != NULL) {
+        CloseHandle(neuter_done_event);
+        neuter_done_event = NULL;
+    }
     return FALSE;
 }
 
@@ -234,6 +279,7 @@ static void flush_callbacks(bool is_arxan_detected,
         shared->tail = NULL;
         if (callbacks == NULL) {
             InterlockedExchange(&shared->state, 3); /* complete */
+            if (schedule_drained_event != NULL) SetEvent(schedule_drained_event);
             ReleaseMutex(schedule_mutex);
             break;
         }
@@ -446,9 +492,7 @@ void dearxan_schedule_after_arxan(DearxanScheduleCallback callback, void *opaque
     }
     if (!initialize && !pre_entry_point &&
         InterlockedCompareExchange(&shared->state, 0, 0) != 2) {
-        while (InterlockedCompareExchange(&shared->state, 3, 3) != 3) {
-            Sleep(0);
-        }
+        wait_for_state(&shared->state, 3, schedule_drained_event);
         {
             schedule_callback_node_t *callbacks;
             bool present;
@@ -558,6 +602,7 @@ static void publish_neuter_result(dearxan_schedule_shared_t *shared,
     }
     MemoryBarrier();
     InterlockedExchange(&shared->neuter_state, 2);
+    if (neuter_done_event != NULL) SetEvent(neuter_done_event);
 }
 
 static DearxanResult get_neuter_result(bool is_executing_entrypoint) {
@@ -581,9 +626,7 @@ static DearxanResult get_neuter_result(bool is_executing_entrypoint) {
         publish_neuter_result(shared, &result);
         ReleaseMutex(schedule_mutex);
     } else {
-        while (InterlockedCompareExchange(&shared->neuter_state, 2, 2) != 2) {
-            Sleep(0);
-        }
+        wait_for_state(&shared->neuter_state, 2, neuter_done_event);
     }
     WaitForSingleObject(schedule_mutex, INFINITE);
     result = shared->neuter_result;

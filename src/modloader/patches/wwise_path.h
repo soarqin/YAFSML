@@ -13,7 +13,11 @@
 #include <stdint.h>
 #include <wchar.h>
 
+/* `wem/00/` plus the terminating NUL. */
+#define WWISE_WEM_BUCKET_SIZE 8
+
 const wchar_t *wwise_strip_prefixes(const wchar_t *path);
-wchar_t *wwise_join_path(const wchar_t *prefix, const wchar_t *path);
-bool wwise_wem_candidates(const wchar_t *path, wchar_t **first, wchar_t **second);
+size_t wwise_join3(wchar_t *buffer, size_t capacity, const wchar_t *prefix,
+                   const wchar_t *middle, const wchar_t *path);
+void wwise_wem_bucket(const wchar_t *path, wchar_t bucket[WWISE_WEM_BUCKET_SIZE]);
 size_t wwise_find_open_call(const uint8_t *text, size_t size);

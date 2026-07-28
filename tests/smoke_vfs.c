@@ -174,6 +174,11 @@ int main(void) {
     InterlockedExchange64(&allocation_count, 0);
     EXPECT_STREQ_W(vfs_route_writable_path(L"settings/test.ini"), L"C:\\profile\\test.ini");
     EXPECT_EQ(allocation_count, 0);
+    /* Drive-relative paths normalize by stripping the `C:` prefix, so the
+     * writable-path pre-filter must not reject the raw final segment. */
+    EXPECT_TRUE(vfs_register_writable_path(L"C:drive-relative.ini", L"C:\\profile\\drive-relative.ini"));
+    EXPECT_STREQ_W(vfs_route_writable_path(L"C:drive-relative.ini"),
+                   L"C:\\profile\\drive-relative.ini");
     EXPECT_TRUE(vfs_register_writable_path(L"SETTINGS\\test.ini", L"C:\\profile\\test.ini"));
     EXPECT_TRUE(!vfs_register_writable_path(L"settings/test.ini", L"C:\\other\\test.ini"));
     EXPECT_STREQ_W(vfs_route_read_path(L"settings/test.ini", GENERIC_WRITE, CREATE_ALWAYS), L"C:\\profile\\test.ini");

@@ -15,7 +15,12 @@
 
 bool ml_asset_sig_match_mount_ebl(const uint8_t *p, size_t remaining, mount_pattern_match_t *match) {
     bool stack_compare;
-    if (p == NULL || match == NULL) return false;
+    if (p == NULL || match == NULL || remaining == 0) return false;
+    /* First-byte gate. find_mount_ebl calls this for every byte of the game's
+     * .text (tens of millions of offsets), so reject on the one byte both
+     * patterns pin before touching the 46-byte memcmp below: pattern one needs
+     * 0x48 (`mov rax, [rbp+..]`), pattern two needs 0x53 (`push rbx`). */
+    if (p[0] != 0x48 && p[0] != 0x53) return false;
     if (remaining >= 42 && p[0] == 0x48 && p[1] == 0x8B && p[2] == 0x45 &&
         memcmp(p + 4, "\x48\x89\x44\x24\x28", 5) == 0 &&
         (p[9] == 0x48 || p[9] == 0x4C || p[9] == 0x7C) && p[10] == 0x89 &&

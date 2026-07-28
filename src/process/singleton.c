@@ -494,79 +494,88 @@ static uintptr_t singleton_rip_target(const uint8_t *text, uint32_t cap) {
     return (uintptr_t)((intptr_t)rip + (intptr_t)disp);
 }
 
-static void singleton_scan_derived(void *image_base, const uint8_t *text, size_t text_size,
-                                   const IMAGE_SECTION_HEADER *data, const IMAGE_SECTION_HEADER *rdata) {
+static void singleton_record_derived(void *image_base, const uint8_t *text, size_t text_size,
+                                     const IMAGE_SECTION_HEADER *data, const IMAGE_SECTION_HEADER *rdata,
+                                     const char *rdata_end, singleton_candidate_t candidate) {
+    uint32_t cap1;
+    uint32_t cap2;
+    uintptr_t slot_va;
+    uintptr_t name_va;
+    char name[SINGLETON_MAX_NAME];
+
+    if (!singleton_derived_caps(text, text_size, candidate, &cap1, &cap2)) {
+        return;
+    }
+
+    slot_va = singleton_rip_target(text, cap1);
+    name_va = singleton_rip_target(text, cap2);
+
+    if ((slot_va & (sizeof(void *) - 1)) != 0 ||
+        !pe_section_contains_va(image_base, data, (const void *)slot_va) ||
+        !pe_section_contains_va(image_base, rdata, (const void *)name_va)) {
+        return;
+    }
+
+    if (!singleton_read_name((const char *)name_va, rdata_end, name, sizeof(name))) {
+        return;
+    }
+
+    singleton_named_insert(singleton_derived_map, name, (void **)slot_va);
+}
+
+static void singleton_record_fd4(void *image_base, const uint8_t *text, size_t text_size,
+                                 const IMAGE_SECTION_HEADER *text_sh, const IMAGE_SECTION_HEADER *data,
+                                 singleton_candidate_t candidate) {
+    uint32_t cap1;
+    uint32_t cap2;
+    uint32_t cap3;
+    uintptr_t slot_va;
+    uintptr_t reflection_va;
+    uintptr_t get_name_va;
+
+    if (!singleton_fd4_caps(text, text_size, candidate, &cap1, &cap2, &cap3)) {
+        return;
+    }
+
+    slot_va = singleton_rip_target(text, cap1);
+    reflection_va = singleton_rip_target(text, cap2);
+    get_name_va = singleton_rip_target(text, cap3);
+
+    if ((slot_va & (sizeof(void *) - 1)) != 0 ||
+        !pe_section_contains_va(image_base, data, (const void *)slot_va) ||
+        !pe_section_contains_va(image_base, text_sh, (const void *)get_name_va)) {
+        return;
+    }
+
+    if (singleton_get_name == NULL) {
+        singleton_get_name = (singleton_get_name_fn_t)get_name_va;
+    }
+
+    singleton_partial_insert(reflection_va, (void **)slot_va);
+}
+
+/* One pass over .text. singleton_candidate_at is a pure function of
+ * (text, text_size, pos), so the derived and fd4 scans used to compute the same
+ * result twice for every MOV_EDX; the candidate kind selects which recorder
+ * consumes it. */
+static void singleton_scan(void *image_base, const uint8_t *text, size_t text_size,
+                           const IMAGE_SECTION_HEADER *text_sh, const IMAGE_SECTION_HEADER *data,
+                           const IMAGE_SECTION_HEADER *rdata) {
     const char *rdata_end = (const char *)image_base + pe_section_rva_end(rdata);
 
     for (size_t i = 0; i < text_size; i++) {
         singleton_candidate_t candidate;
-        uint32_t cap1;
-        uint32_t cap2;
-        uintptr_t slot_va;
-        uintptr_t name_va;
-        char name[SINGLETON_MAX_NAME];
 
         if (text[i] != MOV_EDX) {
             continue;
         }
 
         candidate = singleton_candidate_at(text, text_size, (uint32_t)i);
-        if (!singleton_derived_caps(text, text_size, candidate, &cap1, &cap2)) {
-            continue;
+        if (candidate.kind == SINGLETON_CANDIDATE_DERIVED) {
+            singleton_record_derived(image_base, text, text_size, data, rdata, rdata_end, candidate);
+        } else if (candidate.kind == SINGLETON_CANDIDATE_FD4) {
+            singleton_record_fd4(image_base, text, text_size, text_sh, data, candidate);
         }
-
-        slot_va = singleton_rip_target(text, cap1);
-        name_va = singleton_rip_target(text, cap2);
-
-        if ((slot_va & (sizeof(void *) - 1)) != 0 ||
-            !pe_section_contains_va(image_base, data, (const void *)slot_va) ||
-            !pe_section_contains_va(image_base, rdata, (const void *)name_va)) {
-            continue;
-        }
-
-        if (!singleton_read_name((const char *)name_va, rdata_end, name, sizeof(name))) {
-            continue;
-        }
-
-        singleton_named_insert(singleton_derived_map, name, (void **)slot_va);
-    }
-}
-
-static void singleton_scan_fd4(void *image_base, const uint8_t *text, size_t text_size,
-                               const IMAGE_SECTION_HEADER *text_sh, const IMAGE_SECTION_HEADER *data) {
-    for (size_t i = 0; i < text_size; i++) {
-        singleton_candidate_t candidate;
-        uint32_t cap1;
-        uint32_t cap2;
-        uint32_t cap3;
-        uintptr_t slot_va;
-        uintptr_t reflection_va;
-        uintptr_t get_name_va;
-
-        if (text[i] != MOV_EDX) {
-            continue;
-        }
-
-        candidate = singleton_candidate_at(text, text_size, (uint32_t)i);
-        if (!singleton_fd4_caps(text, text_size, candidate, &cap1, &cap2, &cap3)) {
-            continue;
-        }
-
-        slot_va = singleton_rip_target(text, cap1);
-        reflection_va = singleton_rip_target(text, cap2);
-        get_name_va = singleton_rip_target(text, cap3);
-
-        if ((slot_va & (sizeof(void *) - 1)) != 0 ||
-            !pe_section_contains_va(image_base, data, (const void *)slot_va) ||
-            !pe_section_contains_va(image_base, text_sh, (const void *)get_name_va)) {
-            continue;
-        }
-
-        if (singleton_get_name == NULL) {
-            singleton_get_name = (singleton_get_name_fn_t)get_name_va;
-        }
-
-        singleton_partial_insert(reflection_va, (void **)slot_va);
     }
 }
 
@@ -593,8 +602,7 @@ static void singleton_build_for_image(void *image_base) {
         return;
     }
 
-    singleton_scan_derived(image_base, text, text_size, data, rdata);
-    singleton_scan_fd4(image_base, text, text_size, text_sh, data);
+    singleton_scan(image_base, text, text_size, text_sh, data, rdata);
 }
 
 static BOOL CALLBACK singleton_init_once(PINIT_ONCE init_once, PVOID parameter, PVOID *context) {
@@ -672,6 +680,10 @@ static void singleton_try_finish_fd4(void) {
         added = true;
     }
 
+    /* Only latch the flag once a name actually resolved: an early pass can run
+     * before the game has published the reflection names, and the next lookup
+     * must retry. Both callers of singleton_find are one-shot startup paths, so
+     * the retry cost is bounded. */
     if (added) {
         InterlockedExchange(&singleton_fd4_finished, 1);
     }

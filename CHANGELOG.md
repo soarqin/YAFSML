@@ -5,6 +5,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- Big mods load much faster. Every file the game opened used to be checked against
+  the mod's entire file list, so the more files a mod had, the slower loading got.
+- Memory no longer grows the longer you play. The mod loader was remembering every
+  file path the game had ever opened, even paths that had nothing to do with mods.
+- Loading is faster when a renamed save file is set up. Files that cannot possibly
+  be a save are no longer checked against the save folder.
+- Replaced sounds stream more smoothly, especially in mods that replace a lot of
+  audio.
+- The game starts up faster. Locating the code the mod loader needs to hook takes
+  about half as long, and Arxan neutralization (`disable_arxan`) is considerably
+  quicker.
+- Waiting for Arxan neutralization to finish no longer keeps a CPU core busy.
+
+### Fixed
+
+- Fixed a crash at startup when the log file could not be set up.
+- A mod path the mod loader cannot read is now reported and skipped, instead of
+  being used as garbage.
+- Fixed a small resource leak at startup.
+
 ## [0.9.0] - 2026-07-27
 
 ### Added

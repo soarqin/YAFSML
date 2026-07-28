@@ -31,7 +31,11 @@ typedef struct dearxan_vm {
     uint64_t rip;
     bool rip_known;
     dearxan_vm_registers_t registers;
-    dearxan_vm_memory_block_t *memory;
+    /* Open-addressed table of 64-byte memory blocks keyed by block index.
+     * `block_capacity` is 0 or a power of two. Opaque to callers. */
+    dearxan_vm_memory_block_t *blocks;
+    size_t block_capacity;
+    size_t block_count;
 } dearxan_vm_t;
 
 void dearxan_vm_init(dearxan_vm_t *vm, const dearxan_image_t *image,

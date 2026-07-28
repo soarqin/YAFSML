@@ -85,7 +85,6 @@ uint8_t *sig_scan_without_mask(void *base, size_t data_size, const uint8_t *pat,
         while (j >= 0 && pat[j] == data[s + j]) {
             j--;
         }
-    next:
 
         /* If the pattern is present at current
            shift, then index j will become -1 after

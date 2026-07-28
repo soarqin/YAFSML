@@ -10,12 +10,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* One 64-byte block of emulated memory. `index_plus_one == 0` marks an unused
+ * slot, which lets block index 0 stay addressable without a separate flag. */
 struct dearxan_vm_memory_block {
-    uint64_t index;
-    unsigned char bytes[64];
+    uint64_t index_plus_one;
     uint64_t known;
-    struct dearxan_vm_memory_block *next;
+    unsigned char bytes[64];
 };
+
+#define VM_MEMORY_MIN_CAPACITY 16
 
 static int register_index(ZydisRegister reg, unsigned int *width) {
     ZydisRegister enclosing = ZydisRegisterGetLargestEnclosing(
@@ -38,30 +41,74 @@ static uint64_t size_mask(size_t size) {
     return size >= 8 ? UINT64_MAX : (UINT64_C(1) << (size * 8)) - 1;
 }
 
+static uint64_t hash_block_index(uint64_t value) {
+    value ^= value >> 30;
+    value *= UINT64_C(0xbf58476d1ce4e5b9);
+    value ^= value >> 27;
+    value *= UINT64_C(0x94d049bb133111eb);
+    return value ^ (value >> 31);
+}
+
+/* Probe for `index`. Returns the matching slot, or the first free slot when the
+ * index is absent. Never returns NULL: the table is kept below half full, so a
+ * free slot always exists. */
+static dearxan_vm_memory_block_t *probe_block(dearxan_vm_memory_block_t *blocks,
+                                              size_t capacity, uint64_t index) {
+    size_t slot = (size_t)hash_block_index(index) & (capacity - 1);
+    while (blocks[slot].index_plus_one != 0 && blocks[slot].index_plus_one != index + 1) {
+        slot = (slot + 1) & (capacity - 1);
+    }
+    return &blocks[slot];
+}
+
+static bool grow_blocks(dearxan_vm_t *vm) {
+    size_t capacity = vm->block_capacity == 0 ? VM_MEMORY_MIN_CAPACITY
+                                              : vm->block_capacity * 2;
+    dearxan_vm_memory_block_t *blocks;
+    if (capacity < vm->block_capacity || capacity > SIZE_MAX / sizeof(*blocks)) return false;
+    blocks = calloc(capacity, sizeof(*blocks));
+    if (blocks == NULL) return false;
+    for (size_t i = 0; i < vm->block_capacity; i++) {
+        if (vm->blocks[i].index_plus_one == 0) continue;
+        *probe_block(blocks, capacity, vm->blocks[i].index_plus_one - 1) = vm->blocks[i];
+    }
+    free(vm->blocks);
+    vm->blocks = blocks;
+    vm->block_capacity = capacity;
+    return true;
+}
+
 static dearxan_vm_memory_block_t *find_block(dearxan_vm_t *vm, uint64_t index,
                                               bool create) {
-    dearxan_vm_memory_block_t **cursor = &vm->memory;
-    while (*cursor != NULL && (*cursor)->index != index) cursor = &(*cursor)->next;
-    if (*cursor == NULL && create) {
-        const unsigned char *image_bytes;
-        size_t available;
-        *cursor = calloc(1, sizeof(**cursor));
-        if (*cursor == NULL) return NULL;
-        (*cursor)->index = index;
-        image_bytes = dearxan_image_read(vm->image, index * 64, 64, &available);
+    dearxan_vm_memory_block_t *block;
+    if (vm->block_capacity != 0) {
+        block = probe_block(vm->blocks, vm->block_capacity, index);
+        if (block->index_plus_one != 0) return block;
+    }
+    if (!create) return NULL;
+    /* Grow before inserting so the returned pointer belongs to the final table. */
+    if (vm->block_capacity == 0 || vm->block_count + 1 > vm->block_capacity / 2) {
+        if (!grow_blocks(vm)) return NULL;
+    }
+    block = probe_block(vm->blocks, vm->block_capacity, index);
+    block->index_plus_one = index + 1;
+    vm->block_count++;
+    {
+        const unsigned char *image_bytes = dearxan_image_read(vm->image, index * 64, 64, NULL);
         if (image_bytes != NULL) {
-            memcpy((*cursor)->bytes, image_bytes, 64);
-            (*cursor)->known = UINT64_MAX;
+            memcpy(block->bytes, image_bytes, 64);
+            block->known = UINT64_MAX;
         }
     }
-    return *cursor;
+    return block;
 }
 
 static const dearxan_vm_memory_block_t *find_existing_block(
     const dearxan_vm_t *vm, uint64_t index) {
-    const dearxan_vm_memory_block_t *block = vm->memory;
-    while (block != NULL && block->index != index) block = block->next;
-    return block;
+    const dearxan_vm_memory_block_t *block;
+    if (vm->block_capacity == 0) return NULL;
+    block = probe_block(vm->blocks, vm->block_capacity, index);
+    return block->index_plus_one == 0 ? NULL : block;
 }
 
 void dearxan_vm_init(dearxan_vm_t *vm, const dearxan_image_t *image,
@@ -74,31 +121,28 @@ void dearxan_vm_init(dearxan_vm_t *vm, const dearxan_image_t *image,
 }
 
 void dearxan_vm_uninit(dearxan_vm_t *vm) {
-    dearxan_vm_memory_block_t *block = vm->memory;
-    while (block != NULL) {
-        dearxan_vm_memory_block_t *next = block->next;
-        free(block);
-        block = next;
-    }
+    free(vm->blocks);
     memset(vm, 0, sizeof(*vm));
 }
 
 bool dearxan_vm_clone(dearxan_vm_t *destination, const dearxan_vm_t *source) {
-    dearxan_vm_memory_block_t **tail;
     *destination = *source;
-    destination->memory = NULL;
-    tail = &destination->memory;
-    for (const dearxan_vm_memory_block_t *block = source->memory;
-         block != NULL; block = block->next) {
-        *tail = malloc(sizeof(**tail));
-        if (*tail == NULL) {
-            dearxan_vm_uninit(destination);
-            return false;
-        }
-        **tail = *block;
-        (*tail)->next = NULL;
-        tail = &(*tail)->next;
+    destination->blocks = NULL;
+    if (source->block_capacity == 0) {
+        destination->block_capacity = 0;
+        destination->block_count = 0;
+        return true;
     }
+    /* The table is position-dependent only through the hash of each index, so a
+     * flat copy preserves it: one allocation per fork instead of one per block. */
+    destination->blocks = malloc(source->block_capacity * sizeof(*destination->blocks));
+    if (destination->blocks == NULL) {
+        destination->block_capacity = 0;
+        destination->block_count = 0;
+        return false;
+    }
+    memcpy(destination->blocks, source->blocks,
+           source->block_capacity * sizeof(*destination->blocks));
     return true;
 }
 
