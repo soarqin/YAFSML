@@ -88,6 +88,67 @@ static int test_memory(void) {
     return 0;
 }
 
+/* The block table grows and rehashes; every block written before a growth must
+ * still read back afterwards, and a clone taken after growth must be
+ * independent. Block index 0 is also exercised because an empty slot is encoded
+ * as index+1 == 0. */
+static int test_memory_table_growth(void) {
+    dearxan_vm_t vm;
+    dearxan_vm_t clone;
+    uint64_t value;
+    const uint64_t count = 300;
+
+    dearxan_vm_init(&vm, NULL, 0, 0x10000);
+    for (uint64_t i = 0; i < count; i++) {
+        uint64_t address = i * 64;
+        value = i + 1;
+        EXPECT_TRUE(dearxan_vm_write_memory(&vm, address, &value, sizeof(value)));
+    }
+    for (uint64_t i = 0; i < count; i++) {
+        value = 0;
+        EXPECT_TRUE(dearxan_vm_read_memory(&vm, i * 64, &value, sizeof(value)));
+        EXPECT_EQ(value, i + 1);
+    }
+    /* Unwritten blocks stay absent: with no image behind them the read fails. */
+    EXPECT_TRUE(!dearxan_vm_read_memory(&vm, count * 64, &value, sizeof(value)));
+
+    EXPECT_TRUE(dearxan_vm_clone(&clone, &vm));
+    value = UINT64_C(0xdeadbeef);
+    EXPECT_TRUE(dearxan_vm_write_memory(&clone, 0, &value, sizeof(value)));
+    value = 0;
+    EXPECT_TRUE(dearxan_vm_read_memory(&vm, 0, &value, sizeof(value)));
+    EXPECT_EQ(value, 1);
+    value = 0;
+    EXPECT_TRUE(dearxan_vm_read_memory(&clone, 0, &value, sizeof(value)));
+    EXPECT_EQ(value, UINT64_C(0xdeadbeef));
+    /* Writing new blocks into the clone must not disturb the source. */
+    for (uint64_t i = count; i < count + 200; i++) {
+        value = i;
+        EXPECT_TRUE(dearxan_vm_write_memory(&clone, i * 64, &value, sizeof(value)));
+    }
+    EXPECT_TRUE(!dearxan_vm_read_memory(&vm, count * 64, &value, sizeof(value)));
+    for (uint64_t i = 1; i < count; i++) {
+        value = 0;
+        EXPECT_TRUE(dearxan_vm_read_memory(&clone, i * 64, &value, sizeof(value)));
+        EXPECT_EQ(value, i + 1);
+    }
+    dearxan_vm_uninit(&clone);
+    dearxan_vm_uninit(&vm);
+
+    /* A clone of a VM that never touched memory has no table at all. */
+    dearxan_vm_init(&vm, NULL, 0, 0x10000);
+    EXPECT_TRUE(dearxan_vm_clone(&clone, &vm));
+    EXPECT_TRUE(!dearxan_vm_read_memory(&clone, 0, &value, sizeof(value)));
+    value = 7;
+    EXPECT_TRUE(dearxan_vm_write_memory(&clone, 0, &value, sizeof(value)));
+    value = 0;
+    EXPECT_TRUE(dearxan_vm_read_memory(&clone, 0, &value, sizeof(value)));
+    EXPECT_EQ(value, 7);
+    dearxan_vm_uninit(&clone);
+    dearxan_vm_uninit(&vm);
+    return 0;
+}
+
 static int test_xchg_aliasing(void) {
     static const unsigned char code[] = { 0x48, 0x87, 0x00 };
     dearxan_vm_t vm;
@@ -194,6 +255,7 @@ static int test_cmov_upstream_golden(void) {
 
 int main(void) {
     if (test_registers() != 0 || test_memory() != 0 ||
+        test_memory_table_growth() != 0 ||
         test_xchg_aliasing() != 0 ||
         test_cmov_upstream_golden() != 0) return 1;
     printf("smoke_dearxan_vm: all tests passed\n");

@@ -78,6 +78,32 @@ typedef struct dlmow_io_hook_blocking_vtable_s {
     ak_file_location_resolver_open_t open_by_name;
 } dlmow_io_hook_blocking_vtable_t;
 
+/* Look up `prefix + middle + path` in the Wwise VFS domain.
+ *
+ * Wwise streams audio continuously, so this builds the candidate in a stack
+ * buffer and only falls back to the heap for paths that do not fit. The lookup
+ * result is an interned VFS pointer, never a pointer into the candidate buffer. */
+static const wchar_t *wwise_lookup_candidate(const wchar_t *prefix, const wchar_t *middle,
+                                             const wchar_t *path) {
+    wchar_t stack[512];
+    wchar_t *heap = NULL;
+    const wchar_t *result;
+    size_t capacity = sizeof(stack) / sizeof(stack[0]);
+    size_t needed = wwise_join3(stack, capacity, prefix, middle, path);
+    if (needed == SIZE_MAX) return NULL;
+    if (needed + 1 > capacity) {
+        heap = ml_mem_alloc(0, (needed + 1) * sizeof(*heap));
+        if (heap == NULL) return NULL;
+        if (wwise_join3(heap, needed + 1, prefix, middle, path) != needed) {
+            ml_mem_free(heap);
+            return NULL;
+        }
+    }
+    result = vfs_lookup_domain(heap != NULL ? heap : stack, VFS_LOOKUP_WWISE);
+    ml_mem_free(heap);
+    return result;
+}
+
 void *__cdecl ak_file_location_resolver_open(const uint64_t p1, wchar_t *path, const ak_open_mode_t openMode, const uint64_t p4, const uint64_t p5, const uint64_t p6) {
     static const wchar_t *prefixes[3] = {
         L"sd/",
@@ -88,42 +114,27 @@ void *__cdecl ak_file_location_resolver_open(const uint64_t p1, wchar_t *path, c
     if (replace == NULL)
         return old_ak_file_location_resolver_open(p1, path, openMode, p4, p5, p6);
     const wchar_t *ext = PathFindExtensionW(replace);
-    if (ext != NULL && StrCmpIW(ext, L".wem") == 0) {
-        wchar_t *direct_path;
-        wchar_t *nested_path;
-        if (wwise_wem_candidates(replace, &direct_path, &nested_path)) {
-            const wchar_t *new_replace = NULL;
-            for (int i = 0; i < 3 && new_replace == NULL; i++) {
-                wchar_t *candidate = wwise_join_path(prefixes[i], direct_path);
-                if (candidate != NULL) {
-                    new_replace = vfs_lookup_domain(candidate, VFS_LOOKUP_WWISE);
-                    ml_mem_free(candidate);
-                }
-            }
-            for (int i = 0; i < 3 && new_replace == NULL; i++) {
-                wchar_t *candidate = wwise_join_path(prefixes[i], nested_path);
-                if (candidate != NULL) {
-                    new_replace = vfs_lookup_domain(candidate, VFS_LOOKUP_WWISE);
-                    ml_mem_free(candidate);
-                }
-            }
-            ml_mem_free(direct_path);
-            ml_mem_free(nested_path);
-            if (new_replace != NULL) {
-            /* FromSoftware's READ_EBL (9) mode yields an EBLFileOperator that
-             * only reads from BDT archives. An override file lives on disk, so
-             * we must switch back to READ (0) to get a FileOperator that reads
-             * the absolute disk path we pass in. See ModEngine2's
-             * wwise_file_overrides.cpp for the same rationale. */
-                return old_ak_file_location_resolver_open(p1, (wchar_t*)new_replace, READ, p4, p5, p6);
-            }
+    if (ext != NULL && StrCmpIW(ext, L".wem") == 0 && replace[0] != L'\0' && replace[1] != L'\0') {
+        wchar_t bucket[WWISE_WEM_BUCKET_SIZE];
+        const wchar_t *new_replace = NULL;
+        wwise_wem_bucket(replace, bucket);
+        for (int i = 0; i < 3 && new_replace == NULL; i++) {
+            new_replace = wwise_lookup_candidate(prefixes[i], L"wem/", replace);
+        }
+        for (int i = 0; i < 3 && new_replace == NULL; i++) {
+            new_replace = wwise_lookup_candidate(prefixes[i], bucket, replace);
+        }
+        if (new_replace != NULL) {
+        /* FromSoftware's READ_EBL (9) mode yields an EBLFileOperator that
+         * only reads from BDT archives. An override file lives on disk, so
+         * we must switch back to READ (0) to get a FileOperator that reads
+         * the absolute disk path we pass in. See ModEngine2's
+         * wwise_file_overrides.cpp for the same rationale. */
+            return old_ak_file_location_resolver_open(p1, (wchar_t*)new_replace, READ, p4, p5, p6);
         }
     }
     for (int i = 0; i < 3; i++) {
-        wchar_t *new_path = wwise_join_path(prefixes[i], replace);
-        if (new_path == NULL) continue;
-        const wchar_t *new_replace = vfs_lookup_domain(new_path, VFS_LOOKUP_WWISE);
-        ml_mem_free(new_path);
+        const wchar_t *new_replace = wwise_lookup_candidate(prefixes[i], NULL, replace);
         if (new_replace != NULL) {
             return old_ak_file_location_resolver_open(p1, (wchar_t*)new_replace, READ, p4, p5, p6);
         }

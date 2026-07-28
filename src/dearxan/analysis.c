@@ -213,21 +213,6 @@ static void uninit_analysis_state(analysis_state_t *state) {
     memset(state, 0, sizeof(*state));
 }
 
-static bool clone_analysis_state(analysis_state_t *destination,
-                                 const analysis_state_t *source) {
-    *destination = *source;
-    destination->path.items = NULL;
-    destination->path.count = 0;
-    destination->path.capacity = 0;
-    destination->vm.memory = NULL;
-    if (!dearxan_vm_clone(&destination->vm, &source->vm)) return false;
-    if (!clone_address_list(&destination->path, &source->path)) {
-        dearxan_vm_uninit(&destination->vm);
-        return false;
-    }
-    return true;
-}
-
 static bool clone_analysis_state_with_vm(analysis_state_t *destination,
                                          const analysis_state_t *source,
                                          dearxan_vm_t *vm) {
@@ -832,14 +817,6 @@ static bool is_int_2d(const ZydisDecodedInstruction *instruction,
 
 static bool is_cmov(ZydisMnemonic mnemonic) {
     return mnemonic >= ZYDIS_MNEMONIC_CMOVB && mnemonic <= ZYDIS_MNEMONIC_CMOVZ;
-}
-
-static size_t find_visited(const cfg_visited_t *visited, size_t visited_count,
-                           uint64_t address) {
-    for (size_t i = 0; i < visited_count; i++) {
-        if (visited[i].address == address) return i;
-    }
-    return SIZE_MAX;
 }
 
 static uint64_t hash_address(uint64_t value) {

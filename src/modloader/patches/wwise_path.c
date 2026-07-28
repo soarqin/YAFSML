@@ -8,8 +8,6 @@
 
 #include "wwise_path.h"
 
-#include "common/allocator.h"
-
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -50,38 +48,41 @@ const wchar_t *wwise_strip_prefixes(const wchar_t *path) {
     }
 }
 
-wchar_t *wwise_join_path(const wchar_t *prefix, const wchar_t *path) {
-    size_t prefix_length;
-    size_t path_length;
-    wchar_t *result;
-    if (prefix == NULL || path == NULL) return NULL;
-    prefix_length = wcslen(prefix);
-    path_length = wcslen(path);
-    if (prefix_length > SIZE_MAX - path_length - 1) return NULL;
-    result = ml_mem_alloc(0, (prefix_length + path_length + 1) * sizeof(*result));
-    if (result == NULL) return NULL;
-    memcpy(result, prefix, prefix_length * sizeof(*result));
-    memcpy(result + prefix_length, path, (path_length + 1) * sizeof(*result));
-    return result;
+/* Concatenate `prefix + middle + path` (`middle` may be NULL) the way snprintf
+ * reports: the returned length excludes the terminating NUL, and `buffer` is only
+ * written when the result fits. Returns SIZE_MAX on a NULL prefix/path or on
+ * length overflow. Lets the resolver hot path build candidates in a stack buffer
+ * instead of allocating one heap block per candidate. */
+size_t wwise_join3(wchar_t *buffer, size_t capacity, const wchar_t *prefix,
+                   const wchar_t *middle, const wchar_t *path) {
+    size_t lengths[3];
+    const wchar_t *parts[3];
+    size_t total = 0;
+    size_t offset = 0;
+    if (prefix == NULL || path == NULL) return SIZE_MAX;
+    parts[0] = prefix;
+    parts[1] = middle == NULL ? L"" : middle;
+    parts[2] = path;
+    for (size_t i = 0; i < 3; i++) {
+        lengths[i] = wcslen(parts[i]);
+        if (lengths[i] > SIZE_MAX - 1 - total) return SIZE_MAX;
+        total += lengths[i];
+    }
+    if (buffer == NULL || total + 1 > capacity) return total;
+    for (size_t i = 0; i < 3; i++) {
+        memcpy(buffer + offset, parts[i], lengths[i] * sizeof(*buffer));
+        offset += lengths[i];
+    }
+    buffer[offset] = L'\0';
+    return total;
 }
 
-bool wwise_wem_candidates(const wchar_t *path, wchar_t **first, wchar_t **second) {
-    size_t path_length;
-    wchar_t prefix[] = L"wem/00/";
-    if (first == NULL || second == NULL) return false;
-    *first = NULL;
-    *second = NULL;
-    if (path == NULL || (path_length = wcslen(path)) < 2) return false;
-    prefix[4] = path[0];
-    prefix[5] = path[1];
-    *first = wwise_join_path(L"wem/", path);
-    *second = wwise_join_path(prefix, path);
-    if (*first == NULL || *second == NULL) {
-        ml_mem_free(*first);
-        ml_mem_free(*second);
-        *first = NULL;
-        *second = NULL;
-        return false;
-    }
-    return true;
+/* Wwise `.wem` requests are looked up under `wem/<name>` and under the
+ * two-digit bucket `wem/<first two chars>/<name>`. */
+void wwise_wem_bucket(const wchar_t *path, wchar_t bucket[WWISE_WEM_BUCKET_SIZE]) {
+    static const wchar_t placeholder[WWISE_WEM_BUCKET_SIZE] = L"wem/00/";
+    memcpy(bucket, placeholder, sizeof(placeholder));
+    if (path == NULL || path[0] == L'\0' || path[1] == L'\0') return;
+    bucket[4] = path[0];
+    bucket[5] = path[1];
 }

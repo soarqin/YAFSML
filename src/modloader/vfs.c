@@ -573,9 +573,44 @@ bool vfs_recursion_guard_active(void) {
     return vfs_recursion_depth != 0;
 }
 
-static bool vfs_is_package_path(const wchar_t *path) {
-    for (size_t i = 0; i < entry_count; i++) {
-        if (CompareStringOrdinal(path, -1, entries[i].path, -1, TRUE) == CSTR_EQUAL) return true;
+/* Last path segment, or NULL when the caller must take the slow path.
+ *
+ * A path can only match a writable entry when its normalized form equals the
+ * entry key, which implies the normalized last segments are equal too:
+ * vfs_normalize_path lowercases per character and never rewrites the content of
+ * the final segment. The exceptions are a final segment of `.` or `..` (folded
+ * into the parent), a trailing separator (the final segment moves left), and a
+ * colon in the final segment (a drive-relative/device prefix is stripped before
+ * the final segment is parsed); all return NULL here so those paths keep using
+ * the full comparison. */
+static const wchar_t *vfs_last_segment(const wchar_t *path) {
+    const wchar_t *segment = path;
+    for (const wchar_t *cursor = path; *cursor != L'\0'; cursor++) {
+        if (*cursor == L'\\' || *cursor == L'/') segment = cursor + 1;
+    }
+    if (segment[0] == L'\0') return NULL;
+    if (segment[0] == L'.' && (segment[1] == L'\0' || (segment[1] == L'.' && segment[2] == L'\0'))) return NULL;
+    if (wcschr(segment, L':') != NULL) return NULL;
+    return segment;
+}
+
+/* Cheap pre-filter for the writable table. Returns false only when `path`
+ * provably matches no registered key, in which case the caller can skip the
+ * normalization, the allocation and the negative cache insert. Must be called
+ * with `writable_lock` held.
+ *
+ * `writable_entries` is append-only until vfs_uninit, so a false answer is exact
+ * for every entry registered before the call. A registration that lands after it
+ * is genuinely concurrent, and the only producer -- ml_save_mapping_route --
+ * re-queries on the same thread after registering, so it always observes its own
+ * entry. */
+static bool vfs_writable_segment_may_match(const wchar_t *path) {
+    const wchar_t *segment = vfs_last_segment(path);
+    if (segment == NULL) return true;
+    for (size_t i = 0; i < writable_count; i++) {
+        const wchar_t *key_segment = vfs_last_segment(writable_entries[i].key);
+        if (key_segment == NULL) return true;
+        if (CompareStringOrdinal(segment, -1, key_segment, -1, TRUE) == CSTR_EQUAL) return true;
     }
     return false;
 }
@@ -588,11 +623,22 @@ const wchar_t *vfs_route_writable_path(const wchar_t *path) {
     const wchar_t *result = NULL;
     if (path == NULL || vfs_recursion_depth != 0 || writable_cache == NULL) return NULL;
     AcquireSRWLockShared(&writable_lock);
+    if (writable_count == 0) {
+        ReleaseSRWLockShared(&writable_lock);
+        return NULL;
+    }
     slot = kh_get(vfs_lookup_cache, writable_cache, path);
     if (slot != kh_end(writable_cache)) {
         result = kh_value(writable_cache, slot);
         ReleaseSRWLockShared(&writable_lock);
         return result;
+    }
+    /* Keep the cache bounded to paths that can actually match: without this the
+     * cache would grow one strdup'd entry per distinct path the game ever opens,
+     * and every first access would serialize on the exclusive lock below. */
+    if (!vfs_writable_segment_may_match(path)) {
+        ReleaseSRWLockShared(&writable_lock);
+        return NULL;
     }
     ReleaseSRWLockShared(&writable_lock);
 
@@ -628,8 +674,17 @@ const wchar_t *vfs_route_writable_path(const wchar_t *path) {
     return result;
 }
 
+/* No "is this already a package path" guard here: the physical paths in `entries`
+ * are always absolute (a validated directory root joined with a relative child),
+ * while every caller reaches this function with a game-root-relative path -- the
+ * public entry point is vfs_route_read_path_prefixed, and vfs_strip_path_prefix
+ * only returns when the next character is `\0`, `\` or `/`. An ordinal compare
+ * between the two can never be equal, so such a guard would cost an O(entries)
+ * Unicode comparison per file open and never fire. Re-entry is handled by
+ * vfs_recursion_depth and by the vfs_uid_to_path fast path in
+ * mods_file_route_read. */
 const wchar_t *vfs_route_read_path(const wchar_t *path, DWORD desired_access, DWORD creation_disposition) {
-    if (path == NULL || vfs_recursion_depth != 0 || vfs_is_package_path(path)) return NULL;
+    if (path == NULL || vfs_recursion_depth != 0) return NULL;
     const wchar_t *writable = vfs_route_writable_path(path);
     if (writable != NULL) return writable;
     if ((desired_access & (GENERIC_WRITE | DELETE)) != 0 ||

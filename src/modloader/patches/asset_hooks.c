@@ -35,6 +35,13 @@
 #include <MinHook.h>
 
 #include <shlwapi.h>
+
+#define kcalloc(N,Z) ml_mem_alloc(LPTR, (N) * (Z))
+#define kmalloc(Z) ml_mem_alloc(0, (Z))
+#define krealloc(P,Z) ((P) ? ml_mem_realloc((P), (Z), LMEM_MOVEABLE) : ml_mem_alloc(0, (Z)))
+#define kfree(P) ml_mem_free(P)
+#include "khash.h"
+#include "khash_wstr.h"
 #endif
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -157,9 +164,8 @@ static LONG logged_disk_open;
 static LONG logged_disk_open_return;
 static LONG logged_mount_ebl;
 static LONG boot_boost_status_reported;
-static wchar_t **logged_override_paths;
-static size_t logged_override_count;
-static size_t logged_override_capacity;
+static khash_t(wstr) *logged_override_paths;
+static volatile LONG set_path_hook_settled;
 
 static bool pointer_in_text(const void *pointer) {
     const IMAGE_SECTION_HEADER *text = pe_section_by_name(game_image_base, ".text");
@@ -420,35 +426,41 @@ done:
     return result;
 }
 
+/* Log each overridden physical path once.
+ *
+ * Every caller passes an interned VFS path (`entries[i].path`, reached through
+ * vfs_uid_to_path / vfs_lookup), so distinct files are always distinct strings
+ * and a hash set partitions them exactly as the previous case-insensitive
+ * comparison did -- without the O(logged) scan under an exclusive lock that this
+ * used to cost on every override hit. */
 static void log_override_once(const wchar_t *route, const wchar_t *requested,
                               const wchar_t *expanded, const wchar_t *physical) {
     bool added = false;
-    wchar_t *copy;
+    khiter_t slot;
     if (physical == NULL) return;
-    AcquireSRWLockExclusive(&override_log_lock);
-    for (size_t i = 0; i < logged_override_count; i++) {
-        if (CompareStringOrdinal(logged_override_paths[i], -1, physical, -1, TRUE) == CSTR_EQUAL) {
-            ReleaseSRWLockExclusive(&override_log_lock);
+    AcquireSRWLockShared(&override_log_lock);
+    if (logged_override_paths != NULL) {
+        slot = kh_get(wstr, logged_override_paths, physical);
+        if (slot != kh_end(logged_override_paths)) {
+            ReleaseSRWLockShared(&override_log_lock);
             return;
         }
     }
-    copy = ml_mem_strdup_w(physical);
-    if (copy != NULL) {
-        if (logged_override_count == logged_override_capacity) {
-            size_t capacity = logged_override_capacity == 0 ? 64 : logged_override_capacity * 2;
-            wchar_t **paths = logged_override_paths == NULL
-                ? ml_mem_alloc(0, capacity * sizeof(*paths))
-                : ml_mem_realloc(logged_override_paths, capacity * sizeof(*paths), LMEM_MOVEABLE);
-            if (paths != NULL) {
-                logged_override_paths = paths;
-                logged_override_capacity = capacity;
+    ReleaseSRWLockShared(&override_log_lock);
+
+    AcquireSRWLockExclusive(&override_log_lock);
+    if (logged_override_paths == NULL) logged_override_paths = kh_init(wstr);
+    if (logged_override_paths != NULL) {
+        int ret;
+        slot = kh_put(wstr, logged_override_paths, physical, &ret);
+        if (ret > 0) {
+            wchar_t *copy = ml_mem_strdup_w(physical);
+            if (copy == NULL) {
+                kh_del(wstr, logged_override_paths, slot);
+            } else {
+                kh_key(logged_override_paths, slot) = copy;
+                added = true;
             }
-        }
-        if (logged_override_count < logged_override_capacity) {
-            logged_override_paths[logged_override_count++] = copy;
-            added = true;
-        } else {
-            ml_mem_free(copy);
         }
     }
     ReleaseSRWLockExclusive(&override_log_lock);
@@ -460,11 +472,16 @@ static void log_override_once(const wchar_t *route, const wchar_t *requested,
 
 static void clear_override_log(void) {
     AcquireSRWLockExclusive(&override_log_lock);
-    for (size_t i = 0; i < logged_override_count; i++) ml_mem_free(logged_override_paths[i]);
-    ml_mem_free(logged_override_paths);
-    logged_override_paths = NULL;
-    logged_override_count = 0;
-    logged_override_capacity = 0;
+    if (logged_override_paths != NULL) {
+        for (khiter_t slot = kh_begin(logged_override_paths);
+             slot != kh_end(logged_override_paths); slot++) {
+            if (kh_exist(logged_override_paths, slot)) {
+                ml_mem_free((void *)kh_key(logged_override_paths, slot));
+            }
+        }
+        kh_destroy(wstr, logged_override_paths);
+        logged_override_paths = NULL;
+    }
     ReleaseSRWLockExclusive(&override_log_lock);
 }
 
@@ -639,6 +656,13 @@ static bool hook_file_operator(ml_dl_file_operator_t *file_operator) {
     void *targets[3];
     void *detours[3] = { set_path_hooked, set_path2_hooked, set_path3_hooked };
     bool result = true;
+    /* This runs once per process but is called from every disk open_file return,
+     * so keep the settled case off the exclusive lock. `set_path_hook_settled` is
+     * published after `set_path_hook_result` is final, and both are only ever
+     * written under the exclusive lock. */
+    if (InterlockedCompareExchange(&set_path_hook_settled, 0, 0) != 0) {
+        return set_path_hook_result;
+    }
     AcquireSRWLockExclusive(&set_path_hook_lock);
     if (set_path_hook_attempted) {
         result = set_path_hook_result;
@@ -653,6 +677,7 @@ static bool hook_file_operator(ml_dl_file_operator_t *file_operator) {
         ML_LOG_WARN(L"asset-hooks", L"DlFileOperator layout validation failed: operator=%p vtable=%p",
                     file_operator, file_operator == NULL ? NULL : file_operator->vtable);
         set_path_hook_result = false;
+        InterlockedExchange(&set_path_hook_settled, 1);
         ReleaseSRWLockExclusive(&set_path_hook_lock);
         return false;
     }
@@ -671,6 +696,7 @@ static bool hook_file_operator(ml_dl_file_operator_t *file_operator) {
         }
     }
     set_path_hook_result = result;
+    InterlockedExchange(&set_path_hook_settled, 1);
     ReleaseSRWLockExclusive(&set_path_hook_lock);
     return result;
 }
@@ -891,7 +917,6 @@ bool ml_asset_hooks_install_game_data_ready(const ml_game_descriptor_t *game) {
     if (game->game_data_ready_strategy == ML_GAME_DATA_READY_FILE_STEP_AFTER_ORIGINAL) {
         if (!file_step_hook_installed) {
             ml_hook_result_t file_step_result;
-            HMODULE module;
             game_image_base = get_module_image_base(NULL, &game_image_size);
             game_stl_abi = game->stl_abi;
             if (game_image_base == NULL || game_image_size == 0) return false;
@@ -1083,6 +1108,7 @@ bool ml_asset_hooks_uninstall(void) {
     logged_mount_ebl = 0;
     boot_boost_status_reported = 0;
     clear_override_log();
+    InterlockedExchange(&set_path_hook_settled, 0);
     set_path_hook_attempted = false;
     set_path_hook_result = false;
     return true;

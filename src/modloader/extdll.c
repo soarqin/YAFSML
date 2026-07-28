@@ -184,83 +184,33 @@ static int extdll_index_by_name(const char *name) {
     return -1;
 }
 
-static bool extdll_has_unique_dependency(const extdll_t *extdll, int dependency_index, int before) {
-    const char *dependency_name = extdlls[dependency_index].name;
-    for (int i = 0; i < before; i++) {
-        if (strcmp(extdll->after[i], dependency_name) == 0) return false;
-    }
-    return true;
-}
-
 void extdlls_prepare() {
-    unsigned char *selected;
-    int *indegree;
     int *order;
     extdll_t *sorted;
-    int output_count = 0;
 
     if (extdll_count < 2) {
         return;
     }
-    selected = ml_mem_alloc(LMEM_ZEROINIT, (size_t)extdll_count * sizeof(*selected));
-    indegree = ml_mem_alloc(LMEM_ZEROINIT, (size_t)extdll_count * sizeof(*indegree));
     order = ml_mem_alloc(0, (size_t)extdll_count * sizeof(*order));
-    if (selected == NULL || indegree == NULL || order == NULL) {
+    if (order == NULL) {
         ML_LOG_ERROR(L"extdll", L"cannot allocate external DLL dependency sorter");
-        ml_mem_free(selected);
-        ml_mem_free(indegree);
-        ml_mem_free(order);
         return;
     }
 
     for (int i = 0; i < extdll_count; i++) {
         for (int j = 0; j < extdlls[i].after_count; j++) {
-            int dependency = extdll_index_by_name(extdlls[i].after[j]);
-            if (dependency < 0) {
+            if (extdll_index_by_name(extdlls[i].after[j]) < 0) {
                 ML_LOG_WARN(L"extdll", L"external DLL %hs depends on missing DLL %hs",
                             extdlls[i].name, extdlls[i].after[j]);
-                continue;
-            }
-            if (extdll_has_unique_dependency(&extdlls[i], dependency, j)) indegree[i]++;
-        }
-    }
-
-    while (output_count < extdll_count) {
-        int next = -1;
-        /* Choosing the first currently available entry makes the topological
-           sort stable: unrelated entries retain their configured order. */
-        for (int i = 0; i < extdll_count; i++) {
-            if (!selected[i] && indegree[i] == 0) {
-                next = i;
-                break;
-            }
-        }
-        if (next < 0) {
-            ML_LOG_ERROR(L"extdll", L"external DLL dependency cycle detected; preserving configured order");
-            ml_mem_free(selected);
-            ml_mem_free(indegree);
-            ml_mem_free(order);
-            return;
-        }
-        selected[next] = true;
-        order[output_count++] = next;
-        for (int i = 0; i < extdll_count; i++) {
-            if (selected[i]) continue;
-            for (int j = 0; j < extdlls[i].after_count; j++) {
-                if (strcmp(extdlls[i].after[j], extdlls[next].name) == 0) {
-                    if (extdll_has_unique_dependency(&extdlls[i], extdll_index_by_name(extdlls[next].name), j)) {
-                        indegree[i]--;
-                    }
-                    break;
-                }
             }
         }
     }
 
-    /* Rebuild the order from the original positions. When a dependency is
-       later than its dependent, move the nearest such dependency directly
-       before the dependent. This keeps unrelated entries in their original
-       order and changes only the entries needed to satisfy the constraints. */
+    /* Order from the original positions. When a dependency is later than its
+       dependent, move the nearest such dependency directly before the dependent.
+       This keeps unrelated entries in their original order and changes only the
+       entries needed to satisfy the constraints. A cycle never converges, which
+       the move budget below detects; the configured order is then preserved. */
     for (int i = 0; i < extdll_count; i++) order[i] = i;
     for (int move_count = 0; move_count <= extdll_count * extdll_count; move_count++) {
         bool moved = false;
@@ -291,8 +241,6 @@ void extdlls_prepare() {
         if (!moved) break;
         if (move_count == extdll_count * extdll_count) {
             ML_LOG_ERROR(L"extdll", L"external DLL dependency cycle detected; preserving configured order");
-            ml_mem_free(selected);
-            ml_mem_free(indegree);
             ml_mem_free(order);
             return;
         }
@@ -340,8 +288,6 @@ void extdlls_prepare() {
             }
         }
     }
-    ml_mem_free(selected);
-    ml_mem_free(indegree);
     ml_mem_free(order);
 }
 
