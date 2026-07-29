@@ -16,6 +16,11 @@
 extern "C" {
 #endif
 
+typedef struct sprj_step_range_s {
+    const uint8_t *base;
+    size_t size;
+} sprj_step_range_t;
+
 typedef struct sprj_step_table_s {
     /* Step function table the constructor installed in the object. */
     void **table;
@@ -37,12 +42,15 @@ typedef struct sprj_step_table_s {
  *     lea  rax, [rip+derived_vtable]
  *     mov  [this], rax
  *
- * `text` and `data` are live mapped section pointers: rip-relative
+ * `text` and `table_ranges` are live mapped section pointers: rip-relative
  * displacements resolve against those addresses, matching
- * ml_find_rip_relative_lea(). */
+ * ml_find_rip_relative_lea(). Every shipped build observed so far keeps the table
+ * in `.data`, but the caller passes each section the table may legitimately live
+ * in so that a build placing it elsewhere is not rejected outright. */
 bool sprj_step_find_from_vtable(const uint8_t *text, size_t text_size,
                                 const void *vtable,
-                                const uint8_t *data, size_t data_size,
+                                const sprj_step_range_t *table_ranges,
+                                size_t table_range_count,
                                 sprj_step_table_t *out);
 
 #ifdef __cplusplus
