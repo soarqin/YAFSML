@@ -37,6 +37,7 @@ add_project(modloader_dll SHARED
     patches/logo.c patches/logo.h
     patches/properties.c patches/properties.h patches/properties_hook.asm
     patches/regulation.c patches/regulation.h
+    patches/regulation_sig.c patches/regulation_sig.h
     patches/runtime_ready.c patches/runtime_ready.h
     patches/save_mapping.c patches/save_mapping.h
     patches/win32_hooks.c patches/win32_hooks.h

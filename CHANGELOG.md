@@ -40,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed Sekiro 1.06 regulation save-write protection failing to locate its
+  writer because the game consumes the writer's return value differently from
+  the older me3 call-site signature.
 - Fixed a crash at startup when the log file could not be set up.
 - A mod path the mod loader cannot read is now reported and skipped, instead of
   being used as garbage.

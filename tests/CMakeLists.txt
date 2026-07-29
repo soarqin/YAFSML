@@ -36,6 +36,8 @@ set(SMOKE_smoke_lifecycle_SOURCES ${CMAKE_SOURCE_DIR}/src/modloader/lifecycle.c)
 set(SMOKE_smoke_cpu_affinity_LIBRARIES process)
 set(SMOKE_smoke_fd4_step_SOURCES ${CMAKE_SOURCE_DIR}/src/process/fd4_step_static.c)
 set(SMOKE_smoke_logo_SOURCES ${CMAKE_SOURCE_DIR}/src/modloader/patches/logo.c)
+set(SMOKE_smoke_regulation_sig_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/modloader/patches/regulation_sig.c)
 set(SMOKE_smoke_dlrf_SOURCES ${CMAKE_SOURCE_DIR}/src/process/dlrf.c)
 set(SMOKE_smoke_rip_scan_SOURCES ${CMAKE_SOURCE_DIR}/src/process/rip_scan.c)
 set(SMOKE_smoke_mod_routing_SOURCES ${CMAKE_SOURCE_DIR}/src/modloader/mod.c)

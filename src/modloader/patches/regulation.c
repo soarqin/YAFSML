@@ -1,18 +1,18 @@
 #include "regulation.h"
+#include "regulation_sig.h"
 #include "log.h"
 
+#include "common/allocator.h"
 #include "modloader/dl_allocator.h"
 #include "modloader/hook.h"
 
 #include "process/fd4_step.h"
 #include "process/image.h"
 #include "process/pe.h"
-#include "process/scanner.h"
 #include "process/singleton.h"
 
-#include <stdint.h>
 #include <stddef.h>
-#include <string.h>
+#include <stdint.h>
 
 typedef struct dl_vector_ptr_msvc2015_s {
     dl_allocator_t *allocator;
@@ -69,45 +69,52 @@ static bool install_fd4(void) {
            ml_hook_install(step, regulation_step_idle_hooked, (void **)&old_regulation_step_idle) == ML_HOOK_APPLIED;
 }
 
-static bool sprj_writer_signature_matches(const uint8_t *target, const uint8_t *text_end) {
-    if (target == NULL || target + 17 > text_end) return false;
-    if (memcmp(target, "\x48\x8b\xd1\x48\x8b\x0d", 6) != 0) return false;
-    if (memcmp(target + 10, "\x48\x85\xc9", 3) != 0) return false;
-    if (target[13] == 0x75) {
-        return target + 18 <= text_end && target[15] == 0x32 && target[16] == 0xc0 && target[17] == 0xc3;
-    }
-    return target + 22 <= text_end && target[13] == 0x0f && target[14] == 0x85 &&
-           target[19] == 0x32 && target[20] == 0xc0 && target[21] == 0xc3;
-}
-
 static bool install_sprj(void) {
     size_t image_size = 0;
     void *image = get_module_image_base(NULL, &image_size);
     const IMAGE_SECTION_HEADER *text = pe_section_by_name(image, ".text");
     size_t text_size = 0;
     uint8_t *base = pe_section_data(image, text, &text_size);
-    uint8_t *cursor = base;
-    size_t remaining = text_size;
+    uint8_t **writers;
+    size_t writer_capacity;
     size_t installed = 0;
     size_t matched = 0;
 
-    while (cursor != NULL && remaining >= 13) {
-        uint8_t *call = sig_scan(cursor, remaining, "48 8D 4C 24 ?? E8 ?? ?? ?? ?? 84 C0 74 ??");
-        uint8_t *target;
-        if (call == NULL) break;
-        target = call + 10 + *(int32_t *)(call + 6);
-        if (target >= base && target < base + text_size &&
-            sprj_writer_signature_matches(target, base + text_size)) {
-            matched++;
-            if (ml_hook_install(target, skip_regulation_write, NULL) == ML_HOOK_APPLIED) installed++;
-        }
-        remaining -= (size_t)(call + 1 - cursor);
-        cursor = call + 1;
+    if (base == NULL || text_size == 0) return false;
+    writer_capacity =
+        ml_regulation_sprj_find_writers(base, text_size, NULL, 0);
+    if (writer_capacity == 0 ||
+        writer_capacity > SIZE_MAX / sizeof(*writers)) {
+        return false;
     }
+    writers = ml_mem_alloc(0, writer_capacity * sizeof(*writers));
+    if (writers == NULL) {
+        ML_LOG_WARN(L"regulation",
+                    L"SPRJ regulation writer target allocation failed");
+        return false;
+    }
+    matched = ml_regulation_sprj_find_writers(
+        base, text_size, writers, writer_capacity);
+    for (size_t i = 0; i < matched; i++) {
+        if (ml_hook_install(writers[i], skip_regulation_write, NULL) ==
+            ML_HOOK_APPLIED) {
+            installed++;
+        }
+    }
+    ml_mem_free(writers);
+    ML_LOG_DEBUG(L"regulation",
+                 L"SPRJ regulation writer scan matched %zu target(s), "
+                 L"installed %zu hook(s)",
+                 matched, installed);
     if (matched != 0 && installed == 0) {
         ML_LOG_WARN(L"regulation", L"SPRJ regulation writer matched but hooks were blocked");
+    } else if (installed != matched) {
+        ML_LOG_WARN(L"regulation",
+                    L"SPRJ regulation writer hook coverage is partial: "
+                    L"%zu of %zu installed",
+                    installed, matched);
     }
-    return installed > 0;
+    return matched != 0 && installed == matched;
 }
 
 bool ml_regulation_install(const ml_game_descriptor_t *game) {
