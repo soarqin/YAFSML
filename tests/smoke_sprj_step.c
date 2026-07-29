@@ -77,22 +77,53 @@ static int build_constructor(void) {
     return 0;
 }
 
+static sprj_step_range_t table_ranges[2];
+static size_t table_range_count;
+
+static void use_step_table_range(void) {
+    table_ranges[0].base = (const uint8_t *)step_table;
+    table_ranges[0].size = sizeof(step_table);
+    table_range_count = 1;
+}
+
+/* The table may legitimately sit in any of the ranges the caller offers. */
+static void use_unrelated_first_range(void) {
+    table_ranges[0].base = unrelated_data;
+    table_ranges[0].size = sizeof(unrelated_data);
+    table_ranges[1].base = (const uint8_t *)step_table;
+    table_ranges[1].size = sizeof(step_table);
+    table_range_count = 2;
+}
+
+static void use_unrelated_range_only(void) {
+    table_ranges[0].base = unrelated_data;
+    table_ranges[0].size = sizeof(unrelated_data);
+    table_range_count = 1;
+}
+
 static int test_resolves_wait_step(void) {
     sprj_step_table_t found;
 
     EXPECT_EQ(build_constructor(), 0);
+    use_step_table_range();
     EXPECT_TRUE(sprj_step_find_from_vtable(text, sizeof(text), derived_vtable,
-                                           (const uint8_t *)step_table, sizeof(step_table),
-                                           &found));
+                                           table_ranges, table_range_count, &found));
     EXPECT_EQ(found.table, step_table);
     EXPECT_EQ(found.first_step, step_table[0]);
     EXPECT_EQ(found.second_step, step_table[1]);
     EXPECT_EQ(found.index_offset, STEP_INDEX_OFFSET);
     EXPECT_EQ(found.table_offset, STEP_TABLE_OFFSET);
+
+    /* Resolving must not depend on which offered range holds the table. */
+    use_unrelated_first_range();
+    EXPECT_TRUE(sprj_step_find_from_vtable(text, sizeof(text), derived_vtable,
+                                           table_ranges, table_range_count, &found));
+    EXPECT_EQ(found.second_step, step_table[1]);
+
     /* The base vtable is stored without a step table of its own. */
+    use_step_table_range();
     EXPECT_TRUE(!sprj_step_find_from_vtable(text, sizeof(text), base_vtable,
-                                            (const uint8_t *)step_table, sizeof(step_table),
-                                            &found));
+                                            table_ranges, table_range_count, &found));
     return 0;
 }
 
@@ -102,44 +133,46 @@ static int test_rejects_broken_constructor(void) {
     /* `mov [rip+disp32], rax` names no base register, so the store that anchors
        the match is no longer a candidate. */
     EXPECT_EQ(build_constructor(), 0);
+    use_step_table_range();
     text[DERIVED_STORE_OFFSET + 2] = 0x05;
     EXPECT_TRUE(!sprj_step_find_from_vtable(text, sizeof(text), derived_vtable,
-                                            (const uint8_t *)step_table, sizeof(step_table),
-                                            &found));
+                                            table_ranges, table_range_count, &found));
 
     /* Without the step-index store the object layout stays unverified. */
     EXPECT_EQ(build_constructor(), 0);
     memset(text + INDEX_STORE_OFFSET, 0x90, 4);
     EXPECT_TRUE(!sprj_step_find_from_vtable(text, sizeof(text), derived_vtable,
-                                            (const uint8_t *)step_table, sizeof(step_table),
-                                            &found));
+                                            table_ranges, table_range_count, &found));
 
     /* The step index must live before the table pointer in the object. */
     EXPECT_EQ(build_constructor(), 0);
     write_mov_base_disp8(text + INDEX_STORE_OFFSET, MODRM_REG_RCX, STEP_TABLE_OFFSET + 8);
     EXPECT_TRUE(!sprj_step_find_from_vtable(text, sizeof(text), derived_vtable,
-                                            (const uint8_t *)step_table, sizeof(step_table),
-                                            &found));
+                                            table_ranges, table_range_count, &found));
 
-    /* A table outside the data section is rejected. */
+    /* A table outside every offered range is rejected. */
     EXPECT_EQ(build_constructor(), 0);
+    use_unrelated_range_only();
     EXPECT_TRUE(!sprj_step_find_from_vtable(text, sizeof(text), derived_vtable,
-                                            unrelated_data, sizeof(unrelated_data), &found));
+                                            table_ranges, table_range_count, &found));
 
     /* Step entries must point into the text section. */
     EXPECT_EQ(build_constructor(), 0);
+    use_step_table_range();
     step_table[1] = derived_vtable;
     EXPECT_TRUE(!sprj_step_find_from_vtable(text, sizeof(text), derived_vtable,
-                                            (const uint8_t *)step_table, sizeof(step_table),
-                                            &found));
+                                            table_ranges, table_range_count, &found));
 
     EXPECT_EQ(build_constructor(), 0);
+    use_step_table_range();
     EXPECT_TRUE(!sprj_step_find_from_vtable(NULL, sizeof(text), derived_vtable,
-                                            (const uint8_t *)step_table, sizeof(step_table),
-                                            &found));
+                                            table_ranges, table_range_count, &found));
     EXPECT_TRUE(!sprj_step_find_from_vtable(text, sizeof(text), NULL,
-                                            (const uint8_t *)step_table, sizeof(step_table),
-                                            &found));
+                                            table_ranges, table_range_count, &found));
+    EXPECT_TRUE(!sprj_step_find_from_vtable(text, sizeof(text), derived_vtable,
+                                            table_ranges, 0, &found));
+    EXPECT_TRUE(!sprj_step_find_from_vtable(text, sizeof(text), derived_vtable,
+                                            NULL, table_range_count, &found));
     return 0;
 }
 

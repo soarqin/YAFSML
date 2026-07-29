@@ -135,11 +135,14 @@ static bool install_sprj_param_step(const ml_game_descriptor_t *game) {
     void *image_base;
     size_t image_size = 0;
     const IMAGE_SECTION_HEADER *text_section;
-    const IMAGE_SECTION_HEADER *data_section;
     const uint8_t *text;
-    const uint8_t *data;
     size_t text_size = 0;
-    size_t data_size = 0;
+    /* Every build observed so far keeps the step table in `.data`, matching the
+       constraint fd4_step_static.c puts on FD4 step slots. `.rdata` is accepted
+       too so that a build emitting the table as read-only data still resolves. */
+    static const char *const table_section_names[] = { ".data", ".rdata" };
+    sprj_step_range_t table_ranges[sizeof(table_section_names) / sizeof(table_section_names[0])];
+    size_t table_range_count = 0;
     size_t vtable_count;
     sprj_step_table_t table;
     ml_hook_result_t result;
@@ -149,11 +152,21 @@ static bool install_sprj_param_step(const ml_game_descriptor_t *game) {
     image_base = get_module_image_base(NULL, &image_size);
     if (image_base == NULL || image_size == 0) return false;
     text_section = pe_section_by_name(image_base, ".text");
-    data_section = pe_section_by_name(image_base, ".data");
-    if (text_section == NULL || data_section == NULL) return false;
+    if (text_section == NULL) return false;
     text = (const uint8_t *)pe_section_data(image_base, text_section, &text_size);
-    data = (const uint8_t *)pe_section_data(image_base, data_section, &data_size);
-    if (text == NULL || data == NULL || text_size == 0 || data_size == 0) return false;
+    if (text == NULL || text_size == 0) return false;
+    for (size_t i = 0; i < sizeof(table_section_names) / sizeof(table_section_names[0]); i++) {
+        const IMAGE_SECTION_HEADER *section =
+            pe_section_by_name(image_base, table_section_names[i]);
+        size_t size = 0;
+        const uint8_t *base = section == NULL
+            ? NULL : (const uint8_t *)pe_section_data(image_base, section, &size);
+        if (base == NULL || size < 2 * sizeof(void *)) continue;
+        table_ranges[table_range_count].base = base;
+        table_ranges[table_range_count].size = size;
+        table_range_count++;
+    }
+    if (table_range_count == 0) return false;
 
     vtable_count = rtti_vtable_count(game->data_ready_class);
     if (vtable_count == 0) {
@@ -164,7 +177,8 @@ static bool install_sprj_param_step(const ml_game_descriptor_t *game) {
     for (size_t i = 0; i < vtable_count && !resolved; i++) {
         void *vtable = rtti_find_vtable_at(game->data_ready_class, i);
         if (vtable == NULL) continue;
-        resolved = sprj_step_find_from_vtable(text, text_size, vtable, data, data_size, &table);
+        resolved = sprj_step_find_from_vtable(text, text_size, vtable, table_ranges,
+                                             table_range_count, &table);
     }
     if (!resolved) {
         ML_LOG_WARN(L"data-ready", L"%hs step table could not be derived from its constructor",

@@ -59,12 +59,22 @@ static bool is_mov_base_disp8(const uint8_t *code, uint8_t reg, uint8_t base,
 static bool range_contains(const uint8_t *base, size_t size, const void *address,
                            size_t needed) {
     const uint8_t *pointer = (const uint8_t *)address;
-    return pointer >= base && needed <= size && (size_t)(pointer - base) <= size - needed;
+    return base != NULL && pointer >= base && needed <= size &&
+           (size_t)(pointer - base) <= size - needed;
+}
+
+static bool ranges_contain(const sprj_step_range_t *ranges, size_t count,
+                           const void *address, size_t needed) {
+    for (size_t i = 0; i < count; i++) {
+        if (range_contains(ranges[i].base, ranges[i].size, address, needed)) return true;
+    }
+    return false;
 }
 
 static bool resolve_candidate(const uint8_t *text, size_t text_size,
                               const uint8_t *vtable_lea,
-                              const uint8_t *data, size_t data_size,
+                              const sprj_step_range_t *table_ranges,
+                              size_t table_range_count,
                               sprj_step_table_t *out) {
     size_t lea_offset = (size_t)(vtable_lea - text);
     size_t window;
@@ -108,7 +118,7 @@ static bool resolve_candidate(const uint8_t *text, size_t text_size,
     if (index_offset == 0) return false;
 
     if (((uintptr_t)table & (sizeof(void *) - 1)) != 0) return false;
-    if (!range_contains(data, data_size, table, 2 * sizeof(void *))) return false;
+    if (!ranges_contain(table_ranges, table_range_count, table, 2 * sizeof(void *))) return false;
     if (!range_contains(text, text_size, table[0], 1) ||
         !range_contains(text, text_size, table[1], 1)) return false;
 
@@ -122,17 +132,19 @@ static bool resolve_candidate(const uint8_t *text, size_t text_size,
 
 bool sprj_step_find_from_vtable(const uint8_t *text, size_t text_size,
                                const void *vtable,
-                               const uint8_t *data, size_t data_size,
+                               const sprj_step_range_t *table_ranges,
+                               size_t table_range_count,
                                sprj_step_table_t *out) {
-    if (text == NULL || vtable == NULL || data == NULL || out == NULL) return false;
-    if (text_size < SPRJ_LEA_SIZE || data_size < 2 * sizeof(void *)) return false;
+    if (text == NULL || vtable == NULL || table_ranges == NULL || out == NULL) return false;
+    if (text_size < SPRJ_LEA_SIZE || table_range_count == 0) return false;
 
     memset(out, 0, sizeof(*out));
     for (size_t offset = 0; offset + SPRJ_LEA_SIZE <= text_size; ) {
         const uint8_t *vtable_lea = ml_find_rip_relative_lea(text + offset, text_size - offset,
                                                             vtable);
         if (vtable_lea == NULL) break;
-        if (resolve_candidate(text, text_size, vtable_lea, data, data_size, out)) return true;
+        if (resolve_candidate(text, text_size, vtable_lea, table_ranges, table_range_count,
+                              out)) return true;
         offset = (size_t)(vtable_lea - text) + 1;
     }
     return false;
