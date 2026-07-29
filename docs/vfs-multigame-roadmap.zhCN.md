@@ -270,7 +270,7 @@ typedef struct ml_game_descriptor_s {
 
 ### 5.3 生命周期
 
-统一使用五个阶段：
+统一使用六个阶段：
 
 | 阶段 | 目的 | 典型功能 |
 | --- | --- | --- |
@@ -278,7 +278,10 @@ typedef struct ml_game_descriptor_s {
 | `BEFORE_MAIN` | 游戏必要初始化或 Arxan 调度后 | system allocator、early native |
 | `AFTER_RUNTIME_INIT` | 游戏运行时静态对象可分析后 | RTTI、FD4、DLRF、普通 native、allocator、资产 Hook |
 | `AFTER_PROPERTIES_READY` | 游戏属性表可写后 | 离线属性和用户 property override |
-| `AFTER_GAME_DATA_READY` | 标题或文件初始化完成后 | 异步应用 CPU 亲和性 |
+| `AFTER_RENDER_READY` | 标题或菜单构造完成后 | 异步应用 CPU 亲和性 |
+| `AFTER_DATA_READY` | 游戏 param 全部读取并后处理完成后 | `data_ready` native |
+
+`AFTER_RENDER_READY` 只保证游戏可以渲染，不保证 param 已读完：Elden Ring 的 `TitleStep::STEP_InitMenu` 只构造菜单 job，Dark Souls III 的 `TitleFlowStep::STEP_Init` 只创建 title flow task，而 `CSSystemStep` / `SprjSystemStep` 的 boot phase 并不等待 param 任务。依赖 param 完整性的功能必须使用 `AFTER_DATA_READY`。
 
 现有 Elden Ring 使用 `SteamAPI_Init` 作为 `AFTER_RUNTIME_INIT` 触发点。该机制可保留，但不是唯一合法触发方式。每个 adapter 必须声明可靠触发点及其 fallback；未触发时日志必须明确报告，不得静默等待。
 
@@ -512,16 +515,39 @@ data1:/param/gameparam/gameparam_dlc2.parambnd.dcx
 
 ### 7.8 CPU 亲和性
 
-`cpu_affinity` 不再在进程早期立即应用。策略 `1` 至 `4` 在各 adapter 报告 `AFTER_GAME_DATA_READY` 后由独立 worker 异步应用，策略 `0` 保持现有亲和性。
+`cpu_affinity` 不再在进程早期立即应用。策略 `1` 至 `4` 在各 adapter 报告 `AFTER_RENDER_READY` 后由独立 worker 异步应用，策略 `0` 保持现有亲和性。
 
 | 游戏 | 触发 step | 时机 |
 | --- | --- | --- |
 | Elden Ring | `TitleStep::STEP_InitMenu` | 原函数返回后 |
 | Nightreign | `TitleStep::STEP_InitMenu` | 原函数返回后 |
-| Sekiro | `SprjFileStep::STEP_Init` | 原函数返回后，与资产 FileStep Hook 共用安装路径 |
+| Sekiro | `TitleFlowStep::STEP_Init` | 原函数返回后 |
 | Dark Souls III | `TitleFlowStep::STEP_Init` | 原函数返回后 |
 
+`ML_RENDER_READY_FILE_STEP_AFTER_ORIGINAL`（与资产 FileStep Hook 共用安装路径）保留为回退策略，当前四款游戏都不使用。
+
 触发 Hook 属于可选能力。安装失败时记录 warning 并保持现有 CPU 亲和性，不阻断 `AFTER_RUNTIME_INIT`、VFS、Logo、properties、regulation 或外部 DLL。卸载时先禁用 Hook，等待正在执行的调用结束，再移除 Hook；CPU worker 也会在卸载期间等待完成。
+
+### 7.9 Param Data Ready
+
+依赖 param 完整性的 MOD 需要一个「param 已全部读完」的入口，而不是渲染就绪。四款游戏都由 `ParamStep` 负责读取 param，并都以 `CSRegulationManager` 报告空闲作为完成判据，但实现分成两代，因此需要两条解析策略。
+
+| 游戏 | 策略 | 锚点 |
+| --- | --- | --- |
+| Elden Ring | `ML_DATA_READY_FD4_NAMED_STEP` | `ParamStep::STEP_Wait`，首次进入即 param 就绪 |
+| Nightreign | `ML_DATA_READY_FD4_NAMED_STEP` | 同上 |
+| Sekiro | `ML_DATA_READY_SPRJ_PARAM_STEP` | 由 `NS_SPRJ::ParamStep` 的 RTTI vtable 推导步骤表 |
+| Dark Souls III | `ML_DATA_READY_SPRJ_PARAM_STEP` | 同上 |
+
+Elden Ring 与 Nightreign 的 `ParamStep` 使用具名 FD4 step 模板（`STEP_Load`、`STEP_LoadWait`、`STEP_Wait`、`STEP_Unload`）。`STEP_LoadWait` 会等到 regulation manager 完成并跑完 post-load 修补后才推进，因此 `STEP_Wait` 首次被调用时 param 已经完整；该步骤名在 `.rdata` 名表内，`fd4_step_find()` 即可解析，无需新增签名。该步骤此后每帧运行，Hook 必须先检查一次性 latch 再触碰 lifecycle 注册表。
+
+Sekiro 与 Dark Souls III 的 `ParamStep` 是旧的 `NS_SPRJ::Step<T>`，步骤表不带名字，只能从构造函数推导：`rtti_find_vtable()` 取得类 vtable，`sprj_step_find_from_vtable()`（`src/process/sprj_step.c`）在 `.text` 内找到 `lea rax,[rip+vtable]; mov [this], rax`，再回溯同一构造函数中的 `lea rax,[rip+table]; mov [this+table_offset], rax` 与 `mov [this+index_offset], rcx`。步骤索引偏移与表地址来自同一次匹配，形状不符即整体失败。等待步骤在 param 读完时把步骤索引写为负值结束步骤机，Hook 因此比较调用前后的索引，只在该次转换上推进阶段。
+
+安装失败时该阶段 fail closed：`AFTER_DATA_READY` 不再被推进，并记录 error。不允许退回 `AFTER_RENDER_READY` 触发——那会在 param 可能仍在加载时告知所有消费者数据已就绪，而这正是这些消费者唯一需要依赖的保证。代价是配置为 `data_ready` 的 DLL 在该版本上不会加载，因此 error 必须写明这一后果。
+
+`[dll]` 的 `data_ready` 条件与 `delay` 共用同一个 deferred worker 线程，避免在报告数据就绪的游戏 step 线程上执行 `LoadLibrary`。共用而非各起一个线程是为了保证 `after`：两个并发 worker 会让 `delay` 条目与 `data_ready` 条目之间的相对顺序未定义，跨这两个阶段的 `after` 依赖就可能早于依赖项加载。单个 worker 按数组顺序（`extdlls_prepare()` 已把依赖项排在前面）顺序处理全部 deferred 条目，该顺序即为全序，因此已经 deferred 的条目无论依赖谁都不需要改阶段；只有仍在主线程阶段的条目需要被推入 worker。
+
+代价是 deferred 条目之间存在队头阻塞——这本来就是既有语义（`delay` 的等待历来是累加的）。`AFTER_DATA_READY` 未到达时，worker 会在第一个 `data_ready` 条目上同时等待数据就绪与取消事件；卸载会先置取消事件再 join，因此不会挂住。
 
 ## 8. 分阶段实施计划
 
@@ -679,7 +705,7 @@ data1:/param/gameparam/gameparam_dlc2.parambnd.dcx
 - 检查 launcher、DLL、extension 的游戏元数据一致性。
 - 统一 YAFSML 项目名、二进制名、配置文件名、发布包和文档。
 
-阶段 10 当前状态：进行中。重命名已完成：项目、Windows 版本资源、`YAFSML.exe`、`YAFSML.dll`、`YAFSML.ini`、环境变量、远程初始化导出、dist 归档和 GitHub Release 工作流均已直接切换到 YAFSML，不保留旧名称兼容入口。启动器已支持配置文件顶层 `game=...`，并按显式 `--launch-target`、配置值、Elden Ring 默认值的顺序选择游戏。Nightreign 已加入稳定支持；四款游戏的 CPU 亲和性均延迟至 game-data-ready step 后异步应用。Debug 构建、43 项 CTest 和 dist 内容检查已通过。剩余内容是四游戏统一发布验证、GitHub Release 实际运行复核、功能矩阵和已知限制整理；Dark Souls III 继续保留实验性标记。
+阶段 10 当前状态：进行中。重命名已完成：项目、Windows 版本资源、`YAFSML.exe`、`YAFSML.dll`、`YAFSML.ini`、环境变量、远程初始化导出、dist 归档和 GitHub Release 工作流均已直接切换到 YAFSML，不保留旧名称兼容入口。启动器已支持配置文件顶层 `game=...`，并按显式 `--launch-target`、配置值、Elden Ring 默认值的顺序选择游戏。Nightreign 已加入稳定支持；四款游戏的 CPU 亲和性均延迟至 render-ready step 后异步应用。Debug 构建、43 项 CTest 和 dist 内容检查已通过。剩余内容是四游戏统一发布验证、GitHub Release 实际运行复核、功能矩阵和已知限制整理；Dark Souls III 继续保留实验性标记。
 
 ## 9. 测试计划
 
@@ -730,7 +756,7 @@ Dark Souls III 额外测试：
 当前配置模板位于 `src/YAFSML.ini`，发布包会将其复制为
 `YAFSML.ini`。独立启动器在未指定 `--launch-target` 时读取顶层 `game=...`，
 未配置时默认 Elden Ring；显式启动目标优先。加载器的通用补丁位于 `[patch]`，
-CPU 亲和性策略位于 `[tweak]`，并在四款游戏各自的 game-data-ready step 后异步应用；日志设置位于 `[log]`，外部 DLL 和模组目录分别位于
+CPU 亲和性策略位于 `[tweak]`，并在四款游戏各自的 render-ready step 后异步应用；日志设置位于 `[log]`，外部 DLL 和模组目录分别位于
 `[dll]` 和 `[mod]`。Dark Souls III adapter 会安装实验性的共享 Host 与游戏适配 Hook，
 并强制启用 Arxan 中和，实际能力以状态日志和目标版本现场验证为准。全部选项、外部 DLL
 顺序和启动器参数已同步到仓库根目录的中英文 README。

@@ -108,6 +108,79 @@ int main(void) {
     EXPECT_TRUE(extdlls_test_is_early_at(1));
     extdlls_unload_all();
 
+    /* data_ready is a stage of its own and cannot be combined with the others. */
+    extdlls_add_spec("data_ready", "data_ready.dll|data_ready");
+    extdlls_add_spec("data_ready_then_early", "both.dll|data_ready|early");
+    extdlls_add_spec("early_then_data_ready", "both2.dll|early|data_ready");
+    extdlls_add_spec("data_ready_then_delay", "both3.dll|data_ready|delay,25");
+    extdlls_add_spec("delay_then_data_ready", "both4.dll|delay,25|data_ready");
+    EXPECT_TRUE(extdlls_test_is_data_ready_at(0));
+    EXPECT_TRUE(extdlls_test_is_data_ready_at(1));
+    EXPECT_TRUE(!extdlls_test_is_early_at(1));
+    EXPECT_TRUE(extdlls_test_is_early_at(2));
+    EXPECT_TRUE(!extdlls_test_is_data_ready_at(2));
+    EXPECT_TRUE(extdlls_test_is_data_ready_at(3));
+    EXPECT_EQ(extdlls_test_delay_at(3), 0);
+    EXPECT_TRUE(!extdlls_test_is_data_ready_at(4));
+    EXPECT_EQ(extdlls_test_delay_at(4), 25);
+    extdlls_unload_all();
+
+    /* A dependent never loads before its dependency, so it moves to the later
+       stage; an early dependent of a data-ready DLL is demoted with an error. */
+    extdlls_add_spec("normal_after_data_ready", "normal.dll|after,ready");
+    extdlls_add_spec("early_after_data_ready", "early.dll|early|after,ready");
+    extdlls_add_spec("ready", "ready.dll|data_ready");
+    extdlls_prepare();
+    EXPECT_EQ(expect_order("ready", "normal_after_data_ready", "early_after_data_ready"), 0);
+    EXPECT_TRUE(extdlls_test_is_data_ready_at(0));
+    EXPECT_TRUE(extdlls_test_is_data_ready_at(1));
+    EXPECT_TRUE(extdlls_test_is_data_ready_at(2));
+    EXPECT_TRUE(!extdlls_test_is_early_at(2));
+    extdlls_unload_all();
+
+    /* Both deferred stages share one worker that walks them in array order, so a
+       dependency spanning the two stages keeps each entry's own stage: ordering
+       comes from the sort, not from moving entries between stages. */
+    extdlls_add_spec("ready_after_delay", "ready.dll|data_ready|after,slow");
+    extdlls_add_spec("slow", "slow.dll|delay,50");
+    extdlls_prepare();
+    EXPECT_EQ(expect_order("slow", "ready_after_delay", NULL), 0);
+    EXPECT_EQ(extdlls_test_delay_at(0), 50);
+    EXPECT_TRUE(extdlls_test_is_data_ready_at(1));
+    EXPECT_TRUE(!extdlls_test_is_deferred_at(1));
+    extdlls_unload_all();
+
+    extdlls_add_spec("delay_after_ready", "slow.dll|delay,50|after,ready");
+    extdlls_add_spec("ready", "ready.dll|data_ready");
+    extdlls_prepare();
+    EXPECT_EQ(expect_order("ready", "delay_after_ready", NULL), 0);
+    EXPECT_TRUE(extdlls_test_is_data_ready_at(0));
+    EXPECT_TRUE(!extdlls_test_is_data_ready_at(1));
+    EXPECT_EQ(extdlls_test_delay_at(1), 50);
+    extdlls_unload_all();
+
+    /* Depending on entries in both deferred stages is deterministic: the sort
+       puts both prerequisites first and the dependent joins the same worker. */
+    extdlls_add_spec("both", "both.dll|after,slow|after,ready");
+    extdlls_add_spec("slow", "slow.dll|delay,50");
+    extdlls_add_spec("ready", "ready.dll|data_ready");
+    extdlls_prepare();
+    EXPECT_EQ(expect_order("slow", "ready", "both"), 0);
+    EXPECT_EQ(extdlls_test_delay_at(0), 50);
+    EXPECT_TRUE(extdlls_test_is_data_ready_at(1));
+    EXPECT_TRUE(extdlls_test_is_deferred_at(2));
+    extdlls_unload_all();
+
+    extdlls_add_spec("both", "both.dll|after,ready|after,slow");
+    extdlls_add_spec("ready", "ready.dll|data_ready");
+    extdlls_add_spec("slow", "slow.dll|delay,50");
+    extdlls_prepare();
+    EXPECT_EQ(expect_order("ready", "slow", "both"), 0);
+    EXPECT_TRUE(extdlls_test_is_data_ready_at(0));
+    EXPECT_EQ(extdlls_test_delay_at(1), 50);
+    EXPECT_TRUE(extdlls_test_is_deferred_at(2));
+    extdlls_unload_all();
+
     extdlls_add_spec("first", "first.dll");
     extdlls_add_spec("dependent", "dependent.dll|after,later");
     extdlls_add_spec("later", "later.dll");

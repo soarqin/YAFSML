@@ -29,8 +29,8 @@ static BOOL CALLBACK install_after_runtime(PINIT_ONCE once, PVOID parameter, PVO
     if (assets_requested) {
         assets_applied = ml_asset_hooks_install(game, image_base, image_size);
     }
-    if (!ml_asset_hooks_install_game_data_ready(game)) {
-        ML_LOG_WARN(L"sekiro", L"AFTER_GAME_DATA_READY trigger HOOK_FAILED; CPU affinity deferred capability disabled");
+    if (!ml_asset_hooks_install_render_ready(game)) {
+        ML_LOG_WARN(L"sekiro", L"AFTER_RENDER_READY trigger HOOK_FAILED; CPU affinity deferred capability disabled");
     }
     if (assets_requested) {
         ml_log_write(assets_applied ? ML_LOG_LEVEL_INFO : ML_LOG_LEVEL_WARN,

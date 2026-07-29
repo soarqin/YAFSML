@@ -7,8 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- Added a `data_ready` condition for `[dll]` entries. Such a DLL loads only once
+  the game has finished reading every param, which is what mods that patch or read
+  param data need. It cannot be combined with `early` or `delay`, and anything
+  listed `after` a `data_ready` DLL waits for the same point. If a game update
+  breaks detection of that point, the loader reports an error and skips those DLLs
+  rather than starting them while params may still be loading.
+
 ### Changed
 
+- The mod loader now distinguishes "the game can render" from "the game has read
+  its params". CPU affinity still applies at the earlier of the two; only the
+  reported lifecycle name changed, from `AFTER_GAME_DATA_READY` to
+  `AFTER_RENDER_READY`.
+- Sekiro now uses the same title-flow trigger as Dark Souls III instead of firing
+  right after the game mounted its archives, so deferred CPU affinity happens at a
+  comparable point across all four games.
 - Big mods load much faster. Every file the game opened used to be checked against
   the mod's entire file list, so the more files a mod had, the slower loading got.
 - Memory no longer grows the longer you play. The mod loader was remembering every

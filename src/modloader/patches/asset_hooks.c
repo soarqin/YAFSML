@@ -116,16 +116,16 @@ static bool post_hooks_installed;
 static bool file_step_hook_installed;
 static void *file_step_hook_target;
 static bool file_step_assets_requested;
-static bool file_step_triggers_game_data_ready;
+static bool file_step_triggers_render_ready;
 static SRWLOCK file_step_hook_lock = SRWLOCK_INIT;
 static volatile LONG file_step_hook_shutting_down;
 static volatile LONG file_step_hook_active;
-static fd4_step_fn_t old_game_data_ready_step_init;
-static void *game_data_ready_hook_target;
-static const wchar_t *game_data_ready_step_name;
-static SRWLOCK game_data_ready_hook_lock = SRWLOCK_INIT;
-static volatile LONG game_data_ready_hook_shutting_down;
-static volatile LONG game_data_ready_hook_active;
+static fd4_step_fn_t old_render_ready_step_init;
+static void *render_ready_hook_target;
+static const wchar_t *render_ready_step_name;
+static SRWLOCK render_ready_hook_lock = SRWLOCK_INIT;
+static volatile LONG render_ready_hook_shutting_down;
+static volatile LONG render_ready_hook_active;
 static void *mount_ebl_hook_target;
 static void *make_ebl_object_hook_target;
 
@@ -859,14 +859,14 @@ static bool install_post_hooks(void) {
 static void __cdecl file_step_init_hooked(void *this_ptr, fd4_time_t *time) {
     fd4_step_fn_t original;
     bool assets_requested;
-    bool trigger_game_data_ready;
+    bool trigger_render_ready;
     bool pre_hooks_applied = false;
     bool post_hooks_applied = false;
     InterlockedIncrement(&file_step_hook_active);
     AcquireSRWLockShared(&file_step_hook_lock);
     original = old_file_step_init;
     assets_requested = file_step_assets_requested;
-    trigger_game_data_ready = file_step_triggers_game_data_ready;
+    trigger_render_ready = file_step_triggers_render_ready;
     if (assets_requested) {
         vfs_begin_lookup_reset();
         pre_hooks_applied = install_pre_hooks();
@@ -879,42 +879,42 @@ static void __cdecl file_step_init_hooked(void *this_ptr, fd4_time_t *time) {
         ML_LOG_INFO(L"asset-hooks", L"asset capability %ls",
                     pre_hooks_applied && post_hooks_applied ? L"APPLIED" : L"HOOK_FAILED");
     }
-    if (trigger_game_data_ready &&
+    if (trigger_render_ready &&
         InterlockedCompareExchange(&file_step_hook_shutting_down, 0, 0) == 0) {
-        ML_LOG_INFO(L"asset-hooks", L"AFTER_GAME_DATA_READY reached at %ls",
-                    game_data_ready_step_name == NULL ? L"<unknown>" : game_data_ready_step_name);
-        if (!ml_lifecycle_advance(ML_LIFECYCLE_PHASE_AFTER_GAME_DATA_READY)) {
-            ML_LOG_WARN(L"asset-hooks", L"AFTER_GAME_DATA_READY lifecycle advance failed");
+        ML_LOG_INFO(L"asset-hooks", L"AFTER_RENDER_READY reached at %ls",
+                    render_ready_step_name == NULL ? L"<unknown>" : render_ready_step_name);
+        if (!ml_lifecycle_advance(ML_LIFECYCLE_PHASE_AFTER_RENDER_READY)) {
+            ML_LOG_WARN(L"asset-hooks", L"AFTER_RENDER_READY lifecycle advance failed");
         }
     }
     ReleaseSRWLockShared(&file_step_hook_lock);
     InterlockedDecrement(&file_step_hook_active);
 }
 
-static void __cdecl game_data_ready_step_init_hooked(void *this_ptr, fd4_time_t *time) {
+static void __cdecl render_ready_step_init_hooked(void *this_ptr, fd4_time_t *time) {
     fd4_step_fn_t original;
-    InterlockedIncrement(&game_data_ready_hook_active);
-    AcquireSRWLockShared(&game_data_ready_hook_lock);
-    original = old_game_data_ready_step_init;
+    InterlockedIncrement(&render_ready_hook_active);
+    AcquireSRWLockShared(&render_ready_hook_lock);
+    original = old_render_ready_step_init;
     if (original != NULL) original(this_ptr, time);
-    if (InterlockedCompareExchange(&game_data_ready_hook_shutting_down, 0, 0) == 0) {
-        ML_LOG_INFO(L"asset-hooks", L"AFTER_GAME_DATA_READY reached at %ls",
-                    game_data_ready_step_name == NULL ? L"<unknown>" : game_data_ready_step_name);
-        if (!ml_lifecycle_advance(ML_LIFECYCLE_PHASE_AFTER_GAME_DATA_READY)) {
-            ML_LOG_WARN(L"asset-hooks", L"AFTER_GAME_DATA_READY lifecycle advance failed");
+    if (InterlockedCompareExchange(&render_ready_hook_shutting_down, 0, 0) == 0) {
+        ML_LOG_INFO(L"asset-hooks", L"AFTER_RENDER_READY reached at %ls",
+                    render_ready_step_name == NULL ? L"<unknown>" : render_ready_step_name);
+        if (!ml_lifecycle_advance(ML_LIFECYCLE_PHASE_AFTER_RENDER_READY)) {
+            ML_LOG_WARN(L"asset-hooks", L"AFTER_RENDER_READY lifecycle advance failed");
         }
     }
-    ReleaseSRWLockShared(&game_data_ready_hook_lock);
-    InterlockedDecrement(&game_data_ready_hook_active);
+    ReleaseSRWLockShared(&render_ready_hook_lock);
+    InterlockedDecrement(&render_ready_hook_active);
 }
 
-bool ml_asset_hooks_install_game_data_ready(const ml_game_descriptor_t *game) {
+bool ml_asset_hooks_install_render_ready(const ml_game_descriptor_t *game) {
     HMODULE module;
     void *step;
     ml_hook_result_t result;
-    if (game_data_ready_hook_target != NULL) return true;
-    if (game == NULL || game->game_data_ready_step_name == NULL) return false;
-    if (game->game_data_ready_strategy == ML_GAME_DATA_READY_FILE_STEP_AFTER_ORIGINAL) {
+    if (render_ready_hook_target != NULL) return true;
+    if (game == NULL || game->render_ready_step_name == NULL) return false;
+    if (game->render_ready_strategy == ML_RENDER_READY_FILE_STEP_AFTER_ORIGINAL) {
         if (!file_step_hook_installed) {
             ml_hook_result_t file_step_result;
             game_image_base = get_module_image_base(NULL, &game_image_size);
@@ -945,39 +945,39 @@ bool ml_asset_hooks_install_game_data_ready(const ml_game_descriptor_t *game) {
             ML_LOG_INFO(L"asset-hooks", L"%ls hook applied for %ls",
                         game->file_step_name, game->title);
         }
-        game_data_ready_step_name = game->game_data_ready_step_name;
-        file_step_triggers_game_data_ready = true;
+        render_ready_step_name = game->render_ready_step_name;
+        file_step_triggers_render_ready = true;
         return true;
     }
-    if (game->game_data_ready_strategy != ML_GAME_DATA_READY_STEP_AFTER_ORIGINAL) return false;
+    if (game->render_ready_strategy != ML_RENDER_READY_STEP_AFTER_ORIGINAL) return false;
     game_image_base = get_module_image_base(NULL, &game_image_size);
     if (game_image_base == NULL || game_image_size == 0) return false;
     game_stl_abi = game->stl_abi;
-    step = fd4_step_find(game->game_data_ready_step_name);
+    step = fd4_step_find(game->render_ready_step_name);
     if (step == NULL) {
         ML_LOG_WARN(L"asset-hooks", L"%ls late-ready hook SIGNATURE_NOT_FOUND",
-                    game->game_data_ready_step_name);
+                    game->render_ready_step_name);
         return false;
     }
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                             GET_MODULE_HANDLE_EX_FLAG_PIN,
-                            (LPCWSTR)(uintptr_t)game_data_ready_step_init_hooked,
+                            (LPCWSTR)(uintptr_t)render_ready_step_init_hooked,
                             &module)) {
         ML_LOG_WARN(L"asset-hooks", L"could not pin late-ready hook module");
         return false;
     }
-    game_data_ready_step_name = game->game_data_ready_step_name;
-    result = ml_hook_install(step, game_data_ready_step_init_hooked,
-                             (void **)&old_game_data_ready_step_init);
+    render_ready_step_name = game->render_ready_step_name;
+    result = ml_hook_install(step, render_ready_step_init_hooked,
+                             (void **)&old_render_ready_step_init);
     if (result != ML_HOOK_APPLIED) {
         ML_LOG_WARN(L"asset-hooks", L"%ls late-ready hook %hs",
-                    game->game_data_ready_step_name, ml_hook_result_name(result));
-        game_data_ready_step_name = NULL;
+                    game->render_ready_step_name, ml_hook_result_name(result));
+        render_ready_step_name = NULL;
         return false;
     }
-    game_data_ready_hook_target = step;
+    render_ready_hook_target = step;
     ML_LOG_INFO(L"asset-hooks", L"%ls late-ready hook applied",
-                game->game_data_ready_step_name);
+                game->render_ready_step_name);
     return true;
 }
 
@@ -1050,25 +1050,25 @@ static bool remove_asset_hooks(asset_hook_t *hooks, size_t count) {
 bool ml_asset_hooks_uninstall(void) {
     bool result = true;
     InterlockedExchange(&file_step_hook_shutting_down, 1);
-    InterlockedExchange(&game_data_ready_hook_shutting_down, 1);
+    InterlockedExchange(&render_ready_hook_shutting_down, 1);
     AcquireSRWLockExclusive(&file_step_hook_lock);
     if (!disable_asset_hook(file_step_hook_target)) result = false;
     ReleaseSRWLockExclusive(&file_step_hook_lock);
-    AcquireSRWLockExclusive(&game_data_ready_hook_lock);
-    if (!disable_asset_hook(game_data_ready_hook_target)) result = false;
-    ReleaseSRWLockExclusive(&game_data_ready_hook_lock);
+    AcquireSRWLockExclusive(&render_ready_hook_lock);
+    if (!disable_asset_hook(render_ready_hook_target)) result = false;
+    ReleaseSRWLockExclusive(&render_ready_hook_lock);
     while (InterlockedCompareExchange(&file_step_hook_active, 0, 0) != 0) Sleep(0);
-    while (InterlockedCompareExchange(&game_data_ready_hook_active, 0, 0) != 0) Sleep(0);
+    while (InterlockedCompareExchange(&render_ready_hook_active, 0, 0) != 0) Sleep(0);
     if (!result) return false;
 
     if (!remove_asset_hook(file_step_hook_target)) result = false;
-    if (!remove_asset_hook(game_data_ready_hook_target)) result = false;
+    if (!remove_asset_hook(render_ready_hook_target)) result = false;
     if (!result) return false;
     old_file_step_init = NULL;
-    old_game_data_ready_step_init = NULL;
+    old_render_ready_step_init = NULL;
     file_step_hook_target = NULL;
-    game_data_ready_hook_target = NULL;
-    game_data_ready_step_name = NULL;
+    render_ready_hook_target = NULL;
+    render_ready_step_name = NULL;
     if (!remove_asset_hook(make_ebl_object_hook_target)) result = false;
     if (!remove_asset_hook(mount_ebl_hook_target)) result = false;
     if (!remove_asset_hooks(set_path_hooks, set_path_hook_count)) result = false;
@@ -1094,9 +1094,9 @@ bool ml_asset_hooks_uninstall(void) {
     old_mount_ebl = NULL;
     file_step_hook_target = NULL;
     file_step_assets_requested = false;
-    file_step_triggers_game_data_ready = false;
+    file_step_triggers_render_ready = false;
     InterlockedExchange(&file_step_hook_shutting_down, 0);
-    InterlockedExchange(&game_data_ready_hook_shutting_down, 0);
+    InterlockedExchange(&render_ready_hook_shutting_down, 0);
     mount_ebl_hook_target = NULL;
     make_ebl_object_hook_target = NULL;
     pre_hooks_installed = false;

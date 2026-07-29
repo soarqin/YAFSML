@@ -43,7 +43,7 @@ void ml_lifecycle_uninit(void) {
 
 ml_lifecycle_phase_t ml_lifecycle_current(void) {
     LONG reached = InterlockedCompareExchange(&reached_phases, 0, 0);
-    for (int phase = ML_LIFECYCLE_PHASE_AFTER_GAME_DATA_READY;
+    for (int phase = ML_LIFECYCLE_PHASE_LAST;
          phase > ML_LIFECYCLE_PHASE_UNKNOWN; phase--) {
         if ((reached & (1L << phase)) != 0) return (ml_lifecycle_phase_t)phase;
     }
@@ -51,7 +51,7 @@ ml_lifecycle_phase_t ml_lifecycle_current(void) {
 }
 
 bool ml_lifecycle_on_phase(ml_lifecycle_phase_t phase, ml_lifecycle_callback_t callback, void *userp) {
-    if (phase <= ML_LIFECYCLE_PHASE_UNKNOWN || phase > ML_LIFECYCLE_PHASE_AFTER_GAME_DATA_READY || callback == NULL) {
+    if (phase <= ML_LIFECYCLE_PHASE_UNKNOWN || phase > ML_LIFECYCLE_PHASE_LAST || callback == NULL) {
         return false;
     }
 
@@ -79,7 +79,7 @@ bool ml_lifecycle_on_phase(ml_lifecycle_phase_t phase, ml_lifecycle_callback_t c
 
 bool ml_lifecycle_advance(ml_lifecycle_phase_t phase) {
     LONG mask;
-    if (phase <= ML_LIFECYCLE_PHASE_UNKNOWN || phase > ML_LIFECYCLE_PHASE_AFTER_GAME_DATA_READY) return false;
+    if (phase <= ML_LIFECYCLE_PHASE_UNKNOWN || phase > ML_LIFECYCLE_PHASE_LAST) return false;
 
     mask = 1L << phase;
     if ((InterlockedOr(&reached_phases, mask) & mask) != 0) return true;

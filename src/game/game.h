@@ -54,11 +54,28 @@ typedef enum ml_regulation_strategy_e {
     ML_REGULATION_STRATEGY_SPRJ,
 } ml_regulation_strategy_t;
 
-typedef enum ml_game_data_ready_strategy_e {
-    ML_GAME_DATA_READY_UNSUPPORTED,
-    ML_GAME_DATA_READY_STEP_AFTER_ORIGINAL,
-    ML_GAME_DATA_READY_FILE_STEP_AFTER_ORIGINAL,
-} ml_game_data_ready_strategy_t;
+/* How the adapter learns that the title/menu flow has been constructed. This is
+   render readiness only: game params may still be loading at that point. */
+typedef enum ml_render_ready_strategy_e {
+    ML_RENDER_READY_UNSUPPORTED,
+    ML_RENDER_READY_STEP_AFTER_ORIGINAL,
+    /* Reuses the asset FileStep hook instead of a dedicated title step. No game
+       selects this today; retained as a fallback when the title step of a build
+       cannot be resolved. */
+    ML_RENDER_READY_FILE_STEP_AFTER_ORIGINAL,
+} ml_render_ready_strategy_t;
+
+/* How the adapter learns that every game param has been loaded. */
+typedef enum ml_data_ready_strategy_e {
+    ML_DATA_READY_UNSUPPORTED,
+    /* Elden Ring / Nightreign: hook the named FD4 step `ParamStep::STEP_Wait`,
+       which only becomes active once `ParamStep::STEP_LoadWait` observed the
+       regulation manager finishing and ran its post-load fixups. */
+    ML_DATA_READY_FD4_NAMED_STEP,
+    /* Sekiro / Dark Souls III: `NS_SPRJ::Step<ParamStep>` has an unnamed step
+       table, so the wait step is derived from the class vtable and constructor. */
+    ML_DATA_READY_SPRJ_PARAM_STEP,
+} ml_data_ready_strategy_t;
 
 typedef struct ml_game_descriptor_s {
     ml_game_id_t id;
@@ -75,8 +92,13 @@ typedef struct ml_game_descriptor_s {
     const wchar_t *file_step_name;
     const char *control_api_class;
     size_t ebl_bhd_holder_offset;
-    const wchar_t *game_data_ready_step_name;
-    ml_game_data_ready_strategy_t game_data_ready_strategy;
+    const wchar_t *render_ready_step_name;
+    ml_render_ready_strategy_t render_ready_strategy;
+    /* ML_DATA_READY_FD4_NAMED_STEP only. */
+    const wchar_t *data_ready_step_name;
+    /* ML_DATA_READY_SPRJ_PARAM_STEP only: RTTI class name of the param step. */
+    const char *data_ready_class;
+    ml_data_ready_strategy_t data_ready_strategy;
     ml_runtime_ready_trigger_t runtime_ready_trigger;
     ml_logo_strategy_t logo_strategy;
     ml_allocator_strategy_t allocator_strategy;

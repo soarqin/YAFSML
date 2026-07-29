@@ -93,8 +93,8 @@ static BOOL CALLBACK install_after_runtime(PINIT_ONCE once, PVOID parameter, PVO
     if (mods_count() > 0) {
         assets_applied = ml_asset_hooks_install(ml_game_context_get(), image_base, image_size);
     }
-    if (!ml_asset_hooks_install_game_data_ready(ml_game_context_get())) {
-        ML_LOG_WARN(L"eldenring", L"AFTER_GAME_DATA_READY trigger HOOK_FAILED; CPU affinity deferred capability disabled");
+    if (!ml_asset_hooks_install_render_ready(ml_game_context_get())) {
+        ML_LOG_WARN(L"eldenring", L"AFTER_RENDER_READY trigger HOOK_FAILED; CPU affinity deferred capability disabled");
     }
     if (!ml_lifecycle_advance(ML_LIFECYCLE_PHASE_AFTER_RUNTIME_INIT)) {
         ML_LOG_WARN(L"eldenring", L"AFTER_RUNTIME_INIT lifecycle advance failed");
