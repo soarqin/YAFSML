@@ -33,6 +33,7 @@ add_project(modloader_dll SHARED
     vfs.c vfs.h
     patches/common.c patches/common.h
     patches/allocator.c patches/allocator.h
+    patches/data_ready.c patches/data_ready.h
     patches/logo.c patches/logo.h
     patches/properties.c patches/properties.h patches/properties_hook.asm
     patches/regulation.c patches/regulation.h

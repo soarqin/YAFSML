@@ -13,6 +13,7 @@
 #include "patches/common.h"
 #include "patches/allocator.h"
 #include "patches/darksouls3.h"
+#include "patches/data_ready.h"
 #include "patches/eldenring.h"
 #include "patches/logo.h"
 #include "patches/nightreign.h"
@@ -49,13 +50,26 @@ static void install_regulation_after_runtime(ml_lifecycle_phase_t phase, void *u
     (void)ml_regulation_install((const ml_game_descriptor_t *)userp);
 }
 
-static void apply_process_settings_after_game_data(ml_lifecycle_phase_t phase,
-                                                   void *userp) {
+static void apply_process_settings_after_render_ready(ml_lifecycle_phase_t phase,
+                                                      void *userp) {
     (void)phase;
     (void)userp;
     if (!common_schedule_process_settings()) {
-        ML_LOG_WARN(L"common", L"could not create post-game-data CPU affinity worker");
+        ML_LOG_WARN(L"common", L"could not create post-render-ready CPU affinity worker");
     }
+}
+
+static void install_data_ready_after_runtime(ml_lifecycle_phase_t phase, void *userp) {
+    const ml_game_descriptor_t *game = (const ml_game_descriptor_t *)userp;
+    (void)phase;
+    if (ml_data_ready_install(game)) return;
+    /* Fail closed. Advancing the phase from an earlier trigger such as render
+       readiness would tell every AFTER_DATA_READY consumer that params are
+       complete while they may still be loading, which is exactly what those
+       consumers must be able to rely on. */
+    ML_LOG_ERROR(L"data-ready",
+                 L"data ready trigger HOOK_FAILED; AFTER_DATA_READY will not be reached "
+                 L"and `data_ready` external DLLs will not load");
 }
 
 static void install_allocator_after_runtime(ml_lifecycle_phase_t phase, void *userp) {
@@ -113,11 +127,16 @@ bool gamehook_install() {
                                install_allocator_before_main, (void *)game)) {
         ML_LOG_WARN(L"allocator", L"heap allocator capability HOOK_FAILED: could not schedule before-main stage");
     }
-    if (game->game_data_ready_strategy != ML_GAME_DATA_READY_UNSUPPORTED &&
+    if (game->render_ready_strategy != ML_RENDER_READY_UNSUPPORTED &&
         config.cpu_affinity_strategy != 0 &&
-        !ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_GAME_DATA_READY,
-                               apply_process_settings_after_game_data, NULL)) {
-        ML_LOG_WARN(L"common", L"could not schedule CPU affinity after game data initialization");
+        !ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_RENDER_READY,
+                               apply_process_settings_after_render_ready, NULL)) {
+        ML_LOG_WARN(L"common", L"could not schedule CPU affinity after render readiness");
+    }
+    if (game->data_ready_strategy != ML_DATA_READY_UNSUPPORTED &&
+        !ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_RUNTIME_INIT,
+                               install_data_ready_after_runtime, (void *)game)) {
+        ML_LOG_WARN(L"data-ready", L"could not schedule data ready trigger installation");
     }
     if (!ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_RUNTIME_INIT, install_properties_after_runtime, (void *)game)) {
         ML_LOG_WARN(L"properties", L"could not schedule installation");
@@ -147,6 +166,9 @@ void gamehook_uninstall() {
         sekiro_uninstall();
     } else if (game != NULL && game->id == ML_GAME_DARK_SOULS_3) {
         darksouls3_uninstall();
+    }
+    if (!ml_data_ready_uninstall()) {
+        ML_LOG_WARN(L"data-ready", L"data ready trigger could not be removed");
     }
     common_uninstall();
     common_uninstall_file_routing();

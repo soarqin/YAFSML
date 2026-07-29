@@ -8,6 +8,7 @@ add_project(process STATIC
     rtti.c rtti.h
     scanner.c scanner.h
     singleton.c singleton.h
+    sprj_step.c sprj_step.h
     undname.c undname.h
     util.c util.h
     FOLDER libs

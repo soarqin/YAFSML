@@ -81,12 +81,14 @@ me3 commit `6563ebb`; Dark Souls III forces Arxan neutralization on.
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `cpu_affinity` | `0` | Select the game process CPU affinity strategy: `0` leaves affinity unchanged, `1` uses all logical cores except the first, `2` uses efficient cores, `3` uses performance cores, and `4` uses performance cores except their first logical core. Strategies `1` through `4` are applied asynchronously after game data initialization in all four games. Unsupported processor-group layouts or an empty selected mask leave affinity unchanged. Do not use `2`, `3`, or `4` on Intel Ultra CPUs with Elden Ring 1.16.2 or later. |
+| `cpu_affinity` | `0` | Select the game process CPU affinity strategy: `0` leaves affinity unchanged, `1` uses all logical cores except the first, `2` uses efficient cores, `3` uses performance cores, and `4` uses performance cores except their first logical core. Strategies `1` through `4` are applied asynchronously once the game has built its title menu in all four games. Unsupported processor-group layouts or an empty selected mask leave affinity unchanged. Do not use `2`, `3`, or `4` on Intel Ultra CPUs with Elden Ring 1.16.2 or later. |
 
-The game-data-ready trigger is optional. If its hook cannot be installed, the loader
-keeps the current affinity and continues with runtime initialization, VFS, logo,
-property, regulation, and external-DLL capabilities. The affinity worker is joined
-during unload.
+The render-ready trigger that drives this is optional. If its hook cannot be
+installed, the loader keeps the current affinity and continues with runtime
+initialization, VFS, logo, property, regulation, and external-DLL capabilities.
+The affinity worker is joined during unload. This trigger is separate from the
+later point at which params finish loading, which is what `data_ready` DLLs wait
+for.
 
 ### `[log]`
 
@@ -104,15 +106,24 @@ backward-compatible behavior and load after `SteamAPI_Init`. A value can append
 pipe-separated conditions using `name=path_to_file.dll|conditions...`:
 
 - `early` loads the DLL before `SteamAPI_Init`.
+- `data_ready` loads the DLL once the game has finished reading every param.
 - `delay,500` waits 500 ms before loading the DLL.
 - `after,abc` loads the DLL after the `[dll]` entry named `abc`, not after its
   file path.
 
+`early`, `data_ready` and `delay` select when a DLL loads, so they cannot be
+combined; the second one is reported and ignored. `data_ready` and `delay` DLLs
+share one background thread that loads them one after another in configured
+order, so starting them never stalls a frame and an `after` dependency that spans
+the two conditions still loads its prerequisite first. As with `delay` on its own,
+waits on that thread accumulate.
+
 Dependencies reorder entries only when necessary and preserve the configured
 order otherwise. If an `early` DLL depends on a normal entry, that prerequisite
-is promoted to early loading. Cyclic dependencies are reported and leave the
-configured order unchanged. Project-owned extension DLLs are no longer shipped
-with this repository.
+is promoted to early loading. A normal DLL that depends on a `data_ready` or
+`delay` entry moves onto that same background thread. Cyclic dependencies are
+reported and leave the configured order unchanged. Project-owned extension DLLs
+are no longer shipped with this repository.
 
 The `[mod]` section lists directories containing loose-file overrides. Paths
 can be relative to the configuration file or absolute. When multiple mods

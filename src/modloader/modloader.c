@@ -50,6 +50,16 @@ static void load_extdlls_after_runtime(ml_lifecycle_phase_t phase, void *userp) 
     }
 }
 
+static void load_extdlls_after_data_ready(ml_lifecycle_phase_t phase, void *userp) {
+    (void)phase;
+    (void)userp;
+    if (InterlockedCompareExchange(&before_main_result, 0, 0) == 1) {
+        extdlls_load_data_ready();
+    } else {
+        ML_LOG_WARN(L"extdll", L"data-ready external DLL loading skipped because before-main work failed or did not run");
+    }
+}
+
 static bool hook_game_entrypoint(void);
 
 static void before_game_main(bool is_arxan_detected,
@@ -108,9 +118,14 @@ static bool modloader_init(void) {
                                    load_extdlls_after_runtime, NULL)) {
             ML_LOG_WARN(L"extdll", L"could not schedule external DLL loading after SteamAPI_Init");
         }
+        if (!ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_DATA_READY,
+                                   load_extdlls_after_data_ready, NULL)) {
+            ML_LOG_WARN(L"extdll", L"could not schedule external DLL loading after game data readiness");
+        }
     } else {
         /* Preserve loading for unsupported game contexts without a runtime trigger. */
         extdlls_load_all();
+        extdlls_load_data_ready();
     }
     return true;
 }

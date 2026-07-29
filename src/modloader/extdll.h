@@ -22,12 +22,15 @@ extern int extdlls_count();
 extern void extdlls_prepare();
 extern bool extdlls_load_early();
 extern void extdlls_load_all();
+extern void extdlls_load_data_ready();
 extern void extdlls_unload_all();
 
 #ifdef ML_EXTDLL_TEST
 extern const char *extdlls_test_name_at(int index);
+extern int extdlls_test_stage_at(int index);
 extern bool extdlls_test_is_early_at(int index);
 extern bool extdlls_test_is_effective_early_at(int index);
+extern bool extdlls_test_is_data_ready_at(int index);
 extern bool extdlls_test_is_deferred_at(int index);
 extern bool extdlls_test_has_delayed_at(bool early);
 extern uint32_t extdlls_test_delay_at(int index);

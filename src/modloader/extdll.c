@@ -26,13 +26,22 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define EXTDLL_LOAD_AFTER_DELAY INT64_MIN
-#define EXTDLL_LOAD_EARLY -1
+/* Enumerator order is load order. The first two stages run on the main thread
+   during their lifecycle phase; the last two are deferred and share one worker,
+   which walks them in array order rather than by stage. */
+typedef enum extdll_stage_e {
+    EXTDLL_STAGE_EARLY = 0,  /* ML_LIFECYCLE_PHASE_BEFORE_MAIN */
+    EXTDLL_STAGE_NORMAL,     /* ML_LIFECYCLE_PHASE_AFTER_RUNTIME_INIT */
+    EXTDLL_STAGE_DATA_READY, /* deferred worker, on ML_LIFECYCLE_PHASE_AFTER_DATA_READY */
+    EXTDLL_STAGE_DELAY,      /* deferred worker, delay_ms after reaching the entry */
+} extdll_stage_t;
 
 typedef struct extdll_t {
     char *name;
     wchar_t *base_path;
-    int64_t load_condition;
+    extdll_stage_t stage;
+    /* EXTDLL_STAGE_DELAY only; 0 means "as soon as the worker reaches it". */
+    uint32_t delay_ms;
     char **after;
     int after_count;
     int after_capacity;
@@ -48,8 +57,9 @@ static extdll_t *extdlls = NULL;
 static int extdll_count = 0;
 static int extdll_capacity = 0;
 static volatile LONG load_counter = 0;
-static HANDLE delayed_worker;
-static HANDLE delayed_cancel_event;
+static HANDLE deferred_worker;
+static HANDLE cancel_event;
+static HANDLE data_ready_event;
 
 static bool extdlls_reserve(int capacity) {
     extdll_t *new_dlls;
@@ -81,15 +91,25 @@ static bool extdll_after_add(extdll_t *extdll, const char *name) {
     return true;
 }
 
-static bool parse_delay(const char *value, int64_t *delay_ms) {
+static bool parse_delay(const char *value, uint32_t *delay_ms) {
     char *end;
     unsigned long parsed;
     if (value == NULL || value[0] < '0' || value[0] > '9') return false;
     errno = 0;
     parsed = strtoul(value, &end, 10);
     if (errno == ERANGE || end == value || *end != '\0' || parsed > UINT32_MAX) return false;
-    *delay_ms = (int64_t)parsed;
+    *delay_ms = (uint32_t)parsed;
     return true;
+}
+
+static const char *stage_name(extdll_stage_t stage) {
+    switch (stage) {
+        case EXTDLL_STAGE_EARLY: return "early";
+        case EXTDLL_STAGE_DATA_READY: return "data_ready";
+        case EXTDLL_STAGE_DELAY: return "delay";
+        case EXTDLL_STAGE_NORMAL:
+        default: return "normal";
+    }
 }
 
 void extdlls_add(const char *name, const wchar_t *path) {
@@ -99,6 +119,7 @@ void extdlls_add(const char *name, const wchar_t *path) {
         !extdlls_reserve(extdll_capacity == 0 ? 8 : extdll_capacity * 2)) return;
     extdll = &extdlls[extdll_count++];
     memset(extdll, 0, sizeof(*extdll));
+    extdll->stage = EXTDLL_STAGE_NORMAL;
     extdll->name = ml_mem_strdup_a(name);
     extdll->base_path = ml_mem_strdup_w(path);
     if (extdll->name == NULL || extdll->base_path == NULL) {
@@ -132,6 +153,7 @@ void extdlls_add_spec(const char *name, const char *value) {
 
     extdll = &extdlls[extdll_count++];
     memset(extdll, 0, sizeof(*extdll));
+    extdll->stage = EXTDLL_STAGE_NORMAL;
     extdll->name = ml_mem_strdup_a(name);
     extdll->base_path = ml_mem_strdup_w(path);
     if (extdll->name == NULL || extdll->base_path == NULL) {
@@ -147,19 +169,29 @@ void extdlls_add_spec(const char *name, const char *value) {
         next = strchr(condition, '|');
         if (next != NULL) *next++ = '\0';
         if (strcmp(condition, "early") == 0) {
-            if (extdll->load_condition > 0) {
-                ML_LOG_ERROR(L"extdll", L"early and delay conditions cannot be combined for %hs", name);
+            if (extdll->stage != EXTDLL_STAGE_NORMAL) {
+                ML_LOG_ERROR(L"extdll", L"early cannot be combined with the %hs condition for %hs",
+                             stage_name(extdll->stage), name);
             } else {
-                extdll->load_condition = EXTDLL_LOAD_EARLY;
+                extdll->stage = EXTDLL_STAGE_EARLY;
+            }
+        } else if (strcmp(condition, "data_ready") == 0) {
+            if (extdll->stage != EXTDLL_STAGE_NORMAL) {
+                ML_LOG_ERROR(L"extdll", L"data_ready cannot be combined with the %hs condition for %hs",
+                             stage_name(extdll->stage), name);
+            } else {
+                extdll->stage = EXTDLL_STAGE_DATA_READY;
             }
         } else if (strncmp(condition, "delay,", 6) == 0) {
-            int64_t delay_ms;
+            uint32_t delay_ms;
             if (!parse_delay(condition + 6, &delay_ms)) {
                 ML_LOG_ERROR(L"extdll", L"invalid delay condition for %hs: %hs", name, condition);
-            } else if (extdll->load_condition < 0) {
-                ML_LOG_ERROR(L"extdll", L"early and delay conditions cannot be combined for %hs", name);
+            } else if (extdll->stage != EXTDLL_STAGE_NORMAL) {
+                ML_LOG_ERROR(L"extdll", L"delay cannot be combined with the %hs condition for %hs",
+                             stage_name(extdll->stage), name);
             } else {
-                extdll->load_condition = delay_ms;
+                extdll->stage = EXTDLL_STAGE_DELAY;
+                extdll->delay_ms = delay_ms;
             }
         } else if (strncmp(condition, "after,", 6) == 0 && condition[6] != '\0') {
             if (!extdll_after_add(extdll, condition + 6)) {
@@ -259,34 +291,42 @@ void extdlls_prepare() {
     for (;;) {
         bool changed = false;
         for (int i = 0; i < extdll_count; i++) {
-            if (extdlls[i].load_condition >= 0) continue;
+            if (extdlls[i].stage != EXTDLL_STAGE_EARLY) continue;
             for (int j = 0; j < extdlls[i].after_count; j++) {
                 int dependency = extdll_index_by_name(extdlls[i].after[j]);
-                if (dependency >= 0 && extdlls[dependency].load_condition == 0) {
-                    extdlls[dependency].load_condition = EXTDLL_LOAD_EARLY;
+                if (dependency >= 0 && extdlls[dependency].stage == EXTDLL_STAGE_NORMAL) {
+                    extdlls[dependency].stage = EXTDLL_STAGE_EARLY;
                     changed = true;
                 }
             }
         }
         if (!changed) break;
     }
+    /* A DLL can never load before its dependencies. Both deferred stages share a
+       single worker that walks the entries in array order, and the sort above put
+       every dependency before its dependents, so entries that are already
+       deferred need no adjustment whatever their dependencies are. Only entries
+       still running on the main thread have to move into the worker, because the
+       main thread finishes before the worker starts. */
     for (int i = 0; i < extdll_count; i++) {
+        extdll_stage_t latest = EXTDLL_STAGE_NORMAL;
+        int trigger = -1;
+        if (extdlls[i].stage > EXTDLL_STAGE_NORMAL) continue;
         for (int j = 0; j < extdlls[i].after_count; j++) {
             int dependency = extdll_index_by_name(extdlls[i].after[j]);
-            if (dependency < 0) continue;
-            if (extdlls[dependency].load_condition > 0 ||
-                extdlls[dependency].load_condition == EXTDLL_LOAD_AFTER_DELAY) {
-                if (extdlls[i].load_condition == EXTDLL_LOAD_EARLY) {
-                    ML_LOG_ERROR(L"extdll", L"early DLL %hs depends on delayed DLL %hs; loading after the delay instead",
-                                 extdlls[i].name, extdlls[dependency].name);
-                    extdlls[i].load_condition = 0;
-                }
-                if (extdlls[i].load_condition == 0) {
-                    extdlls[i].load_condition = EXTDLL_LOAD_AFTER_DELAY;
-                }
-                break;
-            }
+            if (dependency < 0 || extdlls[dependency].stage <= latest) continue;
+            latest = extdlls[dependency].stage;
+            trigger = dependency;
         }
+        if (trigger < 0) continue;
+        if (extdlls[i].stage == EXTDLL_STAGE_EARLY) {
+            ML_LOG_ERROR(L"extdll", L"early DLL %hs depends on %hs DLL %hs; loading at the %hs stage instead",
+                         extdlls[i].name, stage_name(latest), extdlls[trigger].name,
+                         stage_name(latest));
+        }
+        extdlls[i].stage = latest;
+        /* Riding along with a dependency must not add another wait. */
+        extdlls[i].delay_ms = 0;
     }
     ml_mem_free(order);
 }
@@ -332,56 +372,106 @@ static bool load_extdll_one(int index) {
     return true;
 }
 
-static DWORD WINAPI extdlls_load_delayed(LPVOID parameter) {
+static bool extdlls_cancelled(void) {
+    return cancel_event != NULL &&
+           WaitForSingleObject(cancel_event, 0) != WAIT_TIMEOUT;
+}
+
+static bool extdlls_has_stage(extdll_stage_t stage) {
+    for (int i = 0; i < extdll_count; i++) {
+        if (extdlls[i].stage == stage) return true;
+    }
+    return false;
+}
+
+static bool stage_is_deferred(extdll_stage_t stage) {
+    return stage > EXTDLL_STAGE_NORMAL;
+}
+
+static bool extdlls_has_deferred(void) {
+    for (int i = 0; i < extdll_count; i++) {
+        if (stage_is_deferred(extdlls[i].stage)) return true;
+    }
+    return false;
+}
+
+static bool extdlls_load_stage(extdll_stage_t stage) {
+    bool loaded = true;
+    for (int i = 0; i < extdll_count; i++) {
+        if (extdlls[i].stage != stage) continue;
+        if (!load_extdll_one(i)) loaded = false;
+    }
+    return loaded;
+}
+
+/* Returns false when loading was cancelled. When the data-ready trigger failed
+   to install the phase never happens and this blocks until unload signals the
+   cancel event, so the entry and everything ordered after it stay unloaded
+   instead of loading at an unverified point. */
+static bool wait_for_data_ready(void) {
+    HANDLE handles[2];
+    if (cancel_event == NULL || data_ready_event == NULL) return false;
+    handles[0] = cancel_event;
+    handles[1] = data_ready_event;
+    return WaitForMultipleObjects(2, handles, FALSE, INFINITE) == WAIT_OBJECT_0 + 1;
+}
+
+/* Both deferred stages share this one worker on purpose. Two concurrent workers
+   would leave the relative order of a `delay` entry and a `data_ready` entry
+   undefined, so an `after` dependency spanning them could load early. Walking
+   every deferred entry sequentially in array order — which extdlls_prepare()
+   sorted so dependencies come first — makes that order total. */
+static DWORD WINAPI extdlls_load_deferred(LPVOID parameter) {
     (void)parameter;
 
     for (int i = 0; i < extdll_count; i++) {
-        if (extdlls[i].load_condition <= 0 &&
-            extdlls[i].load_condition != EXTDLL_LOAD_AFTER_DELAY) continue;
-        if (extdlls[i].load_condition > 0 &&
-            WaitForSingleObject(delayed_cancel_event, (DWORD)extdlls[i].load_condition) != WAIT_TIMEOUT) {
+        if (!stage_is_deferred(extdlls[i].stage)) continue;
+        if (extdlls[i].stage == EXTDLL_STAGE_DATA_READY) {
+            if (!wait_for_data_ready()) return 0;
+        } else if (extdlls[i].delay_ms != 0 &&
+                   WaitForSingleObject(cancel_event, extdlls[i].delay_ms) != WAIT_TIMEOUT) {
             return 0;
         }
-        if (WaitForSingleObject(delayed_cancel_event, 0) != WAIT_TIMEOUT) return 0;
+        if (extdlls_cancelled()) return 0;
         load_extdll_one(i);
     }
     return 0;
 }
 
+static bool extdlls_ensure_events(void) {
+    if (cancel_event == NULL) {
+        cancel_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+        if (cancel_event == NULL) {
+            ML_LOG_ERROR(L"extdll", L"cannot create the external DLL cancel event");
+            return false;
+        }
+    }
+    if (data_ready_event == NULL) {
+        data_ready_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+        if (data_ready_event == NULL) {
+            ML_LOG_ERROR(L"extdll", L"cannot create the external DLL data-ready event");
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool extdlls_load(bool early) {
-    bool has_delayed = false;
-    bool loaded = true;
+    bool loaded;
 
     if (ml_game_context_get() == NULL) {
         ML_LOG_WARN(L"extdll", L"external DLLs are disabled because the game context is unavailable");
         return false;
     }
-    for (int i = 0; i < extdll_count; i++) {
-        if ((extdlls[i].load_condition < 0) != early ||
-            extdlls[i].load_condition > 0 ||
-            extdlls[i].load_condition == EXTDLL_LOAD_AFTER_DELAY) continue;
-        if (!load_extdll_one(i)) loaded = false;
-    }
+    loaded = extdlls_load_stage(early ? EXTDLL_STAGE_EARLY : EXTDLL_STAGE_NORMAL);
     if (early) return loaded;
-    for (int i = 0; i < extdll_count; i++) {
-        if (extdlls[i].load_condition <= 0 &&
-            extdlls[i].load_condition != EXTDLL_LOAD_AFTER_DELAY) continue;
-        has_delayed = true;
-        break;
-    }
-    if (!has_delayed || delayed_worker != NULL) return loaded;
-    if (delayed_cancel_event == NULL) {
-        delayed_cancel_event = CreateEventW(NULL, TRUE, FALSE, NULL);
-        if (delayed_cancel_event == NULL) {
-            ML_LOG_ERROR(L"extdll", L"cannot create delayed external DLL worker event");
-            return false;
-        }
-    }
-    delayed_worker = CreateThread(NULL, 0, extdlls_load_delayed, NULL, 0, NULL);
-    if (delayed_worker == NULL) {
-        ML_LOG_ERROR(L"extdll", L"cannot create delayed external DLL worker");
+    if (!extdlls_has_deferred() || deferred_worker != NULL) return loaded;
+    if (!extdlls_ensure_events()) return false;
+    deferred_worker = CreateThread(NULL, 0, extdlls_load_deferred, NULL, 0, NULL);
+    if (deferred_worker == NULL) {
+        ML_LOG_ERROR(L"extdll", L"cannot create the deferred external DLL worker");
     } else {
-        ML_LOG_INFO(L"extdll", L"scheduled delayed external DLL loading");
+        ML_LOG_INFO(L"extdll", L"scheduled deferred external DLL loading");
     }
     return loaded;
 }
@@ -394,16 +484,28 @@ void extdlls_load_all() {
     (void)extdlls_load(false);
 }
 
+/* Only releases the deferred worker, so this stays cheap enough to call from the
+   game step thread that reported data readiness. */
+void extdlls_load_data_ready() {
+    if (data_ready_event == NULL) return;
+    ML_LOG_INFO(L"extdll", L"data readiness released the deferred external DLL worker");
+    SetEvent(data_ready_event);
+}
+
 void extdlls_unload_all() {
-    if (delayed_cancel_event != NULL) SetEvent(delayed_cancel_event);
-    if (delayed_worker != NULL) {
-        WaitForSingleObject(delayed_worker, INFINITE);
-        CloseHandle(delayed_worker);
-        delayed_worker = NULL;
+    if (cancel_event != NULL) SetEvent(cancel_event);
+    if (deferred_worker != NULL) {
+        WaitForSingleObject(deferred_worker, INFINITE);
+        CloseHandle(deferred_worker);
+        deferred_worker = NULL;
     }
-    if (delayed_cancel_event != NULL) {
-        CloseHandle(delayed_cancel_event);
-        delayed_cancel_event = NULL;
+    if (cancel_event != NULL) {
+        CloseHandle(cancel_event);
+        cancel_event = NULL;
+    }
+    if (data_ready_event != NULL) {
+        CloseHandle(data_ready_event);
+        data_ready_event = NULL;
     }
     for (;;) {
         extdll_t *extdll = NULL;
@@ -442,32 +544,37 @@ const char *extdlls_test_name_at(int index) {
     return index >= 0 && index < extdll_count ? extdlls[index].name : NULL;
 }
 
+int extdlls_test_stage_at(int index) {
+    return index >= 0 && index < extdll_count ? (int)extdlls[index].stage : -1;
+}
+
 bool extdlls_test_is_early_at(int index) {
-    return index >= 0 && index < extdll_count
-        ? extdlls[index].load_condition == EXTDLL_LOAD_EARLY : false;
+    return extdlls_test_stage_at(index) == (int)EXTDLL_STAGE_EARLY;
 }
 
 bool extdlls_test_is_effective_early_at(int index) {
     return extdlls_test_is_early_at(index);
 }
 
+bool extdlls_test_is_data_ready_at(int index) {
+    return extdlls_test_stage_at(index) == (int)EXTDLL_STAGE_DATA_READY;
+}
+
+/* Rides the deferred worker without a wait of its own. */
 bool extdlls_test_is_deferred_at(int index) {
-    return index >= 0 && index < extdll_count
-        ? extdlls[index].load_condition == EXTDLL_LOAD_AFTER_DELAY : false;
+    return extdlls_test_stage_at(index) == (int)EXTDLL_STAGE_DELAY &&
+           extdlls[index].delay_ms == 0;
 }
 
 bool extdlls_test_has_delayed_at(bool early) {
-    for (int i = 0; i < extdll_count; i++) {
-        if ((extdlls[i].load_condition == EXTDLL_LOAD_EARLY) == early &&
-            (extdlls[i].load_condition > 0 ||
-             extdlls[i].load_condition == EXTDLL_LOAD_AFTER_DELAY)) return true;
-    }
-    return false;
+    /* The early stage runs before any worker exists, so it never defers. */
+    return early ? false : extdlls_has_stage(EXTDLL_STAGE_DELAY);
 }
 
 uint32_t extdlls_test_delay_at(int index) {
-    return index >= 0 && index < extdll_count && extdlls[index].load_condition > 0
-        ? (uint32_t)extdlls[index].load_condition : 0;
+    return index >= 0 && index < extdll_count &&
+           extdlls[index].stage == EXTDLL_STAGE_DELAY
+        ? extdlls[index].delay_ms : 0;
 }
 
 int extdlls_test_after_count(int index) {
