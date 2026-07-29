@@ -19,10 +19,8 @@ static bool sprj_writer_signature_matches(const uint8_t *target,
 }
 
 static bool writer_already_added(uint8_t **writers, size_t count,
-                                 size_t capacity,
                                  uint8_t *target) {
     if (writers == NULL) return false;
-    if (count > capacity) count = capacity;
     for (size_t i = 0; i < count; i++) {
         if (writers[i] == target) return true;
     }
@@ -46,6 +44,7 @@ size_t ml_regulation_sprj_find_writers(uint8_t *text, size_t text_size,
         int64_t target_offset;
         uint8_t *target;
 
+        if (writers != NULL && count == writer_capacity) break;
         if (memcmp(text + offset, "\x48\x8d\x4c\x24", 4) != 0 ||
             text[offset + 5] != 0xe8) {
             continue;
@@ -60,12 +59,8 @@ size_t ml_regulation_sprj_find_writers(uint8_t *text, size_t text_size,
                 target, text_size - (size_t)target_offset)) {
             continue;
         }
-        if (writer_already_added(writers, count, writer_capacity, target)) {
-            continue;
-        }
-        if (writers != NULL && count < writer_capacity) {
-            writers[count] = target;
-        }
+        if (writer_already_added(writers, count, target)) continue;
+        if (writers != NULL) writers[count] = target;
         count++;
     }
     return count;
