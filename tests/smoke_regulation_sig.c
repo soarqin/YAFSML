@@ -98,11 +98,31 @@ static int test_requires_stack_call_and_in_range_target(void) {
     return 0;
 }
 
+static int test_output_capacity_limits_returned_count(void) {
+    uint8_t text[384] = { 0 };
+    uint8_t *writers[2] = { NULL, text + 8 };
+
+    write_stack_call(text, 24, 240);
+    write_writer(text, 240, writer_near_branch,
+                 sizeof(writer_near_branch));
+    write_stack_call(text, 64, 304);
+    write_writer(text, 304, writer_near_branch,
+                 sizeof(writer_near_branch));
+
+    EXPECT_EQ(ml_regulation_sprj_find_writers(
+                  text, sizeof(text), writers, 1),
+              1);
+    EXPECT_TRUE(writers[0] == text + 240);
+    EXPECT_TRUE(writers[1] == text + 8);
+    return 0;
+}
+
 int main(void) {
     EXPECT_EQ(test_sekiro_106_post_call(), 0);
     EXPECT_EQ(test_legacy_post_call(), 0);
     EXPECT_EQ(test_unique_targets_and_decoys(), 0);
     EXPECT_EQ(test_requires_stack_call_and_in_range_target(), 0);
+    EXPECT_EQ(test_output_capacity_limits_returned_count(), 0);
     printf("smoke_regulation_sig: all tests passed\n");
     return 0;
 }
