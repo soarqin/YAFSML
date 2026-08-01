@@ -93,6 +93,7 @@ static void install_allocator_before_main(ml_lifecycle_phase_t phase, void *user
 
 bool gamehook_install() {
     bool schedule_heap_allocator = false;
+    bool regulation_requested;
     if (!ml_game_context_init()) {
         ML_LOG_WARN(L"gamehook", L"unsupported or mismatched game process; game hooks are disabled");
         return false;
@@ -100,6 +101,7 @@ bool gamehook_install() {
     const ml_game_descriptor_t *game = ml_game_context_get();
     bool common_applied;
     bool adapter_applied;
+    regulation_requested = ml_regulation_requested();
     if (config.patch_mem && game->allocator_strategy != ML_ALLOCATOR_STRATEGY_UNSUPPORTED) {
         if (config.patch_mem_dedicated_heap &&
             !mimalloc_dl_allocator_prepare(config.patch_mem_heap_size)) {
@@ -141,9 +143,13 @@ bool gamehook_install() {
     if (!ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_RUNTIME_INIT, install_properties_after_runtime, (void *)game)) {
         ML_LOG_WARN(L"properties", L"could not schedule installation");
     }
-    if (config.prevent_regulation_save_write &&
+    if (regulation_requested &&
         !ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_RUNTIME_INIT, install_regulation_after_runtime, (void *)game)) {
         ML_LOG_WARN(L"regulation", L"could not schedule installation");
+    } else if (!config.prevent_regulation_save_write) {
+        ML_LOG_INFO(L"regulation", L"protection SKIPPED_DISABLED for %ls", game->title);
+    } else if (!regulation_requested) {
+        ML_LOG_INFO(L"regulation", L"protection SKIPPED_NO_OVERRIDE for %ls", game->title);
     }
     steamapi_init();
     common_applied = common_install_file_routing(game) && common_install_ime() &&

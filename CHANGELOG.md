@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- Regulation save-write protection now activates only when
+  `prevent_regulation_save_write` is enabled and a mod overrides the root
+  `regulation.bin`. Games keep their normal regulation save behavior when the
+  vanilla file is in use.
+
+### Fixed
+
+- Fixed Elden Ring and Nightreign regulation protection releasing a
+  game-owned buffer while a queued save job could still read it, which could
+  produce corrupted Slot 11 data. The protection now suppresses future
+  regulation writes without invalidating the buffer used by existing jobs.
+
 ## [0.10.0] - 2026-07-29
 
 ### Added

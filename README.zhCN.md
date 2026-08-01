@@ -62,7 +62,7 @@ Elden Ring 仍是主要目标。使用 `--launch-target nightreign`、
 | 选项 | 默认值 | 说明 |
 | --- | --- | --- |
 | `skip_intro` | `1` | 跳过开场 Logo。 |
-| `prevent_regulation_save_write` | `1` | 阻止原始、修改后或过大的 `regulation.bin` 数据写入存档。 |
+| `prevent_regulation_save_write` | `1` | 阻止 mod 提供的 `regulation.bin` 写入存档；使用游戏原始文件时保持原有的存档写入机制。 |
 | `patch_mem` | `1` | 使用 mimalloc 替换 Dantelion 分配器。按照 me3 的行为，Nightreign 不支持该补丁。 |
 | `patch_mem_heap_size` | `0` | mimalloc 专用堆大小，单位为 MB；`0` 在当前游戏支持 `patch_mem` 时使用对应默认值。 |
 | `boot_boost` | `1` | 缓存解密后的 BHD 标头，减少归档启动时间。 |

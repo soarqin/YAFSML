@@ -498,8 +498,9 @@ DLL 进程内校验失败时，必须停止游戏专用 Hook，不能继续把�
 
 ### 7.6 Regulation 保护
 
-- Elden Ring、Nightreign：Hook `CSRegulationStep::STEP_Idle`，调用原函数后取走并用游戏 allocator 释放 raw regulation buffer。
-- DS3、Sekiro：实现并验证旧式「阻止写 regulation 到存档」Hook。
+- 仅当 VFS 中存在由 mod 提供的 `regulation.bin` 覆盖，且 `prevent_regulation_save_write` 已启用时，才安装保护 Hook；未覆盖时保持游戏原有的存档写入机制。
+- Elden Ring、Nightreign：Hook `CSRegulationStep::STEP_Idle`，调用原函数后将 raw regulation 长度设为 `0`，但保留由游戏管理的 buffer，避免已排队的存档任务读取已释放内存。
+- DS3、Sekiro：仅在存在 mod 提供的 `regulation.bin` 覆盖时实现并验证旧式「阻止写 regulation 到存档」Hook。
 
 旧式 DS3/Sekiro 实现不得复制 me3 当前疑似错误的 `(s?-u)` 正则。必须使用正确模式、检查至少安装一个 Hook，并在零匹配时报告失败。
 

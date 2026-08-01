@@ -43,6 +43,7 @@ int main(void) {
     wchar_t second[MAX_PATH];
     wchar_t late[MAX_PATH];
     wchar_t path[MAX_PATH];
+    wchar_t regulation_path[MAX_PATH];
     wchar_t hks_path[MAX_PATH];
     wchar_t late_path[MAX_PATH];
     wchar_t *normalized = NULL;
@@ -61,6 +62,8 @@ int main(void) {
     lstrcpyW(path, first); PathAppendW(path, L"parts"); EXPECT_TRUE(CreateDirectoryW(path, NULL));
     PathAppendW(path, L"test.bin");
     file = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL); EXPECT_TRUE(file != INVALID_HANDLE_VALUE); CloseHandle(file);
+    lstrcpyW(regulation_path, second); PathAppendW(regulation_path, L"regulation.bin");
+    file = CreateFileW(regulation_path, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL); EXPECT_TRUE(file != INVALID_HANDLE_VALUE); CloseHandle(file);
     lstrcpyW(path, second); PathAppendW(path, L"parts"); EXPECT_TRUE(CreateDirectoryW(path, NULL));
     PathAppendW(path, L"test.bin");
     file = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL); EXPECT_TRUE(file != INVALID_HANDLE_VALUE); CloseHandle(file);
@@ -106,6 +109,9 @@ int main(void) {
     EXPECT_EQ(vfs_generation(), 0);
     EXPECT_NOT_NULL(vfs_lookup(L"parts/test.bin"));
     EXPECT_NOT_NULL(vfs_lookup(L"data0:/parts/test.bin"));
+    EXPECT_STREQ_W(vfs_lookup(L"regulation.bin"), regulation_path);
+    EXPECT_STREQ_W(vfs_lookup(L"data0:/regulation.bin"), regulation_path);
+    EXPECT_NULL(vfs_lookup(L"param/regulation.bin"));
     {
         const wchar_t *uncached_uid = vfs_virtual_to_uid(L"parts/test.bin");
         EXPECT_NOT_NULL(uncached_uid);
@@ -220,6 +226,7 @@ int main(void) {
     DeleteFileW(path);
     DeleteFileW(late_path);
     DeleteFileW(hks_path);
+    DeleteFileW(regulation_path);
     lstrcpyW(hks_path, second); PathAppendW(hks_path, L"action\\script\\modules\\convergence"); RemoveDirectoryW(hks_path);
     lstrcpyW(hks_path, second); PathAppendW(hks_path, L"action\\script\\modules"); RemoveDirectoryW(hks_path);
     lstrcpyW(hks_path, second); PathAppendW(hks_path, L"action\\script"); RemoveDirectoryW(hks_path);

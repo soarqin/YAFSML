@@ -1,21 +1,25 @@
 #include "regulation.h"
+#include "modloader/config.h"
+#include "modloader/mod.h"
+
+#ifndef ML_REGULATION_TEST
 #include "regulation_sig.h"
 #include "log.h"
 
 #include "common/allocator.h"
-#include "modloader/dl_allocator.h"
 #include "modloader/hook.h"
 
 #include "process/fd4_step.h"
 #include "process/image.h"
 #include "process/pe.h"
 #include "process/singleton.h"
+#endif
 
 #include <stddef.h>
 #include <stdint.h>
 
 typedef struct dl_vector_ptr_msvc2015_s {
-    dl_allocator_t *allocator;
+    void *allocator;
     void **first;
     void **last;
     void **end;
@@ -29,38 +33,43 @@ typedef struct cs_regulation_manager_s {
     size_t raw_regulation_len;
 } cs_regulation_manager_t;
 
-static fd4_step_fn_t old_regulation_step_idle;
-
 _Static_assert(offsetof(cs_regulation_manager_t, raw_regulation) == 0x30, "CSRegulationManager raw_regulation offset mismatch");
 _Static_assert(offsetof(cs_regulation_manager_t, raw_regulation_len) == 0x38, "CSRegulationManager raw_regulation_len offset mismatch");
 
-static void __cdecl regulation_step_idle_hooked(void *this_ptr, fd4_time_t *time) {
-    cs_regulation_manager_t *manager;
-    uint8_t *raw;
-    size_t len;
-    dl_allocator_t *allocator;
-
-    old_regulation_step_idle(this_ptr, time);
-    manager = singleton_find("CSRegulationManager");
-    if (manager == NULL || manager->raw_regulation == NULL) return;
-
-    raw = manager->raw_regulation;
-    len = manager->raw_regulation_len;
-    manager->raw_regulation = NULL;
-    manager->raw_regulation_len = 0;
-    if (len == 0) return;
-
-    allocator = dl_allocator_for_object(raw);
-    if (allocator == NULL) {
-        ML_LOG_WARN(L"regulation", L"raw buffer detached but allocator was not found");
-        return;
-    }
-    dl_allocator_dealloc(allocator, raw);
+static void suppress_fd4_regulation_save(cs_regulation_manager_t *manager) {
+    if (manager != NULL) manager->raw_regulation_len = 0;
 }
 
 static bool __cdecl skip_regulation_write(void *state) {
     (void)state;
     return true;
+}
+
+bool ml_regulation_override_present(void) {
+    return mods_file_search(L"regulation.bin") != NULL;
+}
+
+bool ml_regulation_requested(void) {
+    return config.prevent_regulation_save_write && ml_regulation_override_present();
+}
+
+#ifdef ML_REGULATION_TEST
+void ml_regulation_test_suppress_fd4_save(void *manager) {
+    suppress_fd4_regulation_save((cs_regulation_manager_t *)manager);
+}
+
+bool ml_regulation_test_skip_write(void *state) {
+    return skip_regulation_write(state);
+}
+#else
+static fd4_step_fn_t old_regulation_step_idle;
+
+static void __cdecl regulation_step_idle_hooked(void *this_ptr, fd4_time_t *time) {
+    cs_regulation_manager_t *manager;
+
+    old_regulation_step_idle(this_ptr, time);
+    manager = singleton_find("CSRegulationManager");
+    suppress_fd4_regulation_save(manager);
 }
 
 static bool install_fd4(void) {
@@ -120,6 +129,14 @@ static bool install_sprj(void) {
 bool ml_regulation_install(const ml_game_descriptor_t *game) {
     bool result = false;
     if (game == NULL) return false;
+    if (!config.prevent_regulation_save_write) {
+        ML_LOG_INFO(L"regulation", L"protection SKIPPED_DISABLED for %ls", game->title);
+        return true;
+    }
+    if (!ml_regulation_override_present()) {
+        ML_LOG_INFO(L"regulation", L"protection SKIPPED_NO_OVERRIDE for %ls", game->title);
+        return true;
+    }
     if (game->regulation_strategy == ML_REGULATION_STRATEGY_FD4) result = install_fd4();
     if (game->regulation_strategy == ML_REGULATION_STRATEGY_SPRJ) result = install_sprj();
     ml_log_write(result ? ML_LOG_LEVEL_INFO : ML_LOG_LEVEL_WARN,
@@ -128,3 +145,4 @@ bool ml_regulation_install(const ml_game_descriptor_t *game) {
                      : L"protection SIGNATURE_NOT_FOUND for %ls", game->title);
     return result;
 }
+#endif
