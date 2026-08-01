@@ -24,8 +24,10 @@ void ml_log_enable_console();
 void ml_log_set_level(ml_log_level_t level);
 ml_log_level_t ml_log_get_level();
 
-#if defined(__GNUC__) || defined(__clang__)
-    #define FORCE_INLINE __attribute__((always_inline)) inline
+#if defined(__GNUC__)
+    #define FORCE_INLINE inline static
+#elif defined(__clang__)
+    #define FORCE_INLINE __attribute__((always_inline)) inline static
 #elif defined(_MSC_VER)
     #define FORCE_INLINE __forceinline
 #else
