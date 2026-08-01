@@ -4,6 +4,7 @@
 #include "asset_hooks.h"
 #include "common.h"
 #include "properties.h"
+#include "regulation.h"
 #include "runtime_ready.h"
 
 #include "modloader/config.h"
@@ -87,7 +88,9 @@ bool darksouls3_install(void) {
         ? L"SPRJ Logo capability REQUESTED" : L"SPRJ Logo capability SKIPPED_DISABLED");
     ML_LOG_INFO(L"darksouls3", L"offline property capability REQUESTED");
     ML_LOG_INFO(L"darksouls3", config.prevent_regulation_save_write
-        ? L"regulation protection capability REQUESTED"
+        ? (ml_regulation_override_present()
+            ? L"regulation protection capability REQUESTED"
+            : L"regulation protection capability SKIPPED_NO_OVERRIDE")
         : L"regulation protection capability SKIPPED_DISABLED");
     ML_LOG_INFO(L"darksouls3", config.patch_mem
         ? L"heap allocator capability REQUESTED"
