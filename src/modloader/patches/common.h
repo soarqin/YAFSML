@@ -21,7 +21,7 @@ extern bool common_schedule_process_settings(void);
 extern void common_wait_for_process_settings(void);
 extern bool common_install_file_routing(const ml_game_descriptor_t *game);
 extern void common_uninstall_file_routing(void);
-extern bool common_install_ime(void);
+extern bool common_install_ime(const ml_game_descriptor_t *game);
 extern bool common_wwise_requested(void);
 extern bool common_install_wwise(void);
 extern void common_uninstall(void);

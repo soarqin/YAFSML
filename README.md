@@ -75,7 +75,7 @@ me3 commit `6563ebb`; Dark Souls III forces Arxan neutralization on.
 | `disable_arxan` | `0` | Neutralize Arxan after its entry stub completes. Dark Souls III forces this setting on. |
 | `replace_save_filename` | Empty | Replace a save filename; a leading dot replaces only its extension. |
 | `replace_seamless_coop_save_filename` | Empty | Replace the additional Seamless Co-op save filename. |
-| `enable_ime` | `0` | Keep IME enabled for mods that need non-Latin text input. |
+| `enable_ime` | `0` | Keep IME enabled in supported games. Elden Ring, Nightreign, and Dark Souls III also allow non-Latin software-keyboard text; Sekiro only preserves IME. Restart after changing it. |
 
 ### `[tweak]`
 

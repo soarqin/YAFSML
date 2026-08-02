@@ -12,6 +12,7 @@
 #include "wwise_path.h"
 #include "save_mapping.h"
 #include "win32_hooks.h"
+#include "ime_sig.h"
 
 #include "modloader/config.h"
 #include "log.h"
@@ -38,9 +39,30 @@ BOOL WINAPI ImmDisableIME_hooked(DWORD unused) {
 }
 
 static void *ime_hook_target;
+static uint8_t *ime_character_filter_patch;
+static bool ime_character_filter_applied;
+
+typedef enum ime_filter_patch_result_e {
+    IME_FILTER_PATCH_APPLIED,
+    IME_FILTER_PATCH_SIGNATURE_NOT_FOUND,
+    IME_FILTER_PATCH_WRITE_FAILED,
+} ime_filter_patch_result_t;
+
+static bool write_code_bytes(void *target, const void *bytes, size_t size) {
+    DWORD old_protection;
+    DWORD unused;
+    bool restored;
+    if (!VirtualProtect(target, size, PAGE_EXECUTE_READWRITE, &old_protection)) return false;
+    memcpy(target, bytes, size);
+    restored = VirtualProtect(target, size, old_protection, &unused) != 0;
+    return FlushInstructionCache(GetCurrentProcess(), target, size) != 0 && restored;
+}
 
 static bool patch_ime_disable() {
+    HMODULE imm32 = GetModuleHandleW(L"imm32.dll");
     void *func = NULL;
+    if (imm32 == NULL) imm32 = LoadLibraryW(L"imm32.dll");
+    if (imm32 == NULL) return false;
     MH_STATUS status = MH_CreateHookApiEx(L"imm32", "ImmDisableIME", ImmDisableIME_hooked, NULL, &func);
     if (status != MH_OK || func == NULL) return false;
     status = MH_EnableHook(func);
@@ -50,6 +72,31 @@ static bool patch_ime_disable() {
     }
     ime_hook_target = func;
     return true;
+}
+
+static ime_filter_patch_result_t patch_character_filter(void) {
+    static const uint8_t replacement[] = { 0xeb, 0x13 };
+    static const uint8_t original[] = { 0x74, 0x13 };
+
+    if (ime_character_filter_applied) return IME_FILTER_PATCH_APPLIED;
+    if (ime_character_filter_patch == NULL) {
+        void *image = GetModuleHandleW(NULL);
+        const IMAGE_SECTION_HEADER *text = pe_section_by_name(image, ".text");
+        size_t text_size = 0;
+        uint8_t *text_base = pe_section_data(image, text, &text_size);
+        ime_character_filter_patch = ml_ime_sig_find_character_filter(text_base, text_size);
+        if (ime_character_filter_patch == NULL) {
+            return IME_FILTER_PATCH_SIGNATURE_NOT_FOUND;
+        }
+    }
+    if (!write_code_bytes(ime_character_filter_patch, replacement, sizeof(replacement))) {
+        if (write_code_bytes(ime_character_filter_patch, original, sizeof(original))) {
+            ime_character_filter_patch = NULL;
+        }
+        return IME_FILTER_PATCH_WRITE_FAILED;
+    }
+    ime_character_filter_applied = true;
+    return IME_FILTER_PATCH_APPLIED;
 }
 
 typedef enum ak_open_mode_e {
@@ -283,11 +330,42 @@ void common_uninstall_file_routing(void) {
     ml_save_mapping_uninit();
 }
 
-bool common_install_ime(void) {
-    if (config.enable_ime) {
-        return ime_hook_target != NULL || patch_ime_disable();
+bool common_install_ime(const ml_game_descriptor_t *game) {
+    ime_filter_patch_result_t filter_result;
+    if (!config.enable_ime) {
+        ML_LOG_INFO(L"ime", L"IME preservation SKIPPED_DISABLED");
+        return true;
     }
-    return true;
+    if (game == NULL) {
+        ML_LOG_INFO(L"ime", L"IME preservation SKIPPED_UNSUPPORTED for %ls",
+                    L"<unknown>");
+        return true;
+    }
+    if (ime_hook_target == NULL && !patch_ime_disable()) {
+        ML_LOG_WARN(L"ime", L"IME preservation HOOK_FAILED for %ls", game->title);
+        return false;
+    }
+    if (game->id == ML_GAME_SEKIRO) {
+        ML_LOG_INFO(L"ime", L"IME preservation APPLIED for %ls; character filter NOT_APPLICABLE",
+                    game->title);
+        return true;
+    }
+    filter_result = patch_character_filter();
+    if (filter_result != IME_FILTER_PATCH_APPLIED) {
+        ML_LOG_WARN(L"ime", filter_result == IME_FILTER_PATCH_SIGNATURE_NOT_FOUND
+                         ? L"IME character filter SIGNATURE_NOT_FOUND for %ls"
+                         : L"IME character filter PATCH_FAILED for %ls",
+                    game->title);
+        ML_LOG_INFO(L"ime", L"IME preservation APPLIED for %ls; character filter NOT_APPLIED",
+                    game->title);
+        return true;
+    }
+    if (ime_hook_target != NULL && ime_character_filter_applied) {
+        ML_LOG_INFO(L"ime", L"IME preservation APPLIED for %ls", game->title);
+        return true;
+    }
+    ML_LOG_WARN(L"ime", L"IME preservation HOOK_FAILED for %ls", game->title);
+    return false;
 }
 
 bool common_wwise_requested(void) {
@@ -303,7 +381,18 @@ bool common_install_wwise(void) {
 
 void common_uninstall(void) {
     void **targets[2] = { &wwise_hook_target, &ime_hook_target };
+    static const uint8_t original_filter_branch[] = { 0x74, 0x13 };
     common_wait_for_process_settings();
+    if (ime_character_filter_patch != NULL) {
+        if (write_code_bytes(ime_character_filter_patch, original_filter_branch,
+                             sizeof(original_filter_branch))) {
+            ime_character_filter_patch = NULL;
+            ime_character_filter_applied = false;
+        } else {
+            ML_LOG_WARN(L"ime", L"failed to restore character filter at %p",
+                        ime_character_filter_patch);
+        }
+    }
     for (size_t i = 0; i < 2; i++) {
         void *target = *targets[i];
         if (target == NULL) continue;

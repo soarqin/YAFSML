@@ -101,6 +101,9 @@ bool gamehook_install() {
     const ml_game_descriptor_t *game = ml_game_context_get();
     bool common_applied;
     bool adapter_applied;
+    bool file_routing_applied;
+    bool ime_applied;
+    bool wwise_applied;
     regulation_requested = ml_regulation_requested();
     if (config.patch_mem && game->allocator_strategy != ML_ALLOCATOR_STRATEGY_UNSUPPORTED) {
         if (config.patch_mem_dedicated_heap &&
@@ -152,8 +155,10 @@ bool gamehook_install() {
         ML_LOG_INFO(L"regulation", L"protection SKIPPED_NO_OVERRIDE for %ls", game->title);
     }
     steamapi_init();
-    common_applied = common_install_file_routing(game) && common_install_ime() &&
-                     (game->id == ML_GAME_NIGHTREIGN || common_install_wwise());
+    file_routing_applied = common_install_file_routing(game);
+    ime_applied = common_install_ime(game);
+    wwise_applied = game->id == ML_GAME_NIGHTREIGN || common_install_wwise();
+    common_applied = file_routing_applied && ime_applied && wwise_applied;
     adapter_applied = game->id == ML_GAME_ELDEN_RING
         ? eldenring_install()
         : game->id == ML_GAME_NIGHTREIGN

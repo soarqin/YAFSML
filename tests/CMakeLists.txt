@@ -38,6 +38,8 @@ set(SMOKE_smoke_fd4_step_SOURCES ${CMAKE_SOURCE_DIR}/src/process/fd4_step_static
 set(SMOKE_smoke_logo_SOURCES ${CMAKE_SOURCE_DIR}/src/modloader/patches/logo.c)
 set(SMOKE_smoke_regulation_sig_SOURCES
     ${CMAKE_SOURCE_DIR}/src/modloader/patches/regulation_sig.c)
+set(SMOKE_smoke_ime_sig_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/modloader/patches/ime_sig.c)
 set(SMOKE_smoke_regulation_SOURCES
     ${CMAKE_SOURCE_DIR}/src/modloader/patches/regulation.c)
 set(SMOKE_smoke_regulation_DEFINITIONS ML_REGULATION_TEST)

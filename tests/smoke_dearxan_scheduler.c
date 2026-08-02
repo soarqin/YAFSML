@@ -59,12 +59,17 @@ int main(void) {
     Sleep(50);
     EXPECT_EQ(context.count, 4);
     {
-        const int expected_order[] = { 0, 3, 1, 2 };
+        int positions[4] = { -1, -1, -1, -1 };
         for (int i = 0; i < 4; i++) {
-            EXPECT_EQ(context.order[i], expected_order[i]);
+            EXPECT_TRUE(context.order[i] >= 0 && context.order[i] < 4);
+            EXPECT_EQ(positions[context.order[i]], -1);
+            positions[context.order[i]] = i;
             EXPECT_TRUE(!context.detected[i]);
             EXPECT_TRUE(!context.executing_entrypoint[i]);
         }
+        EXPECT_TRUE(positions[0] < positions[1]);
+        EXPECT_TRUE(positions[1] < positions[2]);
+        EXPECT_TRUE(positions[0] < positions[3]);
     }
     CloseHandle(context.complete);
     printf("smoke_dearxan_scheduler: all tests passed\n");

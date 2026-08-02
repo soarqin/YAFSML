@@ -32,6 +32,7 @@ add_project(modloader_dll SHARED
     path_convert.c path_convert.h
     vfs.c vfs.h
     patches/common.c patches/common.h
+    patches/ime_sig.c patches/ime_sig.h
     patches/allocator.c patches/allocator.h
     patches/data_ready.c patches/data_ready.h
     patches/logo.c patches/logo.h
