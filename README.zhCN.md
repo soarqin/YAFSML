@@ -69,7 +69,7 @@ Elden Ring 仍是主要目标。使用 `--launch-target nightreign`、
 | `disable_arxan` | `0` | 在 Arxan 入口桩完成后执行中和。Dark Souls III 始终启用此选项。 |
 | `replace_save_filename` | 留空 | 替换存档文件名；以点号开头时仅替换扩展名。 |
 | `replace_seamless_coop_save_filename` | 留空 | 替换 Seamless Co-op 使用的额外存档文件名。 |
-| `enable_ime` | `0` | 为需要非拉丁文字输入的模组保持 IME 启用。 |
+| `enable_ime` | `0` | 在受支持的游戏中保持 IME 启用。Elden Ring、Nightreign 和 Dark Souls III 还允许软件键盘输入非拉丁文字；Sekiro 仅保持 IME 启用。修改后需重启游戏。 |
 
 ### `[tweak]`
 
