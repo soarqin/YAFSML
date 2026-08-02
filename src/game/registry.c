@@ -18,11 +18,13 @@ static const wchar_t *const eldenring_exes[] = { L"Game\\eldenring.exe", L"elden
 static const wchar_t *const nightreign_exes[] = { L"Game\\nightreign.exe", L"nightreign.exe" };
 static const wchar_t *const sekiro_exes[] = { L"sekiro.exe" };
 static const wchar_t *const darksouls3_exes[] = { L"Game\\DarkSoulsIII.exe", L"DarkSoulsIII.exe" };
+static const wchar_t *const armoredcore6_exes[] = { L"Game\\armoredcore6.exe" };
 
 static const ml_game_descriptor_t games[] = {
     { ML_GAME_DARK_SOULS_3, "darksouls3", L"Dark Souls III", 374320, darksouls3_exes, 2, L"DarkSoulsIII", L"darksouls3", L"config_darksouls3.toml", ML_STL_ABI_MSVC2012, ML_SUPPORT_EXPERIMENTAL, L"SprjFileStep::STEP_Init", "SprjAutoControlAPI", 0xC0, L"TitleFlowStep::STEP_Init", ML_RENDER_READY_STEP_AFTER_ORIGINAL, NULL, "NS_SPRJ::ParamStep", ML_DATA_READY_SPRJ_PARAM_STEP, ML_RUNTIME_READY_STEAM_API_INIT, ML_LOGO_STRATEGY_SPRJ, ML_ALLOCATOR_STRATEGY_DARK_SOULS_3, ML_REGULATION_STRATEGY_SPRJ },
     { ML_GAME_SEKIRO, "sekiro", L"Sekiro: Shadows Die Twice", 814380, sekiro_exes, 1, L"Sekiro", L"sekiro", L"config_sekiro.toml", ML_STL_ABI_MSVC2015, ML_SUPPORT_STABLE, L"SprjFileStep::STEP_Init", "SprjAutoControlAPI", 0xB0, L"TitleFlowStep::STEP_Init", ML_RENDER_READY_STEP_AFTER_ORIGINAL, NULL, "NS_SPRJ::ParamStep", ML_DATA_READY_SPRJ_PARAM_STEP, ML_RUNTIME_READY_STEAM_API_INIT, ML_LOGO_STRATEGY_SPRJ, ML_ALLOCATOR_STRATEGY_SEKIRO, ML_REGULATION_STRATEGY_SPRJ },
     { ML_GAME_ELDEN_RING, "eldenring", L"Elden Ring", 1245620, eldenring_exes, 2, L"EldenRing", L"elden_ring", L"config_eldenring.toml", ML_STL_ABI_MSVC2015, ML_SUPPORT_STABLE, L"CSFileStep::STEP_Init", "CSAutoControlAPI", 0xB0, L"TitleStep::STEP_InitMenu", ML_RENDER_READY_STEP_AFTER_ORIGINAL, L"ParamStep::STEP_Wait", NULL, ML_DATA_READY_FD4_NAMED_STEP, ML_RUNTIME_READY_STEAM_API_INIT, ML_LOGO_STRATEGY_FD4, ML_ALLOCATOR_STRATEGY_ELDEN_RING, ML_REGULATION_STRATEGY_FD4 },
+    { ML_GAME_ARMORED_CORE_6, "armoredcore6", L"Armored Core VI: Fires of Rubicon", 1888160, armoredcore6_exes, 1, L"ArmoredCore6", L"armoredcore6", L"config_armoredcore6.toml", ML_STL_ABI_MSVC2015, ML_SUPPORT_STABLE, L"CSFileStep::STEP_Init", "CSAutoControlAPI", 0xB0, L"TitleStep::STEP_InitMenu", ML_RENDER_READY_STEP_AFTER_ORIGINAL, L"ParamStep::STEP_Wait", NULL, ML_DATA_READY_FD4_NAMED_STEP, ML_RUNTIME_READY_STEAM_API_INIT, ML_LOGO_STRATEGY_FD4, ML_ALLOCATOR_STRATEGY_UNSUPPORTED, ML_REGULATION_STRATEGY_FD4 },
     { ML_GAME_NIGHTREIGN, "nightreign", L"Elden Ring Nightreign", 2622380, nightreign_exes, 2, L"Nightreign", L"nightreign", L"config_nightreign.toml", ML_STL_ABI_MSVC2015, ML_SUPPORT_STABLE, L"CSFileStep::STEP_Init", "CSAutoControlAPI", 0xB0, L"TitleStep::STEP_InitMenu", ML_RENDER_READY_STEP_AFTER_ORIGINAL, L"ParamStep::STEP_Wait", NULL, ML_DATA_READY_FD4_NAMED_STEP, ML_RUNTIME_READY_STEAM_API_INIT, ML_LOGO_STRATEGY_FD4, ML_ALLOCATOR_STRATEGY_UNSUPPORTED, ML_REGULATION_STRATEGY_FD4 },
 };
 
@@ -38,7 +40,8 @@ const ml_game_descriptor_t *ml_game_by_key(const wchar_t *key) {
     if (lstrcmpiW(key, L"darksouls3") == 0 || lstrcmpiW(key, L"dark-souls-3") == 0 || lstrcmpiW(key, L"ds3") == 0) return &games[0];
     if (lstrcmpiW(key, L"sekiro") == 0) return &games[1];
     if (lstrcmpiW(key, L"eldenring") == 0 || lstrcmpiW(key, L"elden-ring") == 0 || lstrcmpiW(key, L"er") == 0) return &games[2];
-    if (lstrcmpiW(key, L"nightreign") == 0 || lstrcmpiW(key, L"nr") == 0 || lstrcmpiW(key, L"nightrein") == 0) return &games[3];
+    if (lstrcmpiW(key, L"armoredcore6") == 0 || lstrcmpiW(key, L"ac6") == 0) return &games[3];
+    if (lstrcmpiW(key, L"nightreign") == 0 || lstrcmpiW(key, L"nr") == 0 || lstrcmpiW(key, L"nightrein") == 0) return &games[4];
     return NULL;
 }
 
@@ -49,7 +52,8 @@ const ml_game_descriptor_t *ml_game_by_exe_path(const wchar_t *path) {
     if (lstrcmpiW(filename, L"DarkSoulsIII.exe") == 0) return &games[0];
     if (lstrcmpiW(filename, L"sekiro.exe") == 0) return &games[1];
     if (lstrcmpiW(filename, L"eldenring.exe") == 0) return &games[2];
-    if (lstrcmpiW(filename, L"nightreign.exe") == 0) return &games[3];
+    if (lstrcmpiW(filename, L"armoredcore6.exe") == 0) return &games[3];
+    if (lstrcmpiW(filename, L"nightreign.exe") == 0) return &games[4];
     return NULL;
 }
 

@@ -20,6 +20,30 @@ int main(void) {
     EXPECT_EQ(game->allocator_strategy, ML_ALLOCATOR_STRATEGY_ELDEN_RING);
     EXPECT_EQ(game->regulation_strategy, ML_REGULATION_STRATEGY_FD4);
 
+    game = ml_game_by_key(L"ac6");
+    EXPECT_NOT_NULL(game);
+    EXPECT_EQ(game->id, ML_GAME_ARMORED_CORE_6);
+    EXPECT_STREQ_A(game->key, "armoredcore6");
+    EXPECT_EQ(game->steam_app_id, 1888160);
+    EXPECT_STREQ_W(game->title, L"Armored Core VI: Fires of Rubicon");
+    EXPECT_STREQ_W(game->exe_relpaths[0], L"Game\\armoredcore6.exe");
+    EXPECT_STREQ_W(game->save_root_name, L"ArmoredCore6");
+    EXPECT_STREQ_W(game->ini_section, L"armoredcore6");
+    EXPECT_STREQ_W(game->modengine_config_name, L"config_armoredcore6.toml");
+    EXPECT_STREQ_W(game->file_step_name, L"CSFileStep::STEP_Init");
+    EXPECT_STREQ_A(game->control_api_class, "CSAutoControlAPI");
+    EXPECT_EQ(game->stl_abi, ML_STL_ABI_MSVC2015);
+    EXPECT_EQ(game->support_level, ML_SUPPORT_STABLE);
+    EXPECT_EQ(game->ebl_bhd_holder_offset, 0xB0);
+    EXPECT_STREQ_W(game->render_ready_step_name, L"TitleStep::STEP_InitMenu");
+    EXPECT_EQ(game->render_ready_strategy, ML_RENDER_READY_STEP_AFTER_ORIGINAL);
+    EXPECT_STREQ_W(game->data_ready_step_name, L"ParamStep::STEP_Wait");
+    EXPECT_EQ(game->data_ready_strategy, ML_DATA_READY_FD4_NAMED_STEP);
+    EXPECT_EQ(game->runtime_ready_trigger, ML_RUNTIME_READY_STEAM_API_INIT);
+    EXPECT_EQ(game->logo_strategy, ML_LOGO_STRATEGY_FD4);
+    EXPECT_EQ(game->allocator_strategy, ML_ALLOCATOR_STRATEGY_UNSUPPORTED);
+    EXPECT_EQ(game->regulation_strategy, ML_REGULATION_STRATEGY_FD4);
+
     game = ml_game_by_key(L"nr");
     EXPECT_NOT_NULL(game);
     EXPECT_EQ(game->id, ML_GAME_NIGHTREIGN);
@@ -80,6 +104,8 @@ int main(void) {
     EXPECT_EQ(ml_game_by_exe_path(L"C:\\Games\\Sekiro\\sekiro.exe")->id, ML_GAME_SEKIRO);
     EXPECT_EQ(ml_game_by_exe_path(L"C:\\Games\\Nightreign\\Game\\nightreign.exe")->id,
               ML_GAME_NIGHTREIGN);
+    EXPECT_EQ(ml_game_by_exe_path(L"C:\\Games\\Armored Core VI\\Game\\armoredcore6.exe")->id,
+              ML_GAME_ARMORED_CORE_6);
     EXPECT_NULL(ml_game_by_key(L"unknown"));
     EXPECT_NULL(ml_game_by_exe_path(L"C:\\Games\\game.exe"));
 

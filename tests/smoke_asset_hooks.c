@@ -71,6 +71,7 @@ int main(void) {
     EXPECT_NOT_NULL(ds3);
     EXPECT_NOT_NULL(nightreign);
     EXPECT_EQ(nightreign->ebl_bhd_holder_offset, 0xB0);
+    EXPECT_EQ(ml_game_by_id(ML_GAME_ARMORED_CORE_6)->ebl_bhd_holder_offset, 0xB0);
     EXPECT_TRUE(!ml_asset_hooks_loose_params_present(ml_game_by_id(ML_GAME_SEKIRO)));
     EXPECT_TRUE(!ml_asset_hooks_loose_params_present(ds3));
     EXPECT_TRUE(ml_asset_hooks_is_loose_param_path(ds3,

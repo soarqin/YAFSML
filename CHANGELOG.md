@@ -9,15 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Added stable Armored Core VI support, including launcher and process detection,
+  Steam App ID `1888160`, `%APPDATA%\ArmoredCore6` save mapping, FD4 host
+  capabilities, Dantelion asset and Wwise routing, and aliases `ac6` and
+  `armoredcore6`. The adapter follows the shared AC6 behavior in me3 commit
+  `6563ebb`; the mimalloc allocator replacement remains unsupported.
 - Regulation save-write protection now activates only when
   `prevent_regulation_save_write` is enabled and a mod overrides the root
   `regulation.bin`. Games keep their normal regulation save behavior when the
   vanilla file is in use.
 - `enable_ime` now preserves IME availability in every supported game so
-  injected tools can use it. Elden Ring, Nightreign, and Dark Souls III also
-  bypass the software-keyboard filter that replaced non-Latin characters with
-  asterisks; Sekiro does not contain this character-input path and skips that
-  patch.
+  injected tools can use it. Elden Ring, Armored Core VI, Nightreign, and Dark
+  Souls III also bypass the software-keyboard filter that replaced non-Latin
+  characters with asterisks; Sekiro does not contain this character-input path
+  and skips that patch.
 
 ### Fixed
 

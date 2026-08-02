@@ -11,12 +11,13 @@ external ModEngine-compatible DLL loading.
 | Game | Launcher target | Status |
 | --- | --- | --- |
 | Elden Ring | `eldenring` | Stable |
+| Armored Core VI: Fires of Rubicon | `armoredcore6` (`ac6`) | Stable |
 | Elden Ring Nightreign | `nightreign` | Stable |
 | Sekiro: Shadows Die Twice | `sekiro` | Stable |
 | Dark Souls III | `darksouls3` | Experimental adapter; Arxan neutralization is enabled |
 
 Elden Ring remains the primary target. Select another game with
-`--launch-target nightreign`, `--launch-target sekiro`, or
+`--launch-target armoredcore6`, `--launch-target nightreign`, `--launch-target sekiro`, or
 `--launch-target darksouls3`. When `--launch-target` is omitted, the launcher
 reads the top-level `game=...` value from `YAFSML.ini`; if the value is absent,
 it starts Elden Ring. An explicit `--launch-target` always takes precedence.
@@ -56,7 +57,7 @@ These options are outside a section:
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `game` | `eldenring` | Select the standalone launcher's game when `--launch-target` is omitted. Accepted values include `eldenring`, `nightreign`, `sekiro`, `darksouls3`, and their aliases. |
+| `game` | `eldenring` | Select the standalone launcher's game when `--launch-target` is omitted. Accepted values include `eldenring`, `armoredcore6`, `nightreign`, `sekiro`, `darksouls3`, and their aliases. |
 
 ### `[patch]`
 
@@ -69,19 +70,19 @@ me3 commit `6563ebb`; Dark Souls III forces Arxan neutralization on.
 | --- | --- | --- |
 | `skip_intro` | `1` | Skip the intro logo. |
 | `prevent_regulation_save_write` | `1` | Prevent a mod-provided `regulation.bin` from being written to saves. The vanilla file keeps the game's normal save behavior. |
-| `patch_mem` | `1` | Replace the Dantelion allocator with mimalloc. Nightreign does not support this patch, matching me3. |
+| `patch_mem` | `1` | Replace the Dantelion allocator with mimalloc. Armored Core VI and Nightreign do not support this patch, matching me3. |
 | `patch_mem_heap_size` | `0` | Dedicated mimalloc heap size in MB; `0` uses the current game's default when `patch_mem` is supported. |
 | `boot_boost` | `1` | Cache decrypted BHD headers to reduce archive startup time. |
 | `disable_arxan` | `0` | Neutralize Arxan after its entry stub completes. Dark Souls III forces this setting on. |
 | `replace_save_filename` | Empty | Replace a save filename; a leading dot replaces only its extension. |
 | `replace_seamless_coop_save_filename` | Empty | Replace the additional Seamless Co-op save filename. |
-| `enable_ime` | `0` | Keep IME enabled in supported games. Elden Ring, Nightreign, and Dark Souls III also allow non-Latin software-keyboard text; Sekiro only preserves IME. Restart after changing it. |
+| `enable_ime` | `0` | Keep IME enabled in supported games. Elden Ring, Armored Core VI, Nightreign, and Dark Souls III also allow non-Latin software-keyboard text; Sekiro only preserves IME. Restart after changing it. |
 
 ### `[tweak]`
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `cpu_affinity` | `0` | Select the game process CPU affinity strategy: `0` leaves affinity unchanged, `1` uses all logical cores except the first, `2` uses efficient cores, `3` uses performance cores, and `4` uses performance cores except their first logical core. Strategies `1` through `4` are applied asynchronously once the game has built its title menu in all four games. Unsupported processor-group layouts or an empty selected mask leave affinity unchanged. Do not use `2`, `3`, or `4` on Intel Ultra CPUs with Elden Ring 1.16.2 or later. |
+| `cpu_affinity` | `0` | Select the game process CPU affinity strategy: `0` leaves affinity unchanged, `1` uses all logical cores except the first, `2` uses efficient cores, `3` uses performance cores, and `4` uses performance cores except their first logical core. Strategies `1` through `4` are applied asynchronously once the game has built its title menu in all five games. Unsupported processor-group layouts or an empty selected mask leave affinity unchanged. Do not use `2`, `3`, or `4` on Intel Ultra CPUs with Elden Ring 1.16.2 or later. |
 
 The render-ready trigger that drives this is optional. If its hook cannot be
 installed, the loader keeps the current affinity and continues with runtime
@@ -132,14 +133,14 @@ contain the same file, the later declaration overrides the earlier one.
 ### ModEngine2 TOML compatibility
 
 If `YAFSML.ini` is absent, the loader looks for the game-specific
-ModEngine2 file: `config_eldenring.toml`, `config_nightreign.toml`,
+ModEngine2 file: `config_eldenring.toml`, `config_armoredcore6.toml`, `config_nightreign.toml`,
 `config_sekiro.toml`, or `config_darksouls3.toml`. The `-c` launcher option or `YAFSML_CONFIG`
 environment variable can select another configuration path.
 
 ## Launcher options
 
 ```text
--t, --launch-target <game>  Select eldenring, nightreign, sekiro, or darksouls3.
+-t, --launch-target <game>  Select eldenring, armoredcore6, nightreign, sekiro, or darksouls3.
 -p, --game-path <path>      Game executable or game directory.
 -c, --config <path>         Configuration file or directory.
 -d, --modloader-dll <path> Loader DLL to inject.

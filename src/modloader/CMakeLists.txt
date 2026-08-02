@@ -47,6 +47,7 @@ add_project(modloader_dll SHARED
     patches/dl_device.c patches/dl_device.h
     patches/asset_sig.c patches/asset_sig.h
     patches/asset_hooks.c patches/asset_hooks.h
+    patches/armoredcore6.c patches/armoredcore6.h
     patches/eldenring.c patches/eldenring.h
     patches/nightreign.c patches/nightreign.h
     patches/sekiro.c patches/sekiro.h
