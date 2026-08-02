@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.10.1] - 2026-08-02
+
 ### Changed
 
 - Added stable Armored Core VI support, including launcher and process detection,
@@ -26,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed GCC builds failing because the force-inline helper macro did not give
+  header-defined functions internal linkage.
 - Fixed Elden Ring and Nightreign regulation protection releasing a
   game-owned buffer while a queued save job could still read it, which could
   produce corrupted Slot 11 data. The protection now suppresses future

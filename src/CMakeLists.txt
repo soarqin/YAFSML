@@ -1,6 +1,6 @@
 include(GenerateVersionInfo)
 
-set(YAFSML_VERSION "0.10.0")
+set(YAFSML_VERSION "0.10.1")
 
 add_subdirectory(process)
 add_subdirectory(dearxan)
