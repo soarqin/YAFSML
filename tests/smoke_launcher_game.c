@@ -20,6 +20,16 @@ int main(void) {
               ML_LAUNCHER_GAME_CONFIG_FOUND);
     EXPECT_EQ(game->id, ML_GAME_NIGHTREIGN);
 
+    EXPECT_EQ(ml_launcher_game_from_ini_string("game=armoredcore6\n", &game,
+                                                invalid_key, 64),
+              ML_LAUNCHER_GAME_CONFIG_FOUND);
+    EXPECT_EQ(game->id, ML_GAME_ARMORED_CORE_6);
+
+    EXPECT_EQ(ml_launcher_game_from_ini_string("game=ac6\n", &game,
+                                                invalid_key, 64),
+              ML_LAUNCHER_GAME_CONFIG_FOUND);
+    EXPECT_EQ(game->id, ML_GAME_ARMORED_CORE_6);
+
     game = NULL;
     EXPECT_EQ(ml_launcher_game_from_ini_string("[elden_ring]\ngame=darksouls3\n",
                                                &game, invalid_key, 64),

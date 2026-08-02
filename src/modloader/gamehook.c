@@ -12,6 +12,7 @@
 #include "config.h"
 #include "patches/common.h"
 #include "patches/allocator.h"
+#include "patches/armoredcore6.h"
 #include "patches/darksouls3.h"
 #include "patches/data_ready.h"
 #include "patches/eldenring.h"
@@ -117,6 +118,7 @@ bool gamehook_install() {
         ML_LOG_INFO(L"allocator", L"heap allocators SKIPPED_UNSUPPORTED for %ls", game->title);
     }
     if (game->id != ML_GAME_ELDEN_RING && game->id != ML_GAME_NIGHTREIGN &&
+        game->id != ML_GAME_ARMORED_CORE_6 &&
         game->id != ML_GAME_SEKIRO &&
         game->id != ML_GAME_DARK_SOULS_3) {
         ML_LOG_WARN(L"gamehook", L"%ls adapter is not implemented; game hooks are disabled", game->title);
@@ -157,13 +159,16 @@ bool gamehook_install() {
     steamapi_init();
     file_routing_applied = common_install_file_routing(game);
     ime_applied = common_install_ime(game);
-    wwise_applied = game->id == ML_GAME_NIGHTREIGN || common_install_wwise();
+    wwise_applied = game->id == ML_GAME_NIGHTREIGN ||
+                    game->id == ML_GAME_ARMORED_CORE_6 || common_install_wwise();
     common_applied = file_routing_applied && ime_applied && wwise_applied;
     adapter_applied = game->id == ML_GAME_ELDEN_RING
         ? eldenring_install()
         : game->id == ML_GAME_NIGHTREIGN
             ? nightreign_install()
-            : game->id == ML_GAME_SEKIRO ? sekiro_install() : darksouls3_install();
+            : game->id == ML_GAME_ARMORED_CORE_6
+                ? armoredcore6_install()
+                : game->id == ML_GAME_SEKIRO ? sekiro_install() : darksouls3_install();
     return common_applied && adapter_applied;
 }
 
@@ -173,6 +178,8 @@ void gamehook_uninstall() {
         eldenring_uninstall();
     } else if (game != NULL && game->id == ML_GAME_NIGHTREIGN) {
         nightreign_uninstall();
+    } else if (game != NULL && game->id == ML_GAME_ARMORED_CORE_6) {
+        armoredcore6_uninstall();
     } else if (game != NULL && game->id == ML_GAME_SEKIRO) {
         sekiro_uninstall();
     } else if (game != NULL && game->id == ML_GAME_DARK_SOULS_3) {

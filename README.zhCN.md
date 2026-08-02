@@ -11,11 +11,12 @@ DLL 加载。
 | 游戏 | 启动目标 | 状态 |
 | --- | --- | --- |
 | Elden Ring | `eldenring` | 稳定支持 |
+| Armored Core VI: Fires of Rubicon | `armoredcore6`（`ac6`） | 稳定支持 |
 | Elden Ring Nightreign | `nightreign` | 稳定支持 |
 | Sekiro: Shadows Die Twice | `sekiro` | 稳定支持 |
 | Dark Souls III | `darksouls3` | 实验性适配器，启用 Arxan 中和 |
 
-Elden Ring 仍是主要目标。使用 `--launch-target nightreign`、
+Elden Ring 仍是主要目标。使用 `--launch-target armoredcore6`、`--launch-target nightreign`、
 `--launch-target sekiro` 或 `--launch-target darksouls3` 选择其他游戏。未指定
 `--launch-target` 时，启动器读取 `YAFSML.ini` 顶层的 `game=...`。未配置该值时
 默认启动 Elden Ring；显式启动目标始终优先。
@@ -51,7 +52,7 @@ Elden Ring 仍是主要目标。使用 `--launch-target nightreign`、
 
 | 选项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `game` | `eldenring` | 未指定 `--launch-target` 时选择独立启动器的游戏。可用值包括 `eldenring`、`nightreign`、`sekiro`、`darksouls3` 及其别名。 |
+| `game` | `eldenring` | 未指定 `--launch-target` 时选择独立启动器的游戏。可用值包括 `eldenring`、`armoredcore6`、`nightreign`、`sekiro`、`darksouls3` 及其别名。 |
 
 ### `[patch]`
 
@@ -63,19 +64,19 @@ Elden Ring 仍是主要目标。使用 `--launch-target nightreign`、
 | --- | --- | --- |
 | `skip_intro` | `1` | 跳过开场 Logo。 |
 | `prevent_regulation_save_write` | `1` | 阻止 mod 提供的 `regulation.bin` 写入存档；使用游戏原始文件时保持原有的存档写入机制。 |
-| `patch_mem` | `1` | 使用 mimalloc 替换 Dantelion 分配器。按照 me3 的行为，Nightreign 不支持该补丁。 |
+| `patch_mem` | `1` | 使用 mimalloc 替换 Dantelion 分配器。按照 me3 的行为，Armored Core VI 和 Nightreign 不支持该补丁。 |
 | `patch_mem_heap_size` | `0` | mimalloc 专用堆大小，单位为 MB；`0` 在当前游戏支持 `patch_mem` 时使用对应默认值。 |
 | `boot_boost` | `1` | 缓存解密后的 BHD 标头，减少归档启动时间。 |
 | `disable_arxan` | `0` | 在 Arxan 入口桩完成后执行中和。Dark Souls III 始终启用此选项。 |
 | `replace_save_filename` | 留空 | 替换存档文件名；以点号开头时仅替换扩展名。 |
 | `replace_seamless_coop_save_filename` | 留空 | 替换 Seamless Co-op 使用的额外存档文件名。 |
-| `enable_ime` | `0` | 在受支持的游戏中保持 IME 启用。Elden Ring、Nightreign 和 Dark Souls III 还允许软件键盘输入非拉丁文字；Sekiro 仅保持 IME 启用。修改后需重启游戏。 |
+| `enable_ime` | `0` | 在受支持的游戏中保持 IME 启用。Elden Ring、Armored Core VI、Nightreign 和 Dark Souls III 还允许软件键盘输入非拉丁文字；Sekiro 仅保持 IME 启用。修改后需重启游戏。 |
 
 ### `[tweak]`
 
 | 选项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `cpu_affinity` | `0` | 选择游戏进程的 CPU 亲和性策略：`0` 保持现有亲和性，`1` 使用除第一个逻辑核外的所有逻辑核，`2` 使用能效核，`3` 使用性能核，`4` 使用除第一个逻辑核外的性能核。四款游戏都会在游戏构造完标题菜单后异步应用策略 `1` 至 `4`；不支持的处理器组布局或空掩码会保持现有亲和性。在 Intel Ultra 系列 CPU 上运行《艾尔登法环》1.16.2 或更高版本时，不要使用 `2`、`3` 或 `4`。 |
+| `cpu_affinity` | `0` | 选择游戏进程的 CPU 亲和性策略：`0` 保持现有亲和性，`1` 使用除第一个逻辑核外的所有逻辑核，`2` 使用能效核，`3` 使用性能核，`4` 使用除第一个逻辑核外的性能核。五款游戏都会在游戏构造完标题菜单后异步应用策略 `1` 至 `4`；不支持的处理器组布局或空掩码会保持现有亲和性。在 Intel Ultra 系列 CPU 上运行《艾尔登法环》1.16.2 或更高版本时，不要使用 `2`、`3` 或 `4`。 |
 
 驱动该行为的渲染就绪触发器属于可选能力。如果无法安装对应 Hook，加载器会保持现有
 CPU 亲和性，并继续执行运行时初始化、VFS、Logo、属性、regulation 和外部 DLL
@@ -117,13 +118,13 @@ DLL 依赖普通条目，该依赖项也会提前加载；依赖 `data_ready` �
 ### ModEngine2 TOML 兼容
 
 未找到 `YAFSML.ini` 时，加载器会查找对应游戏的 ModEngine2 文件：
-`config_eldenring.toml`、`config_nightreign.toml`、`config_sekiro.toml` 或 `config_darksouls3.toml`。
+`config_eldenring.toml`、`config_armoredcore6.toml`、`config_nightreign.toml`、`config_sekiro.toml` 或 `config_darksouls3.toml`。
 启动器的 `-c` 选项或 `YAFSML_CONFIG` 环境变量可指定其他配置路径。
 
 ## 启动器选项
 
 ```text
--t, --launch-target <game>  选择 eldenring、nightreign、sekiro 或 darksouls3。
+-t, --launch-target <game>  选择 eldenring、armoredcore6、nightreign、sekiro 或 darksouls3。
 -p, --game-path <path>      指定游戏可执行文件或游戏目录。
 -c, --config <path>         指定配置文件或配置目录。
 -d, --modloader-dll <path> 指定要注入的加载器 DLL。

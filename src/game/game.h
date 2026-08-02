@@ -17,6 +17,7 @@ typedef enum ml_game_id_e {
     ML_GAME_DARK_SOULS_3,
     ML_GAME_SEKIRO,
     ML_GAME_ELDEN_RING,
+    ML_GAME_ARMORED_CORE_6,
     ML_GAME_NIGHTREIGN,
 } ml_game_id_t;
 
@@ -68,7 +69,8 @@ typedef enum ml_render_ready_strategy_e {
 /* How the adapter learns that every game param has been loaded. */
 typedef enum ml_data_ready_strategy_e {
     ML_DATA_READY_UNSUPPORTED,
-    /* Elden Ring / Nightreign: hook the named FD4 step `ParamStep::STEP_Wait`,
+    /* Elden Ring / Armored Core VI / Nightreign: hook the named FD4 step
+       `ParamStep::STEP_Wait`,
        which only becomes active once `ParamStep::STEP_LoadWait` observed the
        regulation manager finishing and ran its post-load fixups. */
     ML_DATA_READY_FD4_NAMED_STEP,
