@@ -71,12 +71,30 @@ me3 commit `6563ebb`; Dark Souls III forces Arxan neutralization on.
 | `skip_intro` | `1` | Skip the intro logo. |
 | `prevent_regulation_save_write` | `1` | Prevent a mod-provided `regulation.bin` from being written to saves. The vanilla file keeps the game's normal save behavior. |
 | `patch_mem` | `1` | Replace the Dantelion allocator with mimalloc. Armored Core VI and Nightreign do not support this patch, matching me3. |
+| `patch_mem_dedicated_heap` | `0` | Reserve a dedicated high-address mimalloc arena instead of using the regular mimalloc heap. |
 | `patch_mem_heap_size` | `0` | Dedicated mimalloc heap size in MB; `0` uses the current game's default when `patch_mem` is supported. |
 | `boot_boost` | `1` | Cache decrypted BHD headers to reduce archive startup time. |
 | `disable_arxan` | `0` | Neutralize Arxan after its entry stub completes. Dark Souls III forces this setting on. |
 | `replace_save_filename` | Empty | Replace a save filename; a leading dot replaces only its extension. |
 | `replace_seamless_coop_save_filename` | Empty | Replace the additional Seamless Co-op save filename. |
 | `enable_ime` | `0` | Keep IME enabled in supported games. Elden Ring, Armored Core VI, Nightreign, and Dark Souls III also allow non-Latin software-keyboard text; Sekiro only preserves IME. Restart after changing it. |
+
+#### Dedicated heap diagnostics
+
+When `patch_mem_dedicated_heap=1`, the loader reserves the arena at the highest
+available address before handing it to mimalloc. Two optional environment
+variables expose that arena for development diagnostics:
+
+- `YAFSML_HEAP_MAPPING_NAME` creates a named page-file mapping that another
+  process can open.
+- `YAFSML_HEAP_MAPPING_FILE` backs the arena with a file. The file is created
+  or truncated to the configured heap size, which is several GiB by default.
+
+The variables can be combined to create a named, file-backed mapping. YAFSML
+keeps its mapping handles open until process exit. If the requested mapping
+cannot be created, the loader logs a warning and falls back to private
+high-address memory. If that reservation also fails, the existing regular
+mimalloc fallback remains active.
 
 ### `[tweak]`
 

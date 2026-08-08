@@ -2,16 +2,39 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
 #include "test_common.h"
 #include "modloader/mimalloc_allocator.h"
 
 int main(void) {
+    void *arena_base;
+    size_t arena_size;
+    MEMORY_BASIC_INFORMATION memory;
+
+    SetEnvironmentVariableW(L"YAFSML_HEAP_MAPPING_FILE", NULL);
+    SetEnvironmentVariableW(L"YAFSML_HEAP_MAPPING_NAME", NULL);
+    EXPECT_TRUE(mimalloc_dl_allocator_prepare(64));
+    arena_base = mimalloc_test_arena_base();
+    arena_size = mimalloc_test_arena_size();
+    EXPECT_NOT_NULL(arena_base);
+    EXPECT_EQ(arena_size, 64u * 1024u * 1024u);
+    EXPECT_TRUE(!mimalloc_test_arena_is_mapped());
+    EXPECT_TRUE(VirtualQuery(arena_base, &memory, sizeof(memory)) == sizeof(memory));
+    EXPECT_EQ(memory.AllocationBase, arena_base);
+    EXPECT_EQ(memory.Type, MEM_PRIVATE);
+
     dl_allocator_t *allocator = mimalloc_dl_allocator();
     EXPECT_NOT_NULL(allocator);
     EXPECT_NOT_NULL(allocator->vtable);
 
     void *ptr = allocator->vtable->allocate(allocator, 7);
     EXPECT_NOT_NULL(ptr);
+    EXPECT_TRUE((uintptr_t)ptr >= (uintptr_t)arena_base);
+    EXPECT_TRUE((uintptr_t)ptr < (uintptr_t)arena_base + arena_size);
     EXPECT_EQ((uintptr_t)ptr % 16, 0);
     EXPECT_TRUE(allocator->vtable->block_size(allocator, ptr) >= 7);
     allocator->vtable->free(allocator, ptr);

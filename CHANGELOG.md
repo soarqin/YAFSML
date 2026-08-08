@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- Dedicated mimalloc arenas now reserve memory from the highest available
+  addresses, matching the dedicated-heap behavior in me3 commit `da9abcf`.
+  Developers can expose an arena
+  through `YAFSML_HEAP_MAPPING_NAME` or `YAFSML_HEAP_MAPPING_FILE`; mapping
+  failures retain the existing non-fatal allocator fallback behavior.
+
 ## [0.10.1] - 2026-08-02
 
 ### Changed

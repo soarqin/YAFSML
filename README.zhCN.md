@@ -65,12 +65,26 @@ Elden Ring 仍是主要目标。使用 `--launch-target armoredcore6`、`--launc
 | `skip_intro` | `1` | 跳过开场 Logo。 |
 | `prevent_regulation_save_write` | `1` | 阻止 mod 提供的 `regulation.bin` 写入存档；使用游戏原始文件时保持原有的存档写入机制。 |
 | `patch_mem` | `1` | 使用 mimalloc 替换 Dantelion 分配器。按照 me3 的行为，Armored Core VI 和 Nightreign 不支持该补丁。 |
+| `patch_mem_dedicated_heap` | `0` | 预留独立的高地址 mimalloc arena，而不使用常规 mimalloc heap。 |
 | `patch_mem_heap_size` | `0` | mimalloc 专用堆大小，单位为 MB；`0` 在当前游戏支持 `patch_mem` 时使用对应默认值。 |
 | `boot_boost` | `1` | 缓存解密后的 BHD 标头，减少归档启动时间。 |
 | `disable_arxan` | `0` | 在 Arxan 入口桩完成后执行中和。Dark Souls III 始终启用此选项。 |
 | `replace_save_filename` | 留空 | 替换存档文件名；以点号开头时仅替换扩展名。 |
 | `replace_seamless_coop_save_filename` | 留空 | 替换 Seamless Co-op 使用的额外存档文件名。 |
 | `enable_ime` | `0` | 在受支持的游戏中保持 IME 启用。Elden Ring、Armored Core VI、Nightreign 和 Dark Souls III 还允许软件键盘输入非拉丁文字；Sekiro 仅保持 IME 启用。修改后需重启游戏。 |
+
+#### 专用堆诊断
+
+启用 `patch_mem_dedicated_heap=1` 后，加载器会在尽可能高的地址预留 arena，
+再交给 mimalloc 管理。以下环境变量可用于开发诊断：
+
+- `YAFSML_HEAP_MAPPING_NAME`：创建命名的页文件映射，供其他进程打开。
+- `YAFSML_HEAP_MAPPING_FILE`：使用文件作为 arena 的后备文件。加载器会创建
+  该文件，或将已有文件截断到配置的堆大小；默认大小为数 GiB。
+
+可以同时设置两个环境变量，以创建具名的文件映射。YAFSML 会将相关映射句柄
+保留到进程退出。创建映射失败时，加载器会记录警告，并改用私有高地址内存；
+如果私有内存预留也失败，则按既有行为回退到常规 mimalloc heap。
 
 ### `[tweak]`
 
