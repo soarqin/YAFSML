@@ -228,16 +228,16 @@ static bool hook_wwise_archive_position_resolver() {
 }
 
 void common_apply_process_settings(void) {
-    uint64_t applied_mask = 0;
+    uint32_t applied_cpu_set_count = 0;
     uint32_t error_code = ERROR_SUCCESS;
     if (config.cpu_affinity_strategy != 0) {
         if (set_process_cpu_affinity_strategy(config.cpu_affinity_strategy,
-                                              &applied_mask, &error_code)) {
-            ML_LOG_INFO(L"common", L"CPU affinity strategy %d APPLIED mask=0x%llx",
+                                              &applied_cpu_set_count, &error_code)) {
+            ML_LOG_INFO(L"common", L"CPU Set strategy %d APPLIED cpu_sets=%lu",
                         config.cpu_affinity_strategy,
-                        (unsigned long long)applied_mask);
+                        (unsigned long)applied_cpu_set_count);
         } else {
-            ML_LOG_WARN(L"common", L"CPU affinity strategy %d SKIPPED error=%lu",
+            ML_LOG_WARN(L"common", L"CPU Set strategy %d SKIPPED error=%lu",
                         config.cpu_affinity_strategy,
                         (unsigned long)error_code);
         }
@@ -246,7 +246,7 @@ void common_apply_process_settings(void) {
 
 static DWORD WINAPI apply_process_settings_worker(void *parameter) {
     (void)parameter;
-    ML_LOG_INFO(L"common", L"CPU affinity worker started thread=%lu",
+    ML_LOG_INFO(L"common", L"CPU Set worker started thread=%lu",
                 (unsigned long)GetCurrentThreadId());
     common_apply_process_settings();
     return 0;
@@ -268,13 +268,13 @@ bool common_schedule_process_settings(void) {
                           &thread_id);
     if (thread == NULL) {
         ReleaseSRWLockExclusive(&process_settings_worker_lock);
-        ML_LOG_WARN(L"common", L"could not create CPU affinity worker error=%lu",
+        ML_LOG_WARN(L"common", L"could not create CPU Set worker error=%lu",
                     (unsigned long)GetLastError());
         return false;
     }
     process_settings_worker = thread;
     ReleaseSRWLockExclusive(&process_settings_worker_lock);
-    ML_LOG_INFO(L"common", L"CPU affinity strategy %d scheduled asynchronously worker=%lu",
+    ML_LOG_INFO(L"common", L"CPU Set strategy %d scheduled asynchronously worker=%lu",
                 config.cpu_affinity_strategy, (unsigned long)thread_id);
     return true;
 }

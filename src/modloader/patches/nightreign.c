@@ -29,7 +29,7 @@ static BOOL CALLBACK install_after_runtime(PINIT_ONCE once, PVOID parameter, PVO
     (void)context;
 
     if (!ml_asset_hooks_install_render_ready(game)) {
-        ML_LOG_WARN(L"nightreign", L"AFTER_RENDER_READY trigger HOOK_FAILED; CPU affinity deferred capability disabled");
+        ML_LOG_WARN(L"nightreign", L"AFTER_RENDER_READY trigger HOOK_FAILED; CPU Set deferred capability disabled");
     }
     if (!ml_lifecycle_advance(ML_LIFECYCLE_PHASE_AFTER_RUNTIME_INIT)) {
         ML_LOG_WARN(L"nightreign", L"AFTER_RUNTIME_INIT lifecycle advance failed");

@@ -9,6 +9,7 @@ add_project(process STATIC
     scanner.c scanner.h
     singleton.c singleton.h
     sprj_step.c sprj_step.h
+    cpu_sets.c cpu_sets.h
     undname.c undname.h
     util.c util.h
     FOLDER libs

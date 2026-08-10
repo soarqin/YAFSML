@@ -56,7 +56,7 @@ static void apply_process_settings_after_render_ready(ml_lifecycle_phase_t phase
     (void)phase;
     (void)userp;
     if (!common_schedule_process_settings()) {
-        ML_LOG_WARN(L"common", L"could not create post-render-ready CPU affinity worker");
+        ML_LOG_WARN(L"common", L"could not create post-render-ready CPU Set worker");
     }
 }
 
@@ -138,7 +138,7 @@ bool gamehook_install() {
         config.cpu_affinity_strategy != 0 &&
         !ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_RENDER_READY,
                                apply_process_settings_after_render_ready, NULL)) {
-        ML_LOG_WARN(L"common", L"could not schedule CPU affinity after render readiness");
+        ML_LOG_WARN(L"common", L"could not schedule CPU Set application after render readiness");
     }
     if (game->data_ready_strategy != ML_DATA_READY_UNSUPPORTED &&
         !ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_RUNTIME_INIT,

@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Updated mimalloc to 3.4.5.
+- Replaced process-affinity mask handling with Windows CPU Sets, preserving
+  strategies 1 through 4 across heterogeneous cores and processor groups.
 - Dedicated mimalloc arenas now reserve memory from the highest available
   addresses, matching the dedicated-heap behavior in me3 commit `da9abcf`.
   Developers can expose an arena

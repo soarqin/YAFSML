@@ -100,12 +100,12 @@ mimalloc fallback remains active.
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `cpu_affinity` | `0` | Select the game process CPU affinity strategy: `0` leaves affinity unchanged, `1` uses all logical cores except the first, `2` uses efficient cores, `3` uses performance cores, and `4` uses performance cores except their first logical core. Strategies `1` through `4` are applied asynchronously once the game has built its title menu in all five games. Unsupported processor-group layouts or an empty selected mask leave affinity unchanged. Do not use `2`, `3`, or `4` on Intel Ultra CPUs with Elden Ring 1.16.2 or later. |
+| `cpu_affinity` | `0` | Select the game process CPU Set strategy: `0` leaves the current CPU Set assignment unchanged, `1` uses all logical CPU Sets except the first, `2` uses efficient CPU Sets, `3` uses performance CPU Sets, and `4` uses performance CPU Sets except the first. Strategies `1` through `4` are applied asynchronously once the game has built its title menu in all five games. Unsupported CPU Set layouts or an empty selection leave the current assignment unchanged. Do not use `2`, `3`, or `4` on Intel Ultra CPUs with Elden Ring 1.16.2 or later. |
 
 The render-ready trigger that drives this is optional. If its hook cannot be
-installed, the loader keeps the current affinity and continues with runtime
+installed, the loader keeps the current CPU Set assignment and continues with runtime
 initialization, VFS, logo, property, regulation, and external-DLL capabilities.
-The affinity worker is joined during unload. This trigger is separate from the
+The CPU Set worker is joined during unload. This trigger is separate from the
 later point at which params finish loading, which is what `data_ready` DLLs wait
 for.
 
