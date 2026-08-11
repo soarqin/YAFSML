@@ -6,6 +6,7 @@ set(TEST_INCLUDES
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/common
     ${CMAKE_SOURCE_DIR}/src/process
+    ${CMAKE_SOURCE_DIR}/src/manager
     ${CMAKE_SOURCE_DIR}/deps/klib
     ${CMAKE_SOURCE_DIR}/tests
 )
@@ -62,6 +63,8 @@ set(SMOKE_smoke_launcher_game_LIBRARIES inih shlwapi)
 set(SMOKE_smoke_extdll_config_SOURCES ${CMAKE_SOURCE_DIR}/src/modloader/extdll.c)
 set(SMOKE_smoke_extdll_config_LIBRARIES shlwapi)
 set(SMOKE_smoke_extdll_config_DEFINITIONS ML_EXTDLL_TEST)
+set(SMOKE_smoke_manager_config_SOURCES ${CMAKE_SOURCE_DIR}/src/manager/config_model.c)
+set(SMOKE_smoke_manager_config_LIBRARIES inih shlwapi)
 foreach(SMOKE_TARGET
         smoke_dearxan_crypto
         smoke_dearxan_abi

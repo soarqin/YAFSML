@@ -1,0 +1,70 @@
+name: Manager Release
+
+on:
+  push:
+    tags:
+      - 'manager-v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-2025
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract and verify version
+        id: version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag -replace '^manager-v', ''
+          $cmake = Get-Content src/CMakeLists.txt -Raw
+          if ($cmake -notmatch [regex]::Escape("set(YAFSML_MANAGER_VERSION `"$version`")")) {
+            Write-Error "Manager version mismatch in src/CMakeLists.txt"
+            exit 1
+          }
+          echo "tag=$tag" >> $env:GITHUB_OUTPUT
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Setup NASM
+        uses: ilammy/setup-nasm@v1
+
+      - name: Configure CMake
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G "Visual Studio 18 2026" -T v142 -DRELEASE_USE_STATIC_CRT=OFF
+
+      - name: Build manager
+        shell: pwsh
+        run: cmake --build build --config Release --target yafsml_manager
+
+      - name: Package manager
+        id: package
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.version.outputs.tag }}"
+          $version = "${{ steps.version.outputs.version }}"
+          $pkgDir = "manager-package"
+          New-Item -ItemType Directory -Path $pkgDir -Force | Out-Null
+          Copy-Item "build/bin/YAFSML.Manager.exe" "$pkgDir/"
+          Copy-Item "README.md" "$pkgDir/"
+          Copy-Item "LICENSE" "$pkgDir/"
+          $zipName = "YAFSML-Manager-v$version.zip"
+          Compress-Archive -Path "$pkgDir/*" -DestinationPath $zipName -Force
+          (Get-FileHash $zipName -Algorithm SHA256).Hash.ToLower() + "  " + $zipName | Out-File "$zipName.sha256" -Encoding ascii
+          echo "zip_name=$zipName" >> $env:GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          body: "YAFSML Manager release ${{ steps.version.outputs.version }}"
+          files: |
+            ${{ steps.package.outputs.zip_name }}
+            ${{ steps.package.outputs.zip_name }}.sha256
+          draft: false
+          prerelease: false

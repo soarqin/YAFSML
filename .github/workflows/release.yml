@@ -80,12 +80,14 @@ jobs:
           Copy-Item "THIRD_PARTY_NOTICES.md"     "$pkgDir/"
           Copy-Item "build/bin/YAFSML.exe" "$pkgDir/"
           Copy-Item "build/bin/YAFSML.dll" "$pkgDir/"
+          Copy-Item "build/bin/YAFSML.Manager.exe" "$pkgDir/"
           Copy-Item "src/YAFSML.ini"       "$pkgDir/"
           Copy-Item "src/YAFSML.zhCN.ini"  "$pkgDir/"
 
           # Create zip archive
           $zipName = "YAFSML-$tag.zip"
           Compress-Archive -Path "$pkgDir/*" -DestinationPath $zipName -Force
+          (Get-FileHash $zipName -Algorithm SHA256).Hash.ToLower() + "  " + $zipName | Out-File "$zipName.sha256" -Encoding ascii
 
           Write-Output "Created $zipName"
           echo "zip_name=$zipName" >> $env:GITHUB_OUTPUT
@@ -114,6 +116,8 @@ jobs:
           tag_name: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.tag }}
           body_path: release_notes.txt
-          files: ${{ steps.package.outputs.zip_name }}
+          files: |
+            ${{ steps.package.outputs.zip_name }}
+            ${{ steps.package.outputs.zip_name }}.sha256
           draft: false
           prerelease: false
