@@ -301,13 +301,15 @@ static size_t __cdecl mimalloc_block_size(dl_allocator_t *self, void *ptr) {
 
 static void *__cdecl mimalloc_allocate_aligned(dl_allocator_t *self, size_t size, size_t alignment) {
     mi_heap_t *heap;
+    void *ptr;
     (void)self;
     bool ok = false;
     alignment = normalized_alignment(alignment);
     size = round_up_size(size, alignment, &ok);
     if (!ok) return NULL;
     heap = mimalloc_dl_heap();
-    return heap != NULL ? mi_heap_malloc_aligned(heap, size, alignment) : mi_malloc_aligned(size, alignment);
+    ptr = heap != NULL ? mi_heap_malloc_aligned(heap, size, alignment) : NULL;
+    return ptr != NULL ? ptr : mi_malloc_aligned(size, alignment);
 }
 
 static void *__cdecl mimalloc_allocate(dl_allocator_t *self, size_t size) {

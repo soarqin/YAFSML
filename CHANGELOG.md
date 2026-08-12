@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through `YAFSML_HEAP_MAPPING_NAME` or `YAFSML_HEAP_MAPPING_FILE`; mapping
   failures retain the existing non-fatal allocator fallback behavior.
 
+### Fixed
+
+- Dedicated mimalloc heap allocation now retries through the global mimalloc
+  heap when the dedicated heap cannot satisfy an allocation, matching me3
+  commit `15a19de`.
+
 ## [0.10.1] - 2026-08-02
 
 ### Changed

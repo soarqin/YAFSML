@@ -7,13 +7,13 @@ ports. Do not infer the baseline from another local checkout.
 
 - Repository: https://github.com/garyttierney/me3
 - Branch: `main`
-- Synced commit: `da9abcf`
+- Synced commit: `1ae84ae`
 
 Update the commit only after every change through a newer revision has been
 reviewed. Project-inapplicable or intentionally deferred changes must be noted
 below so that they are not mistaken for unreviewed parity gaps.
 
-### Review through `da9abcf` (2026-08-08)
+### Review through `1ae84ae` (2026-08-13)
 
 - Ported the dedicated mimalloc arena from `da9abcf`: YAFSML now reserves the
   arena with `MEM_TOP_DOWN`, registers it through `mi_manage_os_memory_ex`, and
@@ -30,9 +30,17 @@ below so that they are not mistaken for unreviewed parity gaps.
 - The `DlString` capacity adjustment in `6d381d7` is already reflected by
   YAFSML's string construction, and the Rust allocator-error handling change
   has no C equivalent to port.
-- The remaining commits through `da9abcf` change me3-specific Cargo/CI,
-  funding, repository policy, Sentry release handling, or mod-profile
-  documentation and do not apply to this CMake/MSVC repository.
+- Ported the allocation fallback from `15a19de`: if the dedicated mimalloc heap
+  cannot satisfy an allocation, YAFSML now retries through the global mimalloc
+  heap. The existing `mi_free` path already accepts allocations from either
+  heap.
+- Deferred the installer quoting fixes from `2cd22c0` and `eed4919`. YAFSML
+  does not ship me3's NSIS or shell installer, so there is no corresponding
+  installer command path to update.
+- The MSRV bump in `41e8f3f` is Rust-specific and has no CMake/MSVC equivalent.
+- The `1ae84ae` release commit only updates me3 release metadata, changelog,
+  issue-template versions, and installer versioning; none of those files or
+  release artifacts are part of YAFSML's me3 behavior port.
 
 ## Performance Fork
 
