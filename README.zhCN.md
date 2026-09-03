@@ -57,7 +57,7 @@ Elden Ring 仍是主要目标。使用 `--launch-target armoredcore6`、`--launc
 ### `[patch]`
 
 该 section 包含通用补丁设置。加载器仅对当前游戏应用受支持的设置。Dark Souls III
-仍为实验性适配。项目包含 dearxan v0.5.3 的精简 C11 实现；其 before-main
+仍为实验性适配。项目包含 dearxan v0.5.5 的精简 C11 实现；其 before-main
 调度对齐 me3 `6563ebb`，Dark Souls III 会强制启用 Arxan 中和。
 
 | 选项 | 默认值 | 说明 |

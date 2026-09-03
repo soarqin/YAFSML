@@ -1,5 +1,5 @@
 /*
- * C11 implementation of dearxan v0.5.3 functionality.
+ * C11 implementation of dearxan v0.5.5 functionality.
  *
  * Original project copyright (c) 2025 William Tremblay.
  * Licensed under the MIT license; see THIRD_PARTY_NOTICES.md.
@@ -557,27 +557,31 @@ static DearxanResult neuter_once(bool is_executing_entrypoint) {
         result = make_result(DearxanError,
                              "failed to make executable sections writable", true,
                              is_executing_entrypoint);
-    } else if (!dearxan_analyze_all_stubs(&image, &stubs, &error_message)) {
-        result = make_result(DearxanError,
-                             error_message != NULL ? error_message
-                                                   : "failed to analyze Arxan stubs",
-                             true, is_executing_entrypoint);
-    } else if (stubs.count == 0) {
-        dearxan_free_stub_list(&stubs);
-        result = make_result(DearxanError,
-                             "Arxan was detected but no valid stubs were found",
-                             true, is_executing_entrypoint);
     } else {
-        bool patched = dearxan_apply_stub_patches(&image, &stubs,
-                                                   &error_message);
-        dearxan_free_stub_list(&stubs);
-        result = patched
-            ? make_result(DearxanSuccess, NULL, true,
-                          is_executing_entrypoint)
-            : make_result(DearxanError,
-                          error_message != NULL ? error_message
-                                                : "failed to apply Arxan patches",
-                          true, is_executing_entrypoint);
+        for (;;) {
+            if (!dearxan_analyze_all_stubs(&image, &stubs, &error_message)) {
+                result = make_result(DearxanError,
+                                     error_message != NULL ? error_message
+                                                           : "failed to analyze Arxan stubs",
+                                     true, is_executing_entrypoint);
+                break;
+            }
+            if (stubs.count == 0) {
+                dearxan_free_stub_list(&stubs);
+                result = make_result(DearxanSuccess, NULL, true,
+                                      is_executing_entrypoint);
+                break;
+            }
+            if (!dearxan_apply_stub_patches(&image, &stubs, &error_message)) {
+                dearxan_free_stub_list(&stubs);
+                result = make_result(DearxanError,
+                                     error_message != NULL ? error_message
+                                                           : "failed to apply Arxan patches",
+                                     true, is_executing_entrypoint);
+                break;
+            }
+            dearxan_free_stub_list(&stubs);
+        }
     }
     if (suspended) dearxan_resume_threads(&guard);
     return result;
