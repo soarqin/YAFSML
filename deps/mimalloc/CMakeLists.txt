@@ -49,7 +49,7 @@ option(MI_LIBC_MUSL         "Enable this when linking with musl libc" OFF)
 # advanced
 option(MI_INSTALL_TOPLEVEL  "Install directly into $CMAKE_INSTALL_PREFIX instead of PREFIX/lib/mimalloc-version" OFF)
 option(MI_NO_THP            "Disable transparent huge pages support on Linux/Android for the mimalloc process only" OFF)
-option(MI_FREE_USE_PAGEMAP  "Always use the page map when free-ing a pointer -- enable only for systems that don't support large OS aligned allocations well." OFF)
+option(MI_FREE_USE_PAGEMAP  "Always use the page map when free-ing a pointer -- enable only for systems that don't support large OS aligned allocations well." ON)
 option(MI_PADDING           "Enable padding to detect heap block overflow (always on in DEBUG or SECURE mode, or with Valgrind/ASAN)" OFF)
 option(MI_NO_PADDING        "Force no use of padding even in DEBUG mode etc." OFF)
 option(MI_SKIP_COLLECT_ON_EXIT "Skip collecting memory on program exit" OFF)
