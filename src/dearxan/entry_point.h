@@ -1,5 +1,5 @@
 /*
- * C11 implementation of dearxan v0.5.5 functionality.
+ * C11 implementation of dearxan v0.5.6 functionality.
  *
  * Original project copyright (c) 2025 William Tremblay.
  * Licensed under the MIT license; see THIRD_PARTY_NOTICES.md.

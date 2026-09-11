@@ -2,8 +2,8 @@
 
 ## dearxan
 
-The C11 dearxan implementation in `src/dearxan` is derived from dearxan v0.5.5
-(commit `c62feca1c3884a31f8f0044dd56e7666f76fdd5e`).
+The C11 dearxan implementation in `src/dearxan` is derived from dearxan v0.5.6
+(commit `29f69c091a16917a34f032b90df66381aff01570`).
 
 Copyright © 2025 William Tremblay
 
