@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.3] - 2026-09-12
+
+### Changed
+
+- Updated mimalloc to 3.5.1.
+- Updated the dearxan C11 implementation to v0.5.6.
+- Enabled `patch_mem_dedicated_heap` by default. The allocator uses the
+  mimalloc page map so the dedicated arena remains compatible with arbitrary
+  64 MiB arena addresses.
+
 ## [0.10.2] - 2026-08-14
 
 ### Changed
