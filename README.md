@@ -71,7 +71,7 @@ me3 commit `6563ebb`; Dark Souls III forces Arxan neutralization on.
 | `skip_intro` | `1` | Skip the intro logo. |
 | `prevent_regulation_save_write` | `1` | Prevent a mod-provided `regulation.bin` from being written to saves. The vanilla file keeps the game's normal save behavior. |
 | `patch_mem` | `1` | Replace the Dantelion allocator with mimalloc. Armored Core VI and Nightreign do not support this patch, matching me3. |
-| `patch_mem_dedicated_heap` | `0` | Reserve a dedicated high-address mimalloc arena instead of using the regular mimalloc heap. |
+| `patch_mem_dedicated_heap` | `1` | Reserve a dedicated high-address mimalloc arena instead of using the regular mimalloc heap. |
 | `patch_mem_heap_size` | `0` | Dedicated mimalloc heap size in MB; `0` uses the current game's default when `patch_mem` is supported. |
 | `boot_boost` | `1` | Cache decrypted BHD headers to reduce archive startup time. |
 | `disable_arxan` | `0` | Neutralize Arxan after its entry stub completes. Dark Souls III forces this setting on. |
