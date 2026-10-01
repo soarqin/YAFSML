@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.4] - 2026-10-02
+
+### Changed
+
+- Updated mimalloc to 3.5.3, retaining page-map lookups for dedicated arenas
+  at arbitrary addresses.
+- Set `patch_mem_dedicated_heap=1` in both shipped INI files to match the
+  loader's enabled default.
+
+### Fixed
+
+- Fixed Steam game discovery skipping installed games omitted from the
+  cached library index, including ELDEN RING. The launcher now checks each
+  library's app manifest directly.
+- Fixed Steam game discovery reporting success without a valid installation
+  directory. The default library remains searchable when the library index
+  is missing or invalid.
+- Fixed parsing Steam VDF files with Windows line endings and added support
+  for older Steam library-folder formats.
+
 ## [0.10.3] - 2026-09-12
 
 ### Changed
