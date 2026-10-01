@@ -17,6 +17,7 @@
 #define CHAR_SPACE ' '
 #define CHAR_TAB '\t'
 #define CHAR_NEWLINE '\n'
+#define CHAR_CARRIAGE_RETURN '\r'
 #define CHAR_DOUBLE_QUOTE '"'
 #define CHAR_OPEN_CURLY_BRACKET '{'
 #define CHAR_CLOSED_CURLY_BRACKET '}'
@@ -259,6 +260,7 @@ struct vdf_object *vdf_parse_buffer(const char *buffer, const size_t size) {
                 break;
 
             case CHAR_NEWLINE:
+            case CHAR_CARRIAGE_RETURN:
             case CHAR_SPACE:
             case CHAR_TAB:
                 break;

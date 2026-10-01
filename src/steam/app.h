@@ -16,6 +16,7 @@
 extern "C" {
 #endif
 
+/* path must hold MAX_PATH wchar_t values; a failed search clears it. */
 extern bool app_find_game_path(uint32_t app_id, wchar_t *path);
 
 #ifdef __cplusplus
