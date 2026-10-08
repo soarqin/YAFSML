@@ -45,7 +45,13 @@ static int test_nested_config_paths(void) {
     for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
         FILE *file = tmpfile();
         EXPECT_NOT_NULL(file);
-        EXPECT_TRUE(fprintf(file, "[mod]\nnested=%s\n", paths[i]) >= 0);
+        EXPECT_TRUE(fputs("[mod]\n;", file) >= 0);
+        for (size_t comment_byte = 0; comment_byte < 16384; comment_byte++)
+            EXPECT_TRUE(fputc('x', file) != EOF);
+        EXPECT_TRUE(fprintf(file, "\nnested=%s ;", paths[i]) >= 0);
+        for (size_t comment_byte = 0; comment_byte < 16384; comment_byte++)
+            EXPECT_TRUE(fputc('x', file) != EOF);
+        EXPECT_TRUE(fputc('\n', file) != EOF);
         rewind(file);
         mods_init();
         config_load_ini(file);

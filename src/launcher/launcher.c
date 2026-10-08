@@ -196,12 +196,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
                                               full_config_path[0] != L'\0' ? full_config_path : NULL)) {
             return -1;
         }
-        config_result = PathFileExistsW(config_path) && !PathIsDirectoryW(config_path)
+        /* TOML is handled by the DLL and has no INI launcher game setting. */
+        config_result = lstrcmpiW(PathFindExtensionW(config_path), L".toml") != 0 &&
+                        PathFileExistsW(config_path) && !PathIsDirectoryW(config_path)
             ? ml_launcher_game_from_ini_file(config_path, &config_game,
                                              invalid_key, sizeof(invalid_key) / sizeof(invalid_key[0]))
             : ML_LAUNCHER_GAME_CONFIG_NOT_SPECIFIED;
         if (config_result == ML_LAUNCHER_GAME_CONFIG_INVALID) {
             ML_LOG_ERROR(L"launcher", L"unsupported game in `%ls`: %ls", config_path, invalid_key);
+            return -1;
+        }
+        if (config_result == ML_LAUNCHER_GAME_CONFIG_ERROR) {
+            ML_LOG_ERROR(L"launcher", L"could not read or parse configuration `%ls`", config_path);
             return -1;
         }
         launch_game = ml_launcher_select_game(NULL, config_game);

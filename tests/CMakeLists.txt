@@ -70,6 +70,12 @@ else()
 endif()
 set(SMOKE_smoke_launcher_game_SOURCES ${CMAKE_SOURCE_DIR}/src/launcher/launch_config.c)
 set(SMOKE_smoke_launcher_game_LIBRARIES inih shlwapi)
+set(SMOKE_smoke_launcher_startup_SOURCES ${CMAKE_SOURCE_DIR}/src/launcher/launch_config.c)
+set(SMOKE_smoke_launcher_startup_LIBRARIES inih wingetopt shlwapi psapi)
+set(SMOKE_smoke_ini_LIBRARIES inih)
+set(SMOKE_smoke_ini_allocation_SOURCES ${CMAKE_SOURCE_DIR}/deps/inih/ini.c)
+set(SMOKE_smoke_ini_allocation_DEFINITIONS
+    INI_USE_STACK=0 INI_ALLOW_REALLOC=1 INI_MAX_LINE=0 INI_CUSTOM_ALLOCATOR=1)
 set(SMOKE_smoke_steam_app_LIBRARIES steam advapi32)
 set(SMOKE_smoke_extdll_config_SOURCES ${CMAKE_SOURCE_DIR}/src/modloader/extdll.c)
 set(SMOKE_smoke_extdll_config_LIBRARIES shlwapi)
@@ -138,6 +144,8 @@ foreach(SMOKE_SOURCE ${SMOKE_SOURCES})
     endif ()
     add_test(NAME ${SMOKE_TARGET} COMMAND ${SMOKE_TARGET})
 endforeach()
+
+target_include_directories(smoke_ini_allocation PRIVATE ${CMAKE_SOURCE_DIR}/deps/inih)
 
 add_dependencies(smoke_extdll_config extdll_fixture)
 

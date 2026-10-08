@@ -76,7 +76,7 @@ typedef char* (*ini_reader)(char* str, int num, void* stream);
    of handler call). Handler should return nonzero on success, zero on error.
 
    Returns 0 on success, line number of first error on parse error (doesn't
-   stop on first error), -1 on file open error, or -2 on memory allocation
+   stop on first error), -1 on file open/read error, or -2 on memory allocation
    error (only when INI_USE_STACK is zero).
 */
 INI_API int ini_parse(const char* filename, ini_handler handler, void* user);
@@ -131,7 +131,8 @@ INI_API int ini_parse_string(const char* string, ini_handler handler, void* user
 #endif
 
 /* Maximum line length for any line in INI file (stack or heap). Note that
-   this must be 3 more than the longest line (due to '\r', '\n', and '\0'). */
+   this must be 3 more than the longest line (due to '\r', '\n', and '\0').
+   Zero removes the fixed limit when INI_USE_STACK=0 and INI_ALLOW_REALLOC=1. */
 #ifndef INI_MAX_LINE
 #define INI_MAX_LINE 200
 #endif
@@ -141,6 +142,10 @@ INI_API int ini_parse_string(const char* string, ini_handler handler, void* user
    zero. */
 #ifndef INI_ALLOW_REALLOC
 #define INI_ALLOW_REALLOC 0
+#endif
+
+#if INI_MAX_LINE == 0 && (INI_USE_STACK || !INI_ALLOW_REALLOC)
+#error INI_MAX_LINE=0 requires INI_USE_STACK=0 and INI_ALLOW_REALLOC=1
 #endif
 
 /* Initial size in bytes for heap line buffer. Only applies if INI_USE_STACK

@@ -17,6 +17,8 @@ https://github.com/benhoyt/inih
 
 #include <stdio.h>
 #include <ctype.h>
+#include <limits.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "ini.h"
@@ -114,6 +116,11 @@ int ini_parse_stream(ini_reader reader, void* stream, ini_handler handler,
 #endif
 
     size_t offset;
+    size_t reader_size;
+#if INI_ALLOW_REALLOC && !INI_USE_STACK
+    size_t read_length;
+    size_t new_max_line;
+#endif
     char* start;
     char* end;
     char* name;
@@ -123,7 +130,7 @@ int ini_parse_stream(ini_reader reader, void* stream, ini_handler handler,
     char abyss[16];  /* Used to consume input when a line is too long. */
 
 #if !INI_USE_STACK
-    line = (char*)ini_malloc(INI_INITIAL_ALLOC);
+    line = (char*)ini_malloc(max_line);
     if (!line) {
         return -2;
     }
@@ -136,27 +143,45 @@ int ini_parse_stream(ini_reader reader, void* stream, ini_handler handler,
 #endif
 
     /* Scan through stream line by line */
-    while (reader(line, (int)max_line, stream) != NULL) {
+    reader_size = max_line > INT_MAX ? INT_MAX : max_line;
+    while (reader(line, (int)reader_size, stream) != NULL) {
         offset = strlen(line);
 
 #if INI_ALLOW_REALLOC && !INI_USE_STACK
-        while (offset == max_line - 1 && line[offset - 1] != '\n') {
-            max_line *= 2;
-            if (max_line > INI_MAX_LINE)
-                max_line = INI_MAX_LINE;
-            new_line = ini_realloc(line, max_line);
-            if (!new_line) {
-                ini_free(line);
-                return -2;
+        read_length = offset;
+        while (read_length == reader_size - 1 && line[offset - 1] != '\n') {
+            if (max_line - offset < 2) {
+#if INI_MAX_LINE > 0
+                if (max_line >= INI_MAX_LINE)
+                    break;
+#endif
+                if (max_line > SIZE_MAX / 2) {
+                    ini_free(line);
+                    return -2;
+                }
+                new_max_line = max_line * 2;
+#if INI_MAX_LINE > 0
+                if (new_max_line > INI_MAX_LINE)
+                    new_max_line = INI_MAX_LINE;
+#endif
+                new_line = ini_realloc(line, new_max_line);
+                if (!new_line) {
+                    ini_free(line);
+                    return -2;
+                }
+                line = new_line;
+                max_line = new_max_line;
             }
-            line = new_line;
-            if (reader(line + offset, (int)(max_line - offset), stream) == NULL)
+            reader_size = max_line - offset;
+            if (reader_size > INT_MAX)
+                reader_size = INT_MAX;
+            if (reader(line + offset, (int)reader_size, stream) == NULL)
                 break;
-            offset += strlen(line + offset);
-            if (max_line >= INI_MAX_LINE)
-                break;
+            read_length = strlen(line + offset);
+            offset += read_length;
         }
 #endif
+        reader_size = max_line > INT_MAX ? INT_MAX : max_line;
 
         lineno++;
 
@@ -267,7 +292,8 @@ int ini_parse_stream(ini_reader reader, void* stream, ini_handler handler,
 /* See documentation in header file. */
 int ini_parse_file(FILE* file, ini_handler handler, void* user)
 {
-    return ini_parse_stream((ini_reader)fgets, file, handler, user);
+    int error = ini_parse_stream((ini_reader)fgets, file, handler, user);
+    return error == 0 && ferror(file) ? -1 : error;
 }
 
 /* See documentation in header file. */

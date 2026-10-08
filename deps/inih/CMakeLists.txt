@@ -6,4 +6,6 @@ target_include_directories(${PROJECT_NAME} PUBLIC .)
 # continuation of the *previous* key and re-dispatched under that key's name,
 # which silently swallows the indented entry's own key. This caused extension
 # DLLs to intermittently go missing from the [dlls] section.
-target_compile_definitions(${PROJECT_NAME} PRIVATE INI_ALLOW_MULTILINE=0)
+# Grow the line buffer as needed instead of imposing a fixed byte limit.
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    INI_ALLOW_MULTILINE=0 INI_USE_STACK=0 INI_ALLOW_REALLOC=1 INI_MAX_LINE=0)
