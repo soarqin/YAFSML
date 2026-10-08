@@ -57,6 +57,17 @@ set(SMOKE_smoke_dlrf_SOURCES ${CMAKE_SOURCE_DIR}/src/process/dlrf.c)
 set(SMOKE_smoke_rip_scan_SOURCES ${CMAKE_SOURCE_DIR}/src/process/rip_scan.c)
 set(SMOKE_smoke_mod_routing_SOURCES ${CMAKE_SOURCE_DIR}/src/modloader/mod.c)
 set(SMOKE_smoke_mod_routing_LIBRARIES shlwapi)
+set(SMOKE_smoke_mod_zip_config_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/modloader/config.c
+    ${CMAKE_SOURCE_DIR}/src/modloader/mod.c
+    ${CMAKE_SOURCE_DIR}/src/modloader/vfs.c
+    ${CMAKE_SOURCE_DIR}/src/modloader/zip_package.c)
+set(SMOKE_smoke_mod_zip_config_LIBRARIES shlwapi inih miniz)
+if(ML_STRIP_MODENGINE_CONFIG_SUPPORT)
+    set(SMOKE_smoke_mod_zip_config_DEFINITIONS ML_STRIP_MODENGINE_CONFIG)
+else()
+    list(APPEND SMOKE_smoke_mod_zip_config_LIBRARIES toml-c)
+endif()
 set(SMOKE_smoke_launcher_game_SOURCES ${CMAKE_SOURCE_DIR}/src/launcher/launch_config.c)
 set(SMOKE_smoke_launcher_game_LIBRARIES inih shlwapi)
 set(SMOKE_smoke_steam_app_LIBRARIES steam advapi32)
@@ -82,17 +93,21 @@ set_target_properties(extdll_fixture PROPERTIES
     PREFIX ""
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
-foreach(SMOKE_TARGET smoke_vfs smoke_vfs_writable_mt smoke_vfs_generation_mt)
-    set(SMOKE_${SMOKE_TARGET}_SOURCES ${CMAKE_SOURCE_DIR}/src/modloader/vfs.c)
-    set(SMOKE_${SMOKE_TARGET}_LIBRARIES shlwapi)
+foreach(SMOKE_TARGET smoke_vfs smoke_vfs_writable_mt smoke_vfs_generation_mt smoke_vfs_zip)
+    set(SMOKE_${SMOKE_TARGET}_SOURCES
+        ${CMAKE_SOURCE_DIR}/src/modloader/vfs.c
+        ${CMAKE_SOURCE_DIR}/src/modloader/zip_package.c)
+    set(SMOKE_${SMOKE_TARGET}_LIBRARIES shlwapi miniz)
 endforeach()
 set(SMOKE_smoke_vfs_DEFINITIONS ML_USE_TEST_ALLOCATOR)
+set(SMOKE_smoke_vfs_zip_DEFINITIONS ML_USE_TEST_ALLOCATOR)
 
 foreach(SMOKE_TARGET smoke_save_mapping smoke_save_mapping_mt)
     set(SMOKE_${SMOKE_TARGET}_SOURCES
         ${CMAKE_SOURCE_DIR}/src/modloader/vfs.c
+        ${CMAKE_SOURCE_DIR}/src/modloader/zip_package.c
         ${CMAKE_SOURCE_DIR}/src/modloader/patches/save_mapping.c)
-    set(SMOKE_${SMOKE_TARGET}_LIBRARIES shlwapi)
+    set(SMOKE_${SMOKE_TARGET}_LIBRARIES shlwapi miniz)
 endforeach()
 
 set(SMOKE_smoke_dl_device_SOURCES

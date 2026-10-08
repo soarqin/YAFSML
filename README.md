@@ -144,9 +144,31 @@ is promoted to early loading. A normal DLL that depends on a `data_ready` or
 reported and leave the configured order unchanged. Project-owned extension DLLs
 are no longer shipped with this repository.
 
-The `[mod]` section lists directories containing loose-file overrides. Paths
-can be relative to the configuration file or absolute. When multiple mods
-contain the same file, the later declaration overrides the earlier one.
+The `[mod]` section lists directories or ZIP files containing game-file overrides. Paths
+can be relative to the configuration file or absolute. An existing directory is scanned
+as loose files; a `.zip` file is read as an archive. When multiple mods contain the same
+file, the later declaration overrides the earlier one, including mixed directory and ZIP entries.
+
+```ini
+[mod]
+loose=mod
+archive=abc.zip
+selected=abc.zip:def
+```
+
+`abc.zip` uses the archive root. `abc.zip:def` and `abc.zip:/def` both use `/def`
+inside the archive as the mod root: `def/parts/example.bin` overrides `parts/example.bin`.
+The same path syntax works in ModEngine2 TOML `mods` entries. ZIP files support stored
+and Deflate-compressed data, including ZIP64, and must not be encrypted. Files are
+decompressed on first access into a temporary cache, reused for later reads, and
+removed when the mod loader shuts down normally. Archive files remain read-only.
+
+ZIP subpaths support `/`, `\`, nested directories, and mixed separators.
+`abc.zip:def\subdir\mod`, `abc.zip:\def\subdir\mod`, `abc.zip:/def/subdir/mod`,
+and `abc.zip:/def\subdir\mod` all select `/def/subdir/mod` inside the ZIP.
+Backslashes need no escaping in INI. In TOML, use a single-quoted literal string
+such as `path = 'abc.zip:\def\subdir\mod'`, or escape each backslash as `\\`
+in a double-quoted string.
 
 ### ModEngine2 TOML compatibility
 

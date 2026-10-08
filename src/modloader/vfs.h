@@ -28,6 +28,7 @@ typedef enum vfs_lookup_domain_e {
 
 void vfs_init(void);
 void vfs_uninit(void);
+/* Accepts a directory, a ZIP path, or ZIP:path/to/root. ZIP data is cached on first read. */
 bool vfs_add_package(const wchar_t *path);
 bool vfs_register_writable_path(const wchar_t *virtual_path, const wchar_t *physical_path);
 bool vfs_has_writable_paths(void);

@@ -126,8 +126,18 @@ DLL 依赖普通条目，该依赖项也会提前加载；依赖 `data_ready` �
 被推迟到同一个后台线程上加载。检测到循环依赖时记录错误，并保持原有顺序不变。项目自带的
 扩展 DLL 已不再随此仓库发布。
 
-`[mod]` section 用于声明包含散文件覆盖的目录。路径可以是相对路径或绝对路径；多个
-模组包含同名文件时，后声明的模组覆盖先声明的模组。
+`[mod]` 节用于声明覆盖游戏文件的目录或 ZIP 文件。路径可以相对于配置文件，也可以是绝对路径。目标为目录时扫描散文件，目标为 `.zip` 文件时读取压缩包。多个模组包含同名文件时，后声明的模组覆盖先声明的模组；目录和 ZIP 文件混合配置时遵循相同规则。
+
+```ini
+[mod]
+loose=mod
+archive=abc.zip
+selected=abc.zip:def
+```
+
+`abc.zip` 使用 ZIP 根目录。`abc.zip:def` 和 `abc.zip:/def` 均使用 ZIP 内的 `/def` 作为模组根目录：`def/parts/example.bin` 会覆盖游戏的 `parts/example.bin`。ModEngine2 TOML 的 `mods` 条目也支持这种路径写法。ZIP 支持未压缩存储和 Deflate 压缩，包括 ZIP64，不支持加密条目。文件在首次读取时解压到临时缓存，后续读取复用缓存；加载器正常退出时清理缓存。ZIP 中的文件仅用于读取。
+
+ZIP 子路径支持正斜杠 `/`、反斜杠 `\` 和多层目录，也可混用两种分隔符。`abc.zip:def\subdir\mod`、`abc.zip:\def\subdir\mod`、`abc.zip:/def/subdir/mod` 和 `abc.zip:/def\subdir\mod` 均将 ZIP 内的 `/def/subdir/mod` 作为模组根目录。INI 中的反斜杠无需转义；TOML 可使用单引号字符串 `path = 'abc.zip:\def\subdir\mod'`，使用双引号字符串时须将反斜杠写成 `\\`。
 
 ### ModEngine2 TOML 兼容
 

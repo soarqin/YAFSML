@@ -9,6 +9,7 @@
 #include "vfs.h"
 
 #include "allocator.h"
+#include "zip_package.h"
 
 #include <shlwapi.h>
 
@@ -26,7 +27,14 @@ typedef struct vfs_entry_s {
     wchar_t *key;
     wchar_t *path;
     wchar_t *uid;
+    zip_package_t *zip;
+    size_t zip_file;
 } vfs_entry_t;
+
+typedef struct vfs_zip_s {
+    zip_package_t *package;
+    struct vfs_zip_s *next;
+} vfs_zip_t;
 
 typedef struct vfs_writable_entry_s {
     wchar_t *key;
@@ -43,6 +51,7 @@ static khash_t(vfs_lookup_cache) *writable_cache;
 static vfs_entry_t *entries;
 static size_t entry_count;
 static size_t entry_capacity;
+static vfs_zip_t *zip_packages;
 static volatile LONG frozen;
 static volatile LONG64 generation;
 static volatile LONG64 generation_sequence;
@@ -129,7 +138,8 @@ bool vfs_normalize_path(const wchar_t *path, wchar_t **normalized) {
     return true;
 }
 
-static bool vfs_insert(const wchar_t *relative, const wchar_t *physical) {
+static bool vfs_insert(const wchar_t *relative, const wchar_t *physical, zip_package_t *zip, size_t zip_file,
+                       vfs_entry_t *previous) {
     wchar_t *key;
     wchar_t *path;
     khiter_t slot;
@@ -148,8 +158,11 @@ static bool vfs_insert(const wchar_t *relative, const wchar_t *physical) {
     }
     if (ret == 0) {
         vfs_entry_t *entry = &entries[kh_value(index, slot)];
-        ml_mem_free(entry->path);
+        if (previous != NULL) *previous = *entry;
+        else ml_mem_free(entry->path);
         entry->path = path;
+        entry->zip = zip;
+        entry->zip_file = zip_file;
         ml_mem_free(key);
         return true;
     }
@@ -178,7 +191,7 @@ static bool vfs_insert(const wchar_t *relative, const wchar_t *physical) {
         return false;
     }
     _snwprintf(uid, (size_t)uid_length + 1, L"\\\\me3??%zx", entry_count);
-    entries[entry_count] = (vfs_entry_t){ key, path, uid };
+    entries[entry_count] = (vfs_entry_t){ key, path, uid, zip, zip_file };
     entry_count++;
     return true;
 }
@@ -213,7 +226,7 @@ static bool vfs_scan(const wchar_t *root, const wchar_t *relative) {
                 return false;
             }
         } else {
-            if (!vfs_insert(child_relative, child_path)) {
+            if (!vfs_insert(child_relative, child_path, NULL, 0, NULL)) {
                 ml_mem_free(child_relative);
                 ml_mem_free(child_path);
                 FindClose(handle);
@@ -237,6 +250,7 @@ void vfs_init(void) {
     entries = NULL;
     entry_count = 0;
     entry_capacity = 0;
+    zip_packages = NULL;
     InterlockedExchange(&frozen, FALSE);
     InterlockedExchange64(&generation, 0);
     InterlockedExchange64(&generation_sequence, 0);
@@ -246,6 +260,12 @@ void vfs_init(void) {
 }
 
 void vfs_uninit(void) {
+    while (zip_packages != NULL) {
+        vfs_zip_t *next = zip_packages->next;
+        zip_package_close(zip_packages->package);
+        ml_mem_free(zip_packages);
+        zip_packages = next;
+    }
     if (entries != NULL) {
         for (size_t i = 0; i < entry_count; i++) {
             ml_mem_free(entries[i].key);
@@ -305,8 +325,83 @@ static void clear_writable_cache_locked(void) {
 }
 
 bool vfs_add_package(const wchar_t *path) {
-    if (index == NULL || InterlockedCompareExchange(&frozen, FALSE, FALSE) || path == NULL || !PathIsDirectoryW(path)) return false;
-    return vfs_scan(path, L"");
+    const wchar_t *separator;
+    wchar_t *disk_path;
+    size_t length;
+    size_t count;
+    size_t applied = 0;
+    vfs_entry_t *previous;
+    vfs_zip_t *zip;
+    if (index == NULL || InterlockedCompareExchange(&frozen, FALSE, FALSE) || path == NULL || path[0] == L'\0') return false;
+    /* A directory named *.zip is still a loose-file package. */
+    if (PathIsDirectoryW(path)) return vfs_scan(path, L"");
+    separator = zip_package_root_separator(path);
+    length = separator == NULL ? wcslen(path) : (size_t)(separator - path);
+    disk_path = ml_mem_alloc(0, (length + 1) * sizeof(*disk_path));
+    if (disk_path == NULL) return false;
+    memcpy(disk_path, path, length * sizeof(*disk_path));
+    disk_path[length] = L'\0';
+    if (!PathFileExistsW(disk_path) || PathIsDirectoryW(disk_path) ||
+        lstrcmpiW(PathFindExtensionW(disk_path), L".zip") != 0) {
+        ml_mem_free(disk_path);
+        return false;
+    }
+    zip = ml_mem_alloc(0, sizeof(*zip));
+    if (zip == NULL) {
+        ml_mem_free(disk_path);
+        return false;
+    }
+    zip->package = zip_package_open(disk_path, separator == NULL ? L"" : separator + 1);
+    ml_mem_free(disk_path);
+    if (zip->package == NULL) {
+        ml_mem_free(zip);
+        return false;
+    }
+    count = zip_package_count(zip->package);
+    previous = count == 0 || count > SIZE_MAX / sizeof(*previous) ? NULL
+        : ml_mem_alloc(LPTR, count * sizeof(*previous));
+    if (count != 0 && previous == NULL) {
+        zip_package_close(zip->package);
+        ml_mem_free(zip);
+        return false;
+    }
+    for (; applied < count; applied++) {
+        if (!vfs_insert(zip_package_relative_path(zip->package, applied),
+                        zip_package_cache_path(zip->package, applied), zip->package, applied,
+                        &previous[applied])) break;
+    }
+    if (applied != count) {
+        /* Undo in reverse order, including duplicate names within this ZIP. */
+        while (applied != 0) {
+            applied--;
+            khiter_t slot = kh_get(vfs_index, index, zip_package_relative_path(zip->package, applied));
+            vfs_entry_t *entry = &entries[kh_value(index, slot)];
+            ml_mem_free(entry->path);
+            if (previous[applied].path != NULL) {
+                *entry = previous[applied];
+            } else {
+                kh_del(vfs_index, index, slot);
+                ml_mem_free(entry->key);
+                ml_mem_free(entry->uid);
+                *entry = (vfs_entry_t){ 0 };
+                entry_count--;
+            }
+        }
+        ml_mem_free(previous);
+        zip_package_close(zip->package);
+        ml_mem_free(zip);
+        return false;
+    }
+    for (size_t i = 0; i < count; i++) ml_mem_free(previous[i].path);
+    ml_mem_free(previous);
+    zip->next = zip_packages;
+    zip_packages = zip;
+    return true;
+}
+
+static const wchar_t *vfs_entry_read_path(vfs_entry_t *entry) {
+    if (entry->zip != NULL && zip_package_materialize(entry->zip, entry->zip_file) == NULL) return NULL;
+    return entry->path;
 }
 
 bool vfs_register_writable_path(const wchar_t *virtual_path, const wchar_t *physical_path) {
@@ -392,7 +487,9 @@ const wchar_t *vfs_lookup_domain(const wchar_t *path, vfs_lookup_domain_t domain
     if (!vfs_normalize_path(path, &key)) return NULL;
     slot = kh_get(vfs_index, index, key);
     ml_mem_free(key);
-    result = slot == kh_end(index) ? NULL : entries[kh_value(index, slot)].path;
+    result = slot == kh_end(index) ? NULL : vfs_entry_read_path(&entries[kh_value(index, slot)]);
+    /* An I/O failure is retryable; only absent virtual paths are negative-cached. */
+    if (slot != kh_end(index) && result == NULL) return NULL;
 
     if (lookup_generation == 0) return result;
     wchar_t *cache_key = ml_mem_strdup_w(path);
@@ -532,9 +629,9 @@ const wchar_t *vfs_uid_to_path(const wchar_t *uid) {
         ReleaseSRWLockShared(&lookup_cache_lock);
         return NULL;
     }
-    const wchar_t *result = entries[index_value].path;
+    vfs_entry_t *entry = &entries[index_value];
     ReleaseSRWLockShared(&lookup_cache_lock);
-    return result;
+    return vfs_entry_read_path(entry);
 }
 
 const wchar_t *vfs_lookup_prefixed_domain(const wchar_t *path, const wchar_t *game_root,

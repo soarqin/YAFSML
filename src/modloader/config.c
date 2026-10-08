@@ -42,9 +42,19 @@ static bool value_to_bool(const char *value) {
     return lstrcmpA(value, "true") == 0 || lstrcmpA(value, "yes") == 0 || lstrcmpA(value, "on") == 0 || lstrcmpA(value, "1") == 0;
 }
 
+static void config_add_mod_path(const char *name, const char *value) {
+    int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, NULL, 0);
+    wchar_t *path = length == 0 ? NULL : ml_mem_alloc(0, (size_t)length * sizeof(*path));
+    if (path == NULL || MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, path, length) == 0) {
+        ML_LOG_ERROR(L"config", L"invalid mod path for %hs", name);
+    } else {
+        mods_add(name, path);
+    }
+    ml_mem_free(path);
+}
+
 static int ini_read_cb(void *user, const char *section,
                        const char *name, const char *value) {
-    wchar_t path[MAX_PATH];
     if (lstrcmpA(section, "patch") == 0) {
         if (lstrcmpA(name, "skip_intro") == 0) {
             config.skip_intro = value_to_bool(value);
@@ -106,12 +116,7 @@ static int ini_read_cb(void *user, const char *section,
     } else if (lstrcmpA(section, "dll") == 0) {
         extdlls_add_spec(name, value);
     } else if (lstrcmpA(section, "mod") == 0) {
-        if (MultiByteToWideChar(CP_UTF8, 0, value, -1, path, MAX_PATH) == 0) {
-            ML_LOG_ERROR(L"config", L"invalid mod path for %hs", name);
-            return 1;
-        }
-        path[MAX_PATH - 1] = L'\0';
-        mods_add(name, path);
+        config_add_mod_path(name, value);
     }
     return 1;
 }
@@ -175,7 +180,6 @@ bool config_load_toml(FILE *f) {
     len = toml_array_len(arr);
     for (i = 0; i < len; i++) {
         toml_table_t *sub = toml_array_table(arr, i);
-        wchar_t wpath[MAX_PATH];
         if (!sub) continue;
         const toml_value_t enabled = toml_table_bool(sub, "enabled");
         if (!enabled.ok || !enabled.u.b) continue;
@@ -186,8 +190,7 @@ bool config_load_toml(FILE *f) {
             free(name.u.s);
             continue;
         }
-        MultiByteToWideChar(CP_UTF8, 0, path.u.s, -1, wpath, MAX_PATH);
-        mods_add(name.u.s, wpath);
+        config_add_mod_path(name.u.s, path.u.s);
         free(name.u.s);
         free(path.u.s);
     }
