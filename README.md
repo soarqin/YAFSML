@@ -63,8 +63,9 @@ These options are outside a section:
 
 This section contains common patch settings. The loader applies settings that
 are supported by the current game; Dark Souls III remains experimental and
-includes a compact C11 port of dearxan v0.5.6. Its before-main scheduling follows
-me3 commit `6563ebb`; Dark Souls III forces Arxan neutralization on.
+includes a compact C11 port of dearxan v0.5.7. Its before-main scheduling follows
+me3; [the repository reference](docs/me3-repo.md) records the reviewed baselines.
+Dark Souls III forces Arxan neutralization on.
 
 | Option | Default | Description |
 | --- | --- | --- |

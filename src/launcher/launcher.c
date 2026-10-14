@@ -11,6 +11,7 @@
 #include "steam/app.h"
 #include "game/game.h"
 #include "launcher/launch_config.h"
+#include "launcher/launch_process.h"
 
 #include <getopt.h>
 #include <shlwapi.h>
@@ -146,10 +147,7 @@ static bool inject_dll(HANDLE process, const wchar_t *dll_path) {
         return false;
     }
 
-    const DWORD wait_result = WaitForSingleObject(thread, INFINITE);
-    DWORD exit_code = 0;
-    const bool success = wait_result == WAIT_OBJECT_0 &&
-                         GetExitCodeThread(thread, &exit_code) && exit_code != 0;
+    const bool success = ml_launcher_wait_for_remote_thread(process, thread);
     CloseHandle(thread);
     VirtualFreeEx(process, remote_path, 0, MEM_RELEASE);
     if (!success) return false;
@@ -168,11 +166,7 @@ static bool inject_dll(HANDLE process, const wchar_t *dll_path) {
     const HANDLE init_thread = CreateRemoteThread(process, NULL, 0, remote_init, NULL, 0, NULL);
     FreeLibrary(local_module);
     if (init_thread == NULL) return false;
-    const DWORD init_wait_result = WaitForSingleObject(init_thread, INFINITE);
-    DWORD init_exit_code = 0;
-    const bool init_success = init_wait_result == WAIT_OBJECT_0 &&
-                              GetExitCodeThread(init_thread, &init_exit_code) &&
-                              init_exit_code != 0;
+    const bool init_success = ml_launcher_wait_for_remote_thread(process, init_thread);
     CloseHandle(init_thread);
     return init_success;
 }
@@ -261,8 +255,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     }
     SetEnvironmentVariableW(L"YAFSML_REMOTE_INIT", L"1");
     si.cb = sizeof(si);
-    BOOL success = CreateProcessW(full_game_path, NULL, NULL, NULL, FALSE,
-                                  CREATE_SUSPENDED, NULL, game_folder, &si, &pi);
+    BOOL success = ml_launcher_create_game_process(full_game_path, game_folder, &si, &pi);
     if (success && !inject_dll(pi.hProcess, dll_path)) {
         ML_LOG_ERROR(L"launcher", L"could not inject `%ls` into %ls", dll_path, launch_game->title);
         TerminateProcess(pi.hProcess, (UINT)-1);

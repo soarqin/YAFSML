@@ -1,5 +1,5 @@
 /*
- * C11 implementation of dearxan v0.5.6 functionality.
+ * C11 implementation of dearxan v0.5.7 functionality.
  *
  * Original project copyright (c) 2025 William Tremblay.
  * Licensed under the MIT license; see THIRD_PARTY_NOTICES.md.
@@ -181,24 +181,21 @@ static bool detect_arxan_hook(const dearxan_image_t *image, uint64_t start_va) {
     return false;
 }
 
-bool dearxan_parse_msvc_entrypoint(const dearxan_image_t *image,
-                                   uint64_t entrypoint_va,
-                                   dearxan_msvc_entrypoint_t *result) {
+static bool parse_msvc_entrypoint_body(const dearxan_image_t *image,
+                                       uint64_t ip,
+                                       dearxan_msvc_entrypoint_t *parsed) {
     static const ZydisMnemonic expected[] = {
-        ZYDIS_MNEMONIC_SUB,
         ZYDIS_MNEMONIC_CALL,
         ZYDIS_MNEMONIC_ADD,
         ZYDIS_MNEMONIC_JMP
     };
     ZydisDecodedInstruction instruction;
     ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
-    uint64_t ip = entrypoint_va;
-    dearxan_msvc_entrypoint_t parsed = { 0 };
-    if (image == NULL || result == NULL) return false;
+    memset(parsed, 0, sizeof(*parsed));
     for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++) {
         if (!decode_at(image, ip, &instruction, operands) ||
             instruction.mnemonic != expected[i]) return false;
-        if (i == 0 || i == 2) {
+        if (i == 1) {
             if (instruction.operand_count_visible != 2 ||
                 operands[0].type != ZYDIS_OPERAND_TYPE_REGISTER ||
                 operands[0].reg.value != ZYDIS_REGISTER_RSP ||
@@ -207,15 +204,46 @@ bool dearxan_parse_msvc_entrypoint(const dearxan_image_t *image,
             uint64_t target;
             if (instruction.operand_count_visible != 1 ||
                 !relative_target(ip, &instruction, &operands[0], &target)) return false;
-            if (i == 1) {
-                parsed.security_init_cookie_va = target;
-                parsed.security_init_cookie_call =
+            if (i == 0) {
+                parsed->security_init_cookie_va = target;
+                parsed->security_init_cookie_call =
                     (unsigned char *)image->base + (size_t)(ip - image->base_va);
             } else {
-                parsed.scrt_common_main_seh_va = target;
+                parsed->scrt_common_main_seh_va = target;
             }
         }
         ip += instruction.length;
+    }
+    return true;
+}
+
+bool dearxan_parse_msvc_entrypoint(const dearxan_image_t *image,
+                                   uint64_t entrypoint_va,
+                                   dearxan_msvc_entrypoint_t *result) {
+    ZydisDecodedInstruction instruction;
+    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
+    dearxan_msvc_entrypoint_t parsed;
+    if (image == NULL || result == NULL ||
+        !decode_at(image, entrypoint_va, &instruction, operands)) return false;
+    if (instruction.mnemonic == ZYDIS_MNEMONIC_SUB) {
+        if (instruction.operand_count_visible != 2 ||
+            operands[0].type != ZYDIS_OPERAND_TYPE_REGISTER ||
+            operands[0].reg.value != ZYDIS_REGISTER_RSP ||
+            operands[1].type != ZYDIS_OPERAND_TYPE_IMMEDIATE ||
+            !parse_msvc_entrypoint_body(image, entrypoint_va + instruction.length,
+                                        &parsed)) return false;
+    } else {
+        bool is_debugger_trap = instruction.meta.category == ZYDIS_CATEGORY_INTERRUPT ||
+                               instruction.mnemonic == ZYDIS_MNEMONIC_UD0 ||
+                               instruction.mnemonic == ZYDIS_MNEMONIC_UD1 ||
+                               instruction.mnemonic == ZYDIS_MNEMONIC_UD2;
+        if (!is_debugger_trap) return false;
+        /* A replaced opcode still occupies the original four-byte SUB RSP slot.
+         * Also accept upstream v0.5.7's layout with a trap inserted before it. */
+        if (!parse_msvc_entrypoint_body(image, entrypoint_va + 4, &parsed) &&
+            !parse_msvc_entrypoint_body(image,
+                                        entrypoint_va + instruction.length + 4,
+                                        &parsed)) return false;
     }
     *result = parsed;
     result->is_arxan_hooked = detect_arxan_hook(image,

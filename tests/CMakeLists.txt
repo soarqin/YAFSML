@@ -70,7 +70,9 @@ else()
 endif()
 set(SMOKE_smoke_launcher_game_SOURCES ${CMAKE_SOURCE_DIR}/src/launcher/launch_config.c)
 set(SMOKE_smoke_launcher_game_LIBRARIES inih shlwapi)
-set(SMOKE_smoke_launcher_startup_SOURCES ${CMAKE_SOURCE_DIR}/src/launcher/launch_config.c)
+set(SMOKE_smoke_launcher_startup_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/launcher/launch_config.c
+    ${CMAKE_SOURCE_DIR}/src/launcher/launch_process.c)
 set(SMOKE_smoke_launcher_startup_LIBRARIES inih wingetopt shlwapi psapi)
 set(SMOKE_smoke_ini_LIBRARIES inih)
 set(SMOKE_smoke_ini_allocation_SOURCES ${CMAKE_SOURCE_DIR}/deps/inih/ini.c)
@@ -146,6 +148,7 @@ foreach(SMOKE_SOURCE ${SMOKE_SOURCES})
 endforeach()
 
 target_include_directories(smoke_ini_allocation PRIVATE ${CMAKE_SOURCE_DIR}/deps/inih)
+set_tests_properties(smoke_launcher_process PROPERTIES TIMEOUT 20)
 
 add_dependencies(smoke_extdll_config extdll_fixture)
 

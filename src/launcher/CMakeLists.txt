@@ -15,6 +15,7 @@ generate_version_info(exe_res_files
 add_project(modloader_launcher WIN32
     launcher.c
     launch_config.c
+    launch_process.c
     ${CMAKE_SOURCE_DIR}/src/common/log.c
 
     launcher.rc

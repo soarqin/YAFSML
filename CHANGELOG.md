@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Updated the dearxan C11 implementation to v0.5.7 and reviewed me3 through
+  `5f4fa47`, retaining the documented performance fork's cache behavior.
+
+### Fixed
+
+- MSVC entry-point detection now accepts debugger traps such as INT3 and UD2
+  at the first instruction while still validating the remaining CRT prologue.
+- The launcher now temporarily clears Wine's Unix `LC_ALL` when spawning the
+  game, restoring it afterward so non-ANSI mod paths can load under Proton.
+- DLL injection and remote initialization now also wait for game-process exit,
+  abandoning initialization when the game closes before it completes.
+
 ## [0.10.4] - 2026-10-02
 
 ### Changed
