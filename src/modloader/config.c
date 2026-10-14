@@ -42,10 +42,19 @@ static bool value_to_bool(const char *value) {
     return lstrcmpA(value, "true") == 0 || lstrcmpA(value, "yes") == 0 || lstrcmpA(value, "on") == 0 || lstrcmpA(value, "1") == 0;
 }
 
+static wchar_t *utf8_to_wide_alloc(const char *value) {
+    int length = value == NULL ? 0 : MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, NULL, 0);
+    wchar_t *result = length == 0 ? NULL : ml_mem_alloc(0, (size_t)length * sizeof(*result));
+    if (result != NULL && MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, result, length) == 0) {
+        ml_mem_free(result);
+        result = NULL;
+    }
+    return result;
+}
+
 static void config_add_mod_path(const char *name, const char *value) {
-    int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, NULL, 0);
-    wchar_t *path = length == 0 ? NULL : ml_mem_alloc(0, (size_t)length * sizeof(*path));
-    if (path == NULL || MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, path, length) == 0) {
+    wchar_t *path = utf8_to_wide_alloc(value);
+    if (path == NULL) {
         ML_LOG_ERROR(L"config", L"invalid mod path for %hs", name);
     } else {
         mods_add(name, path);
@@ -53,8 +62,18 @@ static void config_add_mod_path(const char *name, const char *value) {
     ml_mem_free(path);
 }
 
+static void config_set_save_filename(wchar_t name[64], const char *key, const char *value) {
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, name, 64) == 0) {
+        /* Keep the option requested but invalid, so the save mapping fails
+         * closed instead of silently using the original save. */
+        ML_LOG_ERROR(L"config", L"%hs must be valid UTF-8 shorter than 64 characters", key);
+        lstrcpyW(name, L"?");
+    }
+}
+
 static int ini_read_cb(void *user, const char *section,
                        const char *name, const char *value) {
+    (void)user;
     if (lstrcmpA(section, "patch") == 0) {
         if (lstrcmpA(name, "skip_intro") == 0) {
             config.skip_intro = value_to_bool(value);
@@ -73,12 +92,9 @@ static int ini_read_cb(void *user, const char *section,
         } else if (lstrcmpA(name, "disable_arxan") == 0) {
             config.disable_arxan = value_to_bool(value);
         } else if (lstrcmpA(name, "replace_save_filename") == 0) {
-            MultiByteToWideChar(CP_UTF8, 0, value, -1, config.replaced_save_filename, 64);
-            config.replaced_save_filename[63] = L'\0';
+            config_set_save_filename(config.replaced_save_filename, name, value);
         } else if (lstrcmpA(name, "replace_seamless_coop_save_filename") == 0) {
-            MultiByteToWideChar(CP_UTF8, 0, value, -1,
-                                config.replaced_seamless_coop_save_filename, 64);
-            config.replaced_seamless_coop_save_filename[63] = L'\0';
+            config_set_save_filename(config.replaced_seamless_coop_save_filename, name, value);
         } else if (lstrcmpA(name, "enable_ime") == 0) {
             config.enable_ime = value_to_bool(value);
         }
@@ -122,7 +138,12 @@ static int ini_read_cb(void *user, const char *section,
 }
 
 void config_load_ini(FILE *f) {
-    ini_parse_file(f, ini_read_cb, NULL);
+    int result = ini_parse_file(f, ini_read_cb, NULL);
+    if (result > 0) {
+        ML_LOG_WARN(L"config", L"configuration parse error at line %d; later settings may be missing", result);
+    } else if (result < 0) {
+        ML_LOG_ERROR(L"config", L"configuration could not be read (%d)", result);
+    }
 }
 
 #if !defined(ML_STRIP_MODENGINE_CONFIG)
@@ -132,7 +153,15 @@ bool config_load_toml(FILE *f) {
     toml_value_t value;
     toml_array_t *arr;
     int i, len;
-    if (root == NULL) return false;
+    if (root == NULL) {
+        /* Logging is configured by this file, so also report the error to a debugger. */
+        wchar_t message[320];
+        _snwprintf_s(message, sizeof(message) / sizeof(message[0]), _TRUNCATE,
+                     L"YAFSML: ModEngine2 configuration parse error: %hs\n", errbuf);
+        OutputDebugStringW(message);
+        ML_LOG_ERROR(L"config", L"ModEngine2 configuration parse error: %hs", errbuf);
+        return false;
+    }
     const toml_table_t *me = toml_table_table(root, "modengine");
     if (me == NULL) goto TOML_LOAD_MODS;
     value = toml_table_bool(me, "debug");
@@ -157,15 +186,19 @@ bool config_load_toml(FILE *f) {
     if (arr == NULL) goto TOML_LOAD_MODS;
     len = toml_array_len(arr);
     for (i = 0; i < len; i++) {
-        wchar_t path[MAX_PATH];
-        char name[MAX_PATH];
+        wchar_t *path;
         value = toml_array_string(arr, i);
         if (!value.ok) continue;
-        lstrcpynA(name, value.u.s, MAX_PATH);
+        path = utf8_to_wide_alloc(value.u.s);
+        if (path == NULL) {
+            ML_LOG_ERROR(L"config", L"invalid external DLL path: %hs", value.u.s);
+        } else {
+            /* ModEngine2 has no DLL names; the path without extension serves as one. */
+            PathRemoveExtensionA(value.u.s);
+            extdlls_add(value.u.s, path);
+            ml_mem_free(path);
+        }
         free(value.u.s);
-        MultiByteToWideChar(CP_UTF8, 0, name, -1, path, MAX_PATH);
-        PathRemoveExtensionA(name);
-        extdlls_add(name, path);
     }
 
     TOML_LOAD_MODS:
@@ -181,18 +214,17 @@ bool config_load_toml(FILE *f) {
     for (i = 0; i < len; i++) {
         toml_table_t *sub = toml_array_table(arr, i);
         if (!sub) continue;
+        /* ModEngine2 requires only `path`; `enabled` defaults to true and `name`
+         * to "Unknown". */
         const toml_value_t enabled = toml_table_bool(sub, "enabled");
-        if (!enabled.ok || !enabled.u.b) continue;
+        if (enabled.ok && !enabled.u.b) continue;
         const toml_value_t name = toml_table_string(sub, "name");
-        if (!name.ok) continue;
         const toml_value_t path = toml_table_string(sub, "path");
-        if (!path.ok) {
-            free(name.u.s);
-            continue;
+        if (path.ok) {
+            config_add_mod_path(name.ok ? name.u.s : "Unknown", path.u.s);
+            free(path.u.s);
         }
-        config_add_mod_path(name.u.s, path.u.s);
-        free(name.u.s);
-        free(path.u.s);
+        if (name.ok) free(name.u.s);
     }
 
     TOML_LOAD_END:
@@ -208,83 +240,94 @@ void config_init(void *module) {
     PathRemoveBackslashW(modloader_module_path);
 }
 
-void config_load() {
+/* Resolves YAFSML_CONFIG like the launcher's -c: relative to the DLL directory,
+ * normalized, and a directory selects its YAFSML.ini (or the game's ModEngine2
+ * TOML when there is none). */
+static bool resolve_config_path(wchar_t config_path[MAX_PATH], const wchar_t *modengine_config_name) {
+    wchar_t joined[MAX_PATH];
+    if (env_config_path[0] == L'\0') {
+        lstrcpyW(joined, modloader_module_path);
+    } else if (StrChrW(env_config_path, L':') == NULL && env_config_path[0] != L'\\' && env_config_path[0] != L'/') {
+        lstrcpyW(joined, modloader_module_path);
+        if (!PathAppendW(joined, env_config_path)) return false;
+    } else {
+        lstrcpyW(joined, env_config_path);
+    }
+    {
+        DWORD length = GetFullPathNameW(joined, MAX_PATH, config_path, NULL);
+        if (length == 0 || length >= MAX_PATH) return false;
+    }
+    if (PathIsDirectoryW(config_path)) {
+        wchar_t directory[MAX_PATH];
+        lstrcpyW(directory, config_path);
+        if (!PathAppendW(config_path, L"YAFSML.ini")) return false;
+#if !defined(ML_STRIP_MODENGINE_CONFIG)
+        if (!PathFileExistsW(config_path) || PathIsDirectoryW(config_path)) {
+            lstrcpyW(config_path, directory);
+            if (!PathAppendW(config_path, modengine_config_name)) return false;
+        }
+#else
+        (void)modengine_config_name;
+#endif
+    }
+    return true;
+}
+
+void config_load(void) {
     wchar_t config_path[MAX_PATH] = L"";
     FILE *config_file = NULL;
     const ml_game_descriptor_t *game = ml_game_detect_current_process();
     const wchar_t *modengine_config_name = game != NULL
         ? game->modengine_config_name : L"config_eldenring.toml";
-    if (env_config_path[0] == L'\0') {
-        lstrcpyW(config_path, modloader_module_path);
-        PathAppendW(config_path, L"YAFSML.ini");
-#if !defined(ML_STRIP_MODENGINE_CONFIG)
-        if (!PathFileExistsW(config_path) || PathIsDirectoryW(config_path)) {
-            lstrcpyW(config_path, modloader_module_path);
-            PathAppendW(config_path, modengine_config_name);
-        }
-#endif
-    } else {
-        if (StrChrW(env_config_path, L':') == NULL && env_config_path[0] != L'\\' && env_config_path[0] != L'/') {
-            lstrcpyW(config_path, modloader_module_path);
-            PathAppendW(config_path, env_config_path);
-        } else if (PathIsDirectoryW(env_config_path)) {
-            lstrcpyW(config_path, env_config_path);
-            PathAppendW(config_path, L"YAFSML.ini");
-#if !defined(ML_STRIP_MODENGINE_CONFIG)
-            if (!PathFileExistsW(config_path) || PathIsDirectoryW(config_path)) {
-                lstrcpyW(config_path, env_config_path);
-                PathAppendW(config_path, modengine_config_name);
-            }
-#endif
-        } else {
-            /* Absolute file path */
-            lstrcpyW(config_path, env_config_path);
-        }
-        lstrcpyW(env_config_path, config_path);
+    if (!resolve_config_path(config_path, modengine_config_name)) {
+        env_config_path[0] = L'\0';
+        return;
     }
+    /* config_full_path* resolve relative paths against this file's directory. */
+    if (env_config_path[0] != L'\0') lstrcpyW(env_config_path, config_path);
     config_file = _wfopen(config_path, L"r");
     if (config_file == NULL) return;
 #if !defined(ML_STRIP_MODENGINE_CONFIG)
-    if (lstrcmpiW(PathFindExtensionW(config_path), L".toml") != 0 || !config_load_toml(config_file))
+    if (lstrcmpiW(PathFindExtensionW(config_path), L".toml") == 0) {
+        (void)config_load_toml(config_file);
+    } else
 #endif
+    {
         config_load_ini(config_file);
+    }
     fclose(config_file);
     ML_LOG_INFO(NULL, L"Log enabled; log level=%ls", ml_log_level_name(ml_log_get_level()));
 }
 
-const wchar_t *module_path() { return modloader_module_path; }
+/* Directory of the loaded configuration file, or of the DLL without one. After
+ * config_load, a non-empty env_config_path always names a file. */
+static void config_directory(wchar_t directory[MAX_PATH]) {
+    lstrcpyW(directory, env_config_path[0] == L'\0' ? modloader_module_path : env_config_path);
+    if (env_config_path[0] != L'\0') PathRemoveFileSpecW(directory);
+}
 
 wchar_t *config_full_path_alloc(const wchar_t *filename) {
-    const wchar_t *base = env_config_path[0] == L'\0' ? modloader_module_path : env_config_path;
-    size_t base_length = wcslen(base);
+    wchar_t base[MAX_PATH];
+    size_t base_length;
     size_t filename_length = filename == NULL ? 0 : wcslen(filename);
-    bool separator = filename_length != 0 && base_length != 0 &&
-                     base[base_length - 1] != L'\\' && base[base_length - 1] != L'/';
+    bool separator;
     wchar_t *result;
-    if (base_length > SIZE_MAX - filename_length - (separator ? 2 : 1)) return NULL;
-    result = ml_mem_alloc(0, (base_length + filename_length + (separator ? 2 : 1)) * sizeof(*result));
+    config_directory(base);
+    base_length = wcslen(base);
+    separator = filename_length != 0 && base_length != 0 &&
+                base[base_length - 1] != L'\\' && base[base_length - 1] != L'/';
+    if (filename_length > SIZE_MAX / sizeof(*result) - base_length - 2) return NULL;
+    result = ml_mem_alloc(0, (base_length + filename_length + 2) * sizeof(*result));
     if (result == NULL) return NULL;
-    memcpy(result, base, (base_length + 1) * sizeof(*result));
-    if (env_config_path[0] != L'\0' && PathFileExistsW(result) && !PathIsDirectoryW(result)) {
-        PathRemoveFileSpecW(result);
-        base_length = wcslen(result);
-        separator = filename_length != 0 && base_length != 0 &&
-                    result[base_length - 1] != L'\\' && result[base_length - 1] != L'/';
-    }
+    memcpy(result, base, base_length * sizeof(*result));
     if (separator) result[base_length++] = L'\\';
-    if (filename_length != 0) memcpy(result + base_length, filename, (filename_length + 1) * sizeof(*result));
+    if (filename_length != 0) memcpy(result + base_length, filename, filename_length * sizeof(*result));
+    result[base_length + filename_length] = L'\0';
     return result;
 }
 
 void config_full_path(wchar_t *path, const wchar_t *filename) {
-    if (env_config_path[0] == L'\0') {
-        lstrcpyW(path, modloader_module_path);
-    } else {
-        lstrcpyW(path, env_config_path);
-        if (PathFileExistsW(path) && !PathIsDirectoryW(path)) {
-            PathRemoveFileSpecW(path);
-        }
-    }
+    config_directory(path);
     if (filename && filename[0] != 0)
         PathAppendW(path, filename);
 }

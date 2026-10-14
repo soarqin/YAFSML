@@ -21,6 +21,7 @@
 
 #include "patches/window_flash.h"
 
+#include "proxy/common.h"
 #include "proxy/winhttp.h"
 #include "proxy/dxgi.h"
 #include "proxy/dinput8.h"
@@ -32,7 +33,7 @@
 #endif
 #include <windows.h>
 
-HMODULE module_instance = NULL;
+static HMODULE module_instance = NULL;
 typedef int (WINAPI*entrypoint_t)(void);
 static entrypoint_t orig_entrypoint = NULL;
 static volatile LONG modloader_initialized;
@@ -60,8 +61,6 @@ static void load_extdlls_after_data_ready(ml_lifecycle_phase_t phase, void *user
     }
 }
 
-static bool hook_game_entrypoint(void);
-
 static void before_game_main(bool is_arxan_detected,
                              bool is_executing_entrypoint, void *opaque) {
     (void)opaque;
@@ -75,9 +74,11 @@ static void before_game_main(bool is_arxan_detected,
 
 static void after_neuter_arxan(const DearxanResult *result, void *opaque) {
     if (result == NULL) return;
-    if (result->status == DearxanSuccess) {
+    if (result->status == DearxanSuccess && result->is_arxan_detected) {
         ML_LOG_INFO(L"dearxan", L"Arxan neutralization completed in %llu ms",
                     GetTickCount64() - dearxan_neuter_start);
+    } else if (result->status == DearxanSuccess) {
+        ML_LOG_WARN(L"dearxan", L"Arxan not detected or detection unavailable; nothing was neutralized");
     } else {
         ML_LOG_WARN(L"dearxan", L"Arxan neutralization failed: %hs",
                     result->error_msg == NULL ? "unknown error" : result->error_msg);
@@ -88,9 +89,11 @@ static void after_neuter_arxan(const DearxanResult *result, void *opaque) {
 
 static bool modloader_init(void) {
     if (InterlockedCompareExchange(&modloader_initialized, 1, 0) != 0) return false;
-    load_winhttp_proxy();
-    load_dxgi_proxy();
-    load_dinput8_proxy();
+    /* Imports bind by module name, so only the proxy matching our own file name
+       can ever be called. */
+    if (proxy_is_named(L"winhttp.dll")) load_winhttp_proxy();
+    else if (proxy_is_named(L"dxgi.dll")) load_dxgi_proxy();
+    else if (proxy_is_named(L"dinput8.dll")) load_dinput8_proxy();
     config_init(module_instance);
     mods_init();
     config_load();
@@ -112,20 +115,17 @@ static bool modloader_init(void) {
         }
         else dearxan_schedule_after_arxan(before_game_main, NULL);
     }
-    if (ml_game_context_get() != NULL &&
-        ml_game_context_get()->runtime_ready_trigger == ML_RUNTIME_READY_STEAM_API_INIT) {
-        if (!ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_RUNTIME_INIT,
-                                   load_extdlls_after_runtime, NULL)) {
-            ML_LOG_WARN(L"extdll", L"could not schedule external DLL loading after SteamAPI_Init");
-        }
-        if (!ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_DATA_READY,
-                                   load_extdlls_after_data_ready, NULL)) {
-            ML_LOG_WARN(L"extdll", L"could not schedule external DLL loading after game data readiness");
-        }
-    } else {
-        /* Preserve loading for unsupported game contexts without a runtime trigger. */
-        extdlls_load_all();
-        extdlls_load_data_ready();
+    if (ml_game_context_get() == NULL) {
+        ML_LOG_WARN(L"extdll", L"external DLLs are disabled because the game context is unavailable");
+        return true;
+    }
+    if (!ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_RUNTIME_INIT,
+                               load_extdlls_after_runtime, NULL)) {
+        ML_LOG_WARN(L"extdll", L"could not schedule external DLL loading after SteamAPI_Init");
+    }
+    if (!ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_DATA_READY,
+                               load_extdlls_after_data_ready, NULL)) {
+        ML_LOG_WARN(L"extdll", L"could not schedule external DLL loading after game data readiness");
     }
     return true;
 }
@@ -137,7 +137,7 @@ __declspec(dllexport) DWORD WINAPI YAFSMLInit(LPVOID parameter) {
     return 1;
 }
 
-int WINAPI new_entrypoint(void) {
+static int WINAPI new_entrypoint(void) {
     entrypoint_t entrypoint = (entrypoint_t)entrypoint_hook_target;
     MH_STATUS status = entrypoint_hook_target != NULL
         ? MH_DisableHook(entrypoint_hook_target) : MH_ERROR_NOT_CREATED;
@@ -145,9 +145,7 @@ int WINAPI new_entrypoint(void) {
         ML_LOG_ERROR(L"modloader", L"could not disable bootstrap entrypoint hook");
         return orig_entrypoint();
     }
-    if (InterlockedCompareExchange(&modloader_initialized, 0, 0) == 0) {
-        (void)modloader_init();
-    }
+    (void)modloader_init();
     /* Run the restored image entrypoint, not MinHook's trampoline: the
        dearxan scheduler patched its __security_init_cookie call in-place. */
     return entrypoint();
@@ -170,8 +168,6 @@ static bool hook_game_entrypoint(void) {
 }
 
 BOOL APIENTRY DllMain(const HMODULE module, const DWORD ul_reason_for_call, LPVOID reserved) {
-    UNREFERENCED_PARAMETER(reserved);
-
     switch (ul_reason_for_call) {
         case DLL_PROCESS_ATTACH:
             DisableThreadLibraryCalls(module);
@@ -186,8 +182,14 @@ BOOL APIENTRY DllMain(const HMODULE module, const DWORD ul_reason_for_call, LPVO
             }
             break;
         case DLL_PROCESS_DETACH:
-            /* WARNING: FreeLibrary / MH_Uninitialize under loader lock is risky.
-               Acceptable here because this only runs on game process exit. */
+            if (reserved != NULL) {
+                /* Process exit: every other thread is already gone, possibly
+                   while holding a lock or inside a hook, so the teardown below
+                   could hang. Only drop the mods, which takes no locks and
+                   removes the ZIP cache; the system reclaims the rest. */
+                mods_uninit();
+                break;
+            }
             extdlls_unload_all();
             gamehook_uninstall();
             mods_uninit();

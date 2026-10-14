@@ -29,6 +29,7 @@ static void write_stack_call(uint8_t *text, size_t call_offset,
         (int32_t)((int64_t)target_offset - (int64_t)(call_offset + 10));
     memcpy(text + call_offset, "\x48\x8d\x4c\x24\x28\xe8", 6);
     memcpy(text + call_offset + 6, &displacement, sizeof(displacement));
+    memcpy(text + call_offset + 10, "\x84\xc0\x74\x05", 4); /* test al, al; je */
 }
 
 static int expect_single_writer(uint8_t *text, size_t text_size,
@@ -41,19 +42,22 @@ static int expect_single_writer(uint8_t *text, size_t text_size,
     return 0;
 }
 
-static int test_sekiro_106_post_call(void) {
+/* Sekiro 1.06 and Dark Souls III read the save regulation through the same call
+ * and wrapper shapes but consume the bool with `movzx ebp, al`. */
+static int test_rejects_value_consumers(void) {
     uint8_t text[256] = { 0 };
+    uint8_t *writers[2] = { 0 };
     write_stack_call(text, 32, 160);
     memcpy(text + 42, "\x0f\xb6\xe8", 3); /* movzx ebp, al */
     write_writer(text, 160, writer_near_branch,
                  sizeof(writer_near_branch));
-    return expect_single_writer(text, sizeof(text), text + 160);
+    EXPECT_EQ(ml_regulation_sprj_find_writers(text, sizeof(text), writers, 2), 0);
+    return 0;
 }
 
-static int test_legacy_post_call(void) {
+static int test_test_and_branch_post_call(void) {
     uint8_t text[256] = { 0 };
     write_stack_call(text, 32, 160);
-    memcpy(text + 42, "\x84\xc0\x74\x05", 4); /* test al, al; je */
     write_writer(text, 160, writer_short_branch,
                  sizeof(writer_short_branch));
     return expect_single_writer(text, sizeof(text), text + 160);
@@ -118,8 +122,8 @@ static int test_output_capacity_limits_returned_count(void) {
 }
 
 int main(void) {
-    EXPECT_EQ(test_sekiro_106_post_call(), 0);
-    EXPECT_EQ(test_legacy_post_call(), 0);
+    EXPECT_EQ(test_rejects_value_consumers(), 0);
+    EXPECT_EQ(test_test_and_branch_post_call(), 0);
     EXPECT_EQ(test_unique_targets_and_decoys(), 0);
     EXPECT_EQ(test_requires_stack_call_and_in_range_target(), 0);
     EXPECT_EQ(test_output_capacity_limits_returned_count(), 0);

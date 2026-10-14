@@ -96,30 +96,13 @@ static bool memory_readable(const void *address, size_t size) {
     return true;
 }
 
-static bool read_pointer(const void *address, const void **value) {
-    void *pointer;
-    if (value == NULL || !memory_readable(address, sizeof(pointer))) return false;
-    memcpy(&pointer, address, sizeof(pointer));
-    *value = pointer;
-    return true;
-}
-
+/* True when value holds all of expected, terminator included, in readable memory. */
 static bool string_equals(const char *value, const char *expected) {
-    size_t i;
+    size_t size;
 
     if (value == NULL || expected == NULL) return false;
-    for (i = 0; expected[i] != '\0'; i++) {
-        char current;
-        if (!memory_readable(value + i, sizeof(current))) return false;
-        memcpy(&current, value + i, sizeof(current));
-        if (current != expected[i]) return false;
-    }
-    {
-        char current;
-        if (!memory_readable(value + i, sizeof(current))) return false;
-        memcpy(&current, value + i, sizeof(current));
-        return current == '\0';
-    }
+    size = strlen(expected) + 1;
+    return memory_readable(value, size) && memcmp(value, expected, size) == 0;
 }
 
 typedef struct dlrf_vector_view_s {
@@ -127,6 +110,8 @@ typedef struct dlrf_vector_view_s {
     size_t count;
 } dlrf_vector_view_t;
 
+/* vector is a local copy of the game's vector; the elements it points to are
+   validated here, so callers can read them directly. */
 static bool vector_view(const void *vector, dlrf_vector_abi_t abi, size_t element_size,
                         dlrf_vector_view_t *view) {
     void *fields[4];
@@ -135,8 +120,7 @@ static bool vector_view(const void *vector, dlrf_vector_abi_t abi, size_t elemen
     uintptr_t end;
     size_t bytes;
 
-    if (view == NULL || vector == NULL || element_size == 0 ||
-        !memory_readable(vector, sizeof(fields))) return false;
+    if (view == NULL || vector == NULL || element_size == 0) return false;
     memcpy(fields, vector, sizeof(fields));
     if (abi == DLRF_VECTOR_ABI_MSVC2012) {
         first = (uintptr_t)fields[0];
@@ -164,13 +148,12 @@ static bool vector_view(const void *vector, dlrf_vector_abi_t abi, size_t elemen
 }
 
 static bool read_class_name(const void *runtime_class, const char **name) {
-    const void *raw;
     const char *value;
 
-    if (name == NULL || !memory_readable(runtime_class, sizeof(dlrf_runtime_class_layout_t)) ||
-        !read_pointer((const unsigned char *)runtime_class + offsetof(dlrf_runtime_class_layout_t, name), &raw) ||
-        raw == NULL) return false;
-    value = (const char *)raw;
+    if (name == NULL || !memory_readable(runtime_class, sizeof(dlrf_runtime_class_layout_t))) return false;
+    memcpy(&value, (const unsigned char *)runtime_class + offsetof(dlrf_runtime_class_layout_t, name),
+           sizeof(value));
+    if (value == NULL) return false;
     *name = value;
     return true;
 }
@@ -284,8 +267,8 @@ bool dlrf_find_method(const void *runtime_class, dlrf_vector_abi_t vector_abi,
         for (size_t j = 0; j < invokers.count; j++) {
             const void *invoker;
             dlrf_concrete_invoker_layout_t concrete;
-            if (!read_pointer(invokers.first + j * sizeof(void *), &invoker) || invoker == NULL ||
-                !memory_readable(invoker, sizeof(concrete))) continue;
+            memcpy(&invoker, invokers.first + j * sizeof(void *), sizeof(invoker));
+            if (invoker == NULL || !memory_readable(invoker, sizeof(concrete))) continue;
             memcpy(&concrete, invoker, sizeof(concrete));
             if (concrete.address == NULL) continue;
             info->resolver = method.resolver;

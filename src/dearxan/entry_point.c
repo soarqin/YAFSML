@@ -6,10 +6,12 @@
  */
 
 #include "entry_point.h"
+#include "util.h"
 #include "vm.h"
 
 #include <Zydis/Zydis.h>
 
+#include <stddef.h>
 #include <stdlib.h>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -65,23 +67,56 @@ static bool scan_cookie_references(uint64_t va, const unsigned char *bytes,
     return true;
 }
 
+/* Fallback used when the `.text` scan finds nothing: read the security cookie
+ * VA straight from IMAGE_LOAD_CONFIG_DIRECTORY64. This matters under SteamStub,
+ * where `.text` is still encrypted on the main thread before the entry point
+ * runs, so the pattern scan sees nothing. The load config lives in `.rdata`,
+ * which SteamStub does not encrypt and the loader has already relocated, so the
+ * stored VA is valid; it is range-checked before being dereferenced. */
+static uint64_t load_config_gs_cookie(const dearxan_image_t *image) {
+    uint32_t rva;
+    uint32_t size;
+    const size_t cookie_offset =
+        offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, SecurityCookie);
+    const size_t needed = cookie_offset + sizeof(uint64_t);
+    const unsigned char *bytes;
+    uint64_t cookie;
+    if (!dearxan_image_data_directory(image, IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG,
+                                      &rva, &size) || size < needed) return 0;
+    bytes = dearxan_image_read(image, image->base_va + rva, needed, NULL);
+    if (bytes == NULL) return 0;
+    memcpy(&cookie, bytes + cookie_offset, sizeof(cookie));
+    if (cookie == 0 ||
+        dearxan_image_read(image, cookie, sizeof(uint64_t), NULL) == NULL) return 0;
+    return cookie;
+}
+
 static uint64_t find_gs_cookie(const dearxan_image_t *image) {
     cookie_scan_context_t context = { 0 };
     (void)dearxan_image_for_each_section(image, scan_cookie_references, &context);
-    return context.found;
+    if (context.found != 0) return context.found;
+    return load_config_gs_cookie(image);
 }
 
+/* Resolve the security cookie VA once and cache it. A zero result is never
+ * cached: under SteamStub a pre-decrypt call may fail to locate it, and a later
+ * call (after decryption) must be free to retry. */
 static uint64_t get_gs_cookie(const dearxan_image_t *image) {
-    LONG state = InterlockedCompareExchange(&gs_cookie_state, 1, 0);
-    if (state == 0) {
-        gs_cookie_address = find_gs_cookie(image);
-        InterlockedExchange(&gs_cookie_state, 2);
-    } else {
-        while (InterlockedCompareExchange(&gs_cookie_state, 2, 2) != 2) {
-            YieldProcessor();
+    for (;;) {
+        LONG state = InterlockedCompareExchange(&gs_cookie_state, 1, 0);
+        if (state == 2) return gs_cookie_address;
+        if (state == 0) {
+            uint64_t found = find_gs_cookie(image);
+            if (found != 0) {
+                gs_cookie_address = found;
+                InterlockedExchange(&gs_cookie_state, 2);
+            } else {
+                InterlockedExchange(&gs_cookie_state, 0);
+            }
+            return found;
         }
+        YieldProcessor();
     }
-    return gs_cookie_address;
 }
 
 static HANDLE process_main_thread(const dearxan_image_t *image) {
@@ -296,7 +331,6 @@ bool dearxan_suspend_other_threads(dearxan_suspend_guard_t *guard) {
     size_t count = 0;
     size_t capacity = 0;
     DWORD current_thread;
-    bool complete = false;
     if (guard == NULL) return false;
     memset(guard, 0, sizeof(*guard));
     ntdll = GetModuleHandleW(L"ntdll.dll");
@@ -311,43 +345,23 @@ bool dearxan_suspend_other_threads(dearxan_suspend_guard_t *guard) {
                                    THREAD_QUERY_INFORMATION, 0, 0, &next);
         if (previous != NULL) CloseHandle(previous);
         previous = NULL;
-        if (status < 0 || next == NULL) {
-            complete = true;
-            break;
-        }
+        if (status < 0 || next == NULL) break;
         if (GetThreadId(next) == current_thread || SuspendThread(next) == (DWORD)-1) {
             previous = next;
             continue;
         }
         {
             HANDLE owned = NULL;
-            if (count == capacity) {
-                size_t next_capacity = capacity == 0 ? 16 : capacity * 2;
-                HANDLE *next_threads;
-                if (next_capacity < capacity ||
-                    next_capacity > SIZE_MAX / sizeof(*next_threads)) {
-                    ResumeThread(next);
-                    CloseHandle(next);
-                    for (size_t i = 0; i < count; i++) {
-                        ResumeThread(threads[i]);
-                        CloseHandle(threads[i]);
-                    }
-                    free(threads);
-                    return false;
+            if (!dearxan_reserve_array((void **)&threads, &capacity, count + 1,
+                                       sizeof(*threads))) {
+                ResumeThread(next);
+                CloseHandle(next);
+                for (size_t i = 0; i < count; i++) {
+                    ResumeThread(threads[i]);
+                    CloseHandle(threads[i]);
                 }
-                next_threads = realloc(threads, next_capacity * sizeof(*next_threads));
-                if (next_threads == NULL) {
-                    ResumeThread(next);
-                    CloseHandle(next);
-                    for (size_t i = 0; i < count; i++) {
-                        ResumeThread(threads[i]);
-                        CloseHandle(threads[i]);
-                    }
-                    free(threads);
-                    return false;
-                }
-                threads = next_threads;
-                capacity = next_capacity;
+                free(threads);
+                return false;
             }
             if (!DuplicateHandle(GetCurrentProcess(), next, GetCurrentProcess(),
                                  &owned, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
@@ -359,14 +373,8 @@ bool dearxan_suspend_other_threads(dearxan_suspend_guard_t *guard) {
         }
         previous = next;
     }
-    if (!complete) {
-        for (size_t i = 0; i < count; i++) {
-            ResumeThread(threads[i]);
-            CloseHandle(threads[i]);
-        }
-        free(threads);
-        return false;
-    }
+    /* The loop only breaks on NtGetNextThread signalling the end of the thread
+     * list; every failure path returns directly, so reaching here means success. */
     guard->threads = (void **)threads;
     guard->count = count;
     return true;

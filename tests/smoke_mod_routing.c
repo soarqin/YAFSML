@@ -54,16 +54,12 @@ const wchar_t *vfs_route_read_path_prefixed(const wchar_t *path, const wchar_t *
 }
 
 int main(void) {
-    const wchar_t *result;
-
     EXPECT_EQ(mods_count(), 0);
     EXPECT_NULL(mods_file_search(L"parts/test.bin"));
     EXPECT_NULL(mods_file_search_prefixed_domain(
         L"C:\\game\\parts\\test.bin", VFS_LOOKUP_DISK_WIDE));
     EXPECT_NULL(mods_file_virtual_to_uid_prefixed(L"C:\\game\\parts\\test.bin"));
     EXPECT_NULL(mods_file_route_read(L"C:\\game\\parts\\test.bin", GENERIC_READ, OPEN_EXISTING));
-    result = mods_file_route_read_a("C:\\game\\parts\\test.bin", GENERIC_READ, OPEN_EXISTING);
-    EXPECT_NULL(result);
     EXPECT_EQ(query_count, 0);
 
     printf("smoke_mod_routing: all tests passed\n");

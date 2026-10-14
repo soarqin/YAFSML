@@ -9,8 +9,6 @@
 #include "window_flash.h"
 #include "log.h"
 
-#include <stdio.h>
-
 typedef ATOM (WINAPI *register_class_ex_w_t)(const WNDCLASSEXW *window_class);
 
 static register_class_ex_w_t old_register_class_ex_w;

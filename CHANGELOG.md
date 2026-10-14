@@ -7,10 +7,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `[mod]` entries and ModEngine2 TOML `mods` paths can name ZIP files.
+  `abc.zip:def` uses `def` inside the archive as the mod root. Stored and
+  Deflate entries, including ZIP64, are extracted to a temporary cache on first
+  read.
+
 ### Changed
 
 - Updated the dearxan C11 implementation to v0.5.7 and reviewed me3 through
   `5f4fa47`, retaining the documented performance fork's cache behavior.
+- All five games now share one descriptor-driven adapter. After
+  `SteamAPI_Init`, every game advances to `AFTER_RUNTIME_INIT` before the asset
+  hooks are installed, as in me3; Elden Ring and Sekiro used to install the
+  asset hooks first.
+- Dark Souls III and Sekiro, which use FMOD audio, no longer try to install the
+  Wwise resolver hook.
+- Dark Souls III regulation save-write protection now activates when a mod
+  overrides `Data0.bdt`, the file that holds its regulation, instead of
+  `regulation.bin`.
+- ModEngine2 TOML `mods` entries now need only `path`; as in ModEngine2,
+  `enabled` defaults to true and `name` to `Unknown`. Entries without `enabled`
+  or `name` used to be ignored. A malformed TOML file is now reported instead of
+  being read again as INI.
+- A ModEngine extension whose `modengine_ext_init` returns false is now
+  reported as a warning and no longer stops the external DLLs after it, as in
+  me3.
+- A `[dll]` dependency cycle still keeps the configured order, but no longer
+  turns off promotion to early loading and moves onto the background thread for
+  the other entries. A dependency on a missing DLL is now also reported when
+  only one DLL is configured.
+- A proxy DLL now loads only the system DLL it replaces instead of all three of
+  `dxgi.dll`, `dinput8.dll` and `winhttp.dll`.
+- Launcher options:
+  - `-d` is resolved relative to the launcher and must name an existing file.
+    A missing DLL used to fall back silently to `YAFSML.dll`.
+  - Without `--launch-target`, a recognized game executable given by `-p`
+    selects its game, overriding `game=`. With `--launch-target`, the
+    executable of another game is an error.
+  - A relative `-p` is resolved against the current directory first, then the
+    launcher directory. A `-p` that does not lead to the game is now an error;
+    the launcher used to warn and start the game it found through Steam.
+  - The launcher reads `game=` from the same configuration as the DLL. `-c`,
+    or an inherited `YAFSML_CONFIG` without `-c`, is resolved relative to the
+    directory of the loader DLL, as the DLL does, and reaches the DLL as an
+    absolute path; without either, the launcher reads the `YAFSML.ini` next to
+    the DLL. With `-d` naming a DLL in another directory, the launcher used to
+    read the `YAFSML.ini` next to itself and the DLL its own.
+- Steam game discovery reads `libraryfolders.vdf` and the app manifests as the
+  Steam client does:
+  - The VDF reader was rewritten after the Steam client's KeyValues parser. It
+    accepts unquoted tokens and comments, skips `#include` lines, decodes
+    Steam's escape sequences, evaluates conditionals such as `[$WIN64]` as the
+    client does on 64-bit Windows, returns integer values as Steam formats
+    them, and compares key names without regard to case. Text that Steam
+    rejects, such as an unterminated block or stray text after the last entry,
+    is rejected as a whole.
+  - Only the first top-level entry is used, whatever its name, but later
+    entries must still parse. A later entry used to replace the first one.
+  - `config\libraryfolders.vdf` is read when `steamapps\libraryfolders.vdf` is
+    missing, empty or malformed.
+  - Steam's own folder stands in for the `"0"` library entry, and every other
+    library block needs an absolute `path`. Library entries in the older string
+    form, accepted since 0.10.4, are ignored, as the current Steam client
+    ignores them.
+  - An app manifest counts only when its `AppID` matches and its `Universe` is
+    the public universe.
+- Release builds now link the dynamic CRT by default, as the published
+  packages already did (`RELEASE_USE_STATIC_CRT` defaults to OFF).
+- Log calls below the configured `log_level` no longer format their message or
+  evaluate their arguments. Console logging writes Unicode, so non-Latin paths
+  display correctly.
+- Signature scans with many wildcards are 5 to 20 times faster, and dearxan
+  stub analysis of Elden Ring dropped from about 3.8 s to 0.2 s with identical
+  results.
+- Release archives are now named `YAFSML-X.Y.Z.zip` and `YAFSML-X.Y.Z.7z` and
+  are built by the same `dist` target as local packages.
+  `THIRD_PARTY_NOTICES.md` now reproduces the license of every bundled
+  component.
 
 ### Fixed
 
@@ -20,6 +95,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   game, restoring it afterward so non-ANSI mod paths can load under Proton.
 - DLL injection and remote initialization now also wait for game-process exit,
   abandoning initialization when the game closes before it completes.
+- Launcher:
+  - Errors were not shown anywhere. They now appear in a message box and on
+    standard error, or in the console of the command prompt that started the
+    launcher. Failures to start or inject the game include the system error
+    text, and error 740 explains how to remove the elevation requirement.
+  - A game folder that also holds a YAFSML proxy DLL (`dinput8.dll`, `dxgi.dll`
+    or `winhttp.dll` exporting `YAFSMLInit`) made the game crash. The launcher
+    now reports the proxy and does not start the game.
+  - The game now receives its quoted path as the command line, so a path with
+    spaces is no longer split into several arguments.
+  - Injection no longer reports a loader DLL loaded at a 4 GiB-aligned address
+    as failed, finds the loaded DLL by its full path instead of its file name,
+    and no longer stops after 256 modules.
+  - Steam VDF parsing no longer corrupts the heap on unquoted values inside
+    nested blocks, and reads an escaped backslash before a closing quote and
+    braces inside quoted values correctly.
+- Fixed possible hangs when the game exits. Process exit no longer runs the
+  loader's teardown, which could wait on locks held by threads the system had
+  already ended; it only removes the ZIP extraction cache. Unloading the DLL
+  while the game runs still tears everything down.
+- Save mapping (`replace_save_filename` and
+  `replace_seamless_coop_save_filename`):
+  - A save reached through a symbolic link or junction inside the save folder
+    is now denied, with one warning, instead of opening the original save
+    through the link. Other reparse points, such as cloud-storage placeholders,
+    no longer prevent mapping.
+  - A leading-dot replacement such as `.mod.sl2` is no longer applied twice when
+    Windows routes an already redirected name again, for example `CopyFileW`
+    calling `CreateFileW`.
+  - A replacement that cannot be set up, including an invalid name or an
+    unresolved save folder, now denies access to those saves instead of using
+    the original files.
+  - Fixed an out-of-bounds read when a path was shorter than the save folder.
+- Regulation save-write protection on Sekiro and Dark Souls III again requires
+  the `test al, al; je` after the writer call, as in me3, so it no longer hooks
+  the save-regulation reader or Dark Souls III stats requests. On Elden Ring,
+  Armored Core VI and Nightreign, the regulation step no longer searches for
+  `CSRegulationManager` on every frame.
+- Asset hooks:
+  - The disk `open_file` and `DlFileOperator::SetPath` hooks looked up their
+    original function through the caller's vtable, so calls from another device
+    or file operator class failed. Each hook now keeps its own original.
+  - BootBoost no longer reports a failed mount to the game after the full mount
+    succeeded without new mounts to cache, and measures the RSA key by its
+    string length, as in me3.
+  - A regular `MountEbl` call no longer extracts and pushes back the new mounts.
+  - Override lookups no longer run while the game's device-manager lock is held,
+    and a path is replaced only when its override file is available.
+  - MountEbl detection prefers the call-site signature, as in me3.
+- The `winhttp.dll` proxy now forwards the ten WinHTTP exports it was missing,
+  so programs that import them can start.
+- `YAFSML_CONFIG` now resolves a relative path against the directory of
+  `YAFSML.dll`, accepts forward slashes, and selects `YAFSML.ini` or the
+  ModEngine2 TOML when it names a directory.
+- A directory mod whose scan fails part-way is no longer added partially, and
+  mod paths written with forward slashes, such as `/mods/a`, resolve like
+  backslash paths.
+- The dedicated heap now also falls back to the global mimalloc heap when it
+  cannot satisfy a reallocation, as allocation already did.
+- The runtime-ready trigger no longer deadlocks when an external DLL calls
+  `SteamAPI_Init` while the after-runtime work runs.
+- RTTI lookups no longer lose a vtable when a class has several and one with a
+  lower offset is found later.
+- FD4 singleton discovery now checks that the reflection object lies in `.data`.
+- The heap patch checks that the allocator table lies in one writable section,
+  and Sekiro's debug allocator getter is chosen by call frequency, as in me3.
+- dearxan:
+  - Under SteamStub, the security cookie is read from the load configuration
+    when `.text` is still encrypted.
+  - The RMX probe accepts the register form of `imul`, `syscall` is analyzed as
+    a call, interrupts and transactions end an execution path, and `pushfq` and
+    `popfq` keep the emulated stack consistent, as upstream does.
+  - Analysis stays on the calling thread while other threads are suspended, so
+    a worker cannot wait on a lock held by a suspended thread.
+  - Reading a truncated executable no longer loops forever.
+- The DLL's version resource now reports a DLL file type.
 
 ## [0.10.4] - 2026-10-02
 

@@ -49,8 +49,6 @@ bool dearxan_parse_encrypted_regions(const unsigned char *bytes, size_t length,
                                      size_t *region_count,
                                      size_t *stream_size);
 void dearxan_free_encrypted_region_list(dearxan_encrypted_region_list_t *list);
-bool dearxan_apply_relocations(const dearxan_image_t *image,
-                               dearxan_encrypted_region_list_t *list);
 bool dearxan_resolve_encrypted_region_lists(
     const dearxan_image_t *image,
     const dearxan_encrypted_region_list_t *const *lists, size_t list_count,

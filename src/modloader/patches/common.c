@@ -21,6 +21,7 @@
 
 #include "process/rtti.h"
 #include "process/pe.h"
+#include "process/rip_scan.h"
 #include "process/util.h"
 
 #include <MinHook.h>
@@ -58,7 +59,7 @@ static bool write_code_bytes(void *target, const void *bytes, size_t size) {
     return FlushInstructionCache(GetCurrentProcess(), target, size) != 0 && restored;
 }
 
-static bool patch_ime_disable() {
+static bool patch_ime_disable(void) {
     HMODULE imm32 = GetModuleHandleW(L"imm32.dll");
     void *func = NULL;
     if (imm32 == NULL) imm32 = LoadLibraryW(L"imm32.dll");
@@ -189,7 +190,7 @@ void *__cdecl ak_file_location_resolver_open(const uint64_t p1, wchar_t *path, c
     return old_ak_file_location_resolver_open(p1, path, openMode, p4, p5, p6);
 }
 
-static bool hook_wwise_archive_position_resolver() {
+static bool hook_wwise_archive_position_resolver(void) {
     void **vtable = rtti_find_vtable("DLMOW::IOHookBlocking");
     ak_file_location_resolver_open_t open_by_name = vtable == NULL ? NULL :
         ((dlmow_io_hook_blocking_vtable_t *)vtable)->open_by_name;
@@ -200,10 +201,8 @@ static bool hook_wwise_archive_position_resolver() {
         uint8_t *text_base = pe_section_data(image, text, &text_size);
         size_t call_offset = wwise_find_open_call(text_base, text_size);
         if (call_offset != SIZE_MAX) {
-            int32_t displacement;
-            void *candidate;
-            memcpy(&displacement, text_base + call_offset + 1, sizeof(displacement));
-            candidate = text_base + call_offset + 5 + displacement;
+            void *candidate = (void *)ml_rel32_target(text_base + call_offset + 1,
+                                                      (uintptr_t)(text_base + call_offset + 5));
             /* A false-positive CALL match could resolve anywhere; only accept a
              * target that lands inside .text before hooking it. */
             if (pe_section_contains_va(image, text, candidate)) {
@@ -299,10 +298,13 @@ bool common_install_file_routing(const ml_game_descriptor_t *game) {
 
     if (!want_main_save && !want_additional_save) {
         ML_LOG_INFO(L"common", L"save mapping NOT_REQUESTED");
-    } else if (!ml_save_mapping_init_root(game)) {
-        ML_LOG_WARN(L"common", L"save mapping initialization failed");
-        save_mapping_applied = false;
     } else {
+        /* Register the requested extensions even without a root: they are then
+           remembered as failed and their saves are denied, not opened as is. */
+        if (!ml_save_mapping_init_root(game)) {
+            ML_LOG_WARN(L"common", L"save mapping initialization failed");
+            save_mapping_applied = false;
+        }
         if (want_main_save &&
             !ml_save_mapping_add_extension(L".sl2", config.replaced_save_filename)) {
             ML_LOG_WARN(L"common", L"main save mapping registration failed");
@@ -394,14 +396,7 @@ void common_uninstall(void) {
         }
     }
     for (size_t i = 0; i < 2; i++) {
-        void *target = *targets[i];
-        if (target == NULL) continue;
-        MH_STATUS status = MH_RemoveHook(target);
-        if (status == MH_OK || status == MH_ERROR_NOT_CREATED) {
-            *targets[i] = NULL;
-        } else {
-            ML_LOG_WARN(L"common", L"failed to remove hook at %p: %d", target, status);
-        }
+        if (ml_hook_remove(*targets[i], L"common")) *targets[i] = NULL;
     }
     if (wwise_hook_target == NULL) old_ak_file_location_resolver_open = NULL;
 }

@@ -21,6 +21,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct ml_dl_device_s ml_dl_device_t;
 typedef struct ml_dl_file_operator_s ml_dl_file_operator_t;
 
@@ -113,8 +117,6 @@ void ml_dl_mounts_destroy(ml_dl_vfs_mounts_t *mounts, ml_stl_abi_t abi);
 void ml_dl_mounts_release(ml_dl_vfs_mounts_t *mounts);
 bool ml_dl_device_extract_new(ml_dl_device_manager_t *manager, ml_stl_abi_t abi,
                               const ml_dl_mount_snapshot_t *snapshot, ml_dl_vfs_mounts_t *mounts);
-bool ml_dl_device_restore_mounts(ml_dl_device_manager_t *manager, ml_stl_abi_t abi,
-                                 ml_dl_vfs_mounts_t *mounts);
 bool ml_dl_device_push_mounts_permanent(ml_dl_device_manager_t *manager, ml_stl_abi_t abi,
                                         ml_dl_vfs_mounts_t *mounts);
 bool ml_dl_string_clone_replace(const ml_dl_string_t *source, ml_stl_abi_t abi,
@@ -127,3 +129,7 @@ bool ml_boot_boost_cache_key(const void *data, size_t size, uint64_t key[2]);
 wchar_t *ml_boot_boost_cache_path(const wchar_t *directory, const uint64_t key[2]);
 bool ml_boot_boost_cache_load(const wchar_t *path, const uint64_t key[2], void *output, size_t output_size);
 bool ml_boot_boost_cache_store(const wchar_t *path, const uint64_t key[2], const void *data, size_t size);
+
+#ifdef __cplusplus
+}
+#endif

@@ -1,3 +1,4 @@
+#include <stdint.h>
 #include <stdio.h>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -8,6 +9,52 @@
 #include "dearxan/analysis.h"
 #include "dearxan/image.h"
 #include "dearxan/patch.h"
+
+static uint64_t digest_bytes(uint64_t hash, const void *bytes, size_t size) {
+    const unsigned char *cursor = bytes;
+    for (size_t i = 0; i < size; i++) {
+        hash ^= cursor[i];
+        hash *= UINT64_C(0x100000001b3);
+    }
+    return hash;
+}
+
+static uint64_t digest_u64(uint64_t hash, uint64_t value) {
+    return digest_bytes(hash, &value, sizeof(value));
+}
+
+/* FNV-1a over every analysis result, so refactors can be checked against a
+ * baseline on a real executable instead of only by stub count. */
+static uint64_t digest_stubs(const dearxan_image_t *image,
+                             const dearxan_stub_list_t *stubs,
+                             size_t *encrypted_count) {
+    uint64_t hash = UINT64_C(0xcbf29ce484222325);
+    *encrypted_count = 0;
+    for (size_t i = 0; i < stubs->count; i++) {
+        const dearxan_stub_info_t *stub = &stubs->items[i];
+        const dearxan_encrypted_region_list_t *list = &stub->encrypted_regions;
+        hash = digest_u64(hash, stub->test_rsp_va - image->base_va);
+        hash = digest_u64(hash, stub->context_pop_va - image->base_va);
+        hash = digest_u64(hash, stub->has_return_gadget);
+        if (stub->has_return_gadget) {
+            hash = digest_u64(hash, stub->return_gadget.stack_offset);
+            hash = digest_u64(hash, stub->return_gadget.address - image->base_va);
+        }
+        hash = digest_u64(hash, stub->has_encrypted_regions);
+        if (!stub->has_encrypted_regions) continue;
+        (*encrypted_count)++;
+        hash = digest_u64(hash, (uint64_t)list->kind);
+        hash = digest_u64(hash, list->region_count);
+        for (size_t j = 0; j < list->region_count; j++) {
+            hash = digest_u64(hash, list->regions[j].stream_offset);
+            hash = digest_u64(hash, list->regions[j].size);
+            hash = digest_u64(hash, list->regions[j].rva);
+        }
+        hash = digest_u64(hash, list->decrypted_size);
+        hash = digest_bytes(hash, list->decrypted_stream, list->decrypted_size);
+    }
+    return hash;
+}
 
 int wmain(int argc, wchar_t **argv) {
     HMODULE module;
@@ -28,6 +75,8 @@ int wmain(int argc, wchar_t **argv) {
     ULARGE_INTEGER user_start_value;
     ULARGE_INTEGER kernel_end_value;
     ULARGE_INTEGER user_end_value;
+    uint64_t digest;
+    size_t encrypted_count;
 
     if (argc != 2) {
         fwprintf(stderr, L"usage: benchmark_dearxan_analysis <game.exe>\n");
@@ -55,6 +104,7 @@ int wmain(int argc, wchar_t **argv) {
         return 1;
     }
     QueryPerformanceCounter(&analyzed);
+    digest = digest_stubs(&image, &stubs, &encrypted_count);
     if (!dearxan_image_make_sections_rwe(&image) ||
         !dearxan_apply_stub_patches(&image, &stubs, &error_message)) {
         fprintf(stderr, "patch failed: %s\n",
@@ -74,8 +124,9 @@ int wmain(int argc, wchar_t **argv) {
     kernel_end_value.HighPart = kernel_end.dwHighDateTime;
     user_end_value.LowPart = user_end.dwLowDateTime;
     user_end_value.HighPart = user_end.dwHighDateTime;
-    printf("stubs=%zu analysis_ms=%.3f patch_ms=%.3f total_ms=%.3f cpu_ms=%.3f\n",
-           stubs.count,
+    printf("stubs=%zu encrypted=%zu digest=%016llx analysis_ms=%.3f patch_ms=%.3f "
+           "total_ms=%.3f cpu_ms=%.3f\n",
+           stubs.count, encrypted_count, (unsigned long long)digest,
            1000.0 * (double)(analyzed.QuadPart - start.QuadPart) /
                (double)frequency.QuadPart,
            1000.0 * (double)(end.QuadPart - analyzed.QuadPart) /

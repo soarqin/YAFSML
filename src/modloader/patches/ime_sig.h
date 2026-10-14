@@ -11,5 +11,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Returns the conditional-branch patch site in the unique matching sequence. */
 uint8_t *ml_ime_sig_find_character_filter(uint8_t *text, size_t text_size);
+
+#ifdef __cplusplus
+}
+#endif

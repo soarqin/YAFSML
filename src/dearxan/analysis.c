@@ -6,11 +6,11 @@
  */
 
 #include "analysis.h"
+#include "util.h"
 #include "vm.h"
 
 #include <Zydis/Zydis.h>
 
-#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -27,7 +27,6 @@ typedef struct candidate_list {
     uint64_t *items;
     size_t count;
     size_t capacity;
-    bool valid;
 } candidate_list_t;
 
 typedef struct address_list {
@@ -41,16 +40,8 @@ typedef struct cfg_info {
     bool unresolved_branch;
 } cfg_info_t;
 
-typedef struct cfg_visited {
-    uint64_t address;
-    cfg_info_t info;
-} cfg_visited_t;
-
 typedef struct analysis_state {
     dearxan_vm_t vm;
-    address_list_t path;
-    size_t fork_index;
-    size_t basic_block_index;
     size_t branch_count;
     cfg_info_t cfg_info;
 } analysis_state_t;
@@ -61,9 +52,13 @@ typedef struct analysis_work {
     size_t capacity;
 } analysis_work_t;
 
+/* Open-addressed visited set keyed by instruction address. The CFG info is
+ * stored directly in the slot; `used` marks an occupied entry so that a slot
+ * holding cmov_id 0 is still distinguishable from an empty one. */
 typedef struct visited_slot {
     uint64_t address;
-    size_t index_plus_one;
+    cfg_info_t info;
+    bool used;
 } visited_slot_t;
 
 typedef struct visited_map {
@@ -150,7 +145,6 @@ typedef struct sub_state {
 typedef struct scan_state {
     const dearxan_image_t *image;
     dearxan_stub_info_t *stub;
-    uint64_t initial_rsp;
     bool has_context_pop;
     tea_state_t tea;
     rmx_state_t rmx;
@@ -169,69 +163,33 @@ typedef struct call_info {
     uint64_t return_ip;
 } call_info_t;
 
-static bool reserve_array(void **items, size_t *capacity, size_t count,
-                          size_t item_size) {
-    size_t next_capacity;
-    void *next;
-    if (count <= *capacity) return true;
-    next_capacity = *capacity == 0 ? 8 : *capacity;
-    while (next_capacity < count) {
-        if (next_capacity > SIZE_MAX / 2) return false;
-        next_capacity *= 2;
-    }
-    if (next_capacity > SIZE_MAX / item_size) return false;
-    next = realloc(*items, next_capacity * item_size);
-    if (next == NULL) return false;
-    *items = next;
-    *capacity = next_capacity;
-    return true;
-}
-
 static bool append_address(address_list_t *list, uint64_t value) {
-    if (!reserve_array((void **)&list->items, &list->capacity,
-                       list->count + 1, sizeof(*list->items))) return false;
+    if (!dearxan_reserve_array((void **)&list->items, &list->capacity,
+                               list->count + 1, sizeof(*list->items))) return false;
     list->items[list->count++] = value;
-    return true;
-}
-
-static bool clone_address_list(address_list_t *destination,
-                               const address_list_t *source) {
-    memset(destination, 0, sizeof(*destination));
-    if (source->count == 0) return true;
-    destination->items = malloc(source->count * sizeof(*source->items));
-    if (destination->items == NULL) return false;
-    memcpy(destination->items, source->items,
-           source->count * sizeof(*source->items));
-    destination->count = source->count;
-    destination->capacity = source->count;
     return true;
 }
 
 static void uninit_analysis_state(analysis_state_t *state) {
     dearxan_vm_uninit(&state->vm);
-    free(state->path.items);
     memset(state, 0, sizeof(*state));
 }
 
-static bool clone_analysis_state_with_vm(analysis_state_t *destination,
-                                         const analysis_state_t *source,
-                                         dearxan_vm_t *vm) {
+/* Move ownership of the forked VM into a child state that inherits the parent's
+ * branch count and CFG info. The per-path history lives in one buffer owned by
+ * analyze_candidate (only the current basic block is ever read), so there is
+ * nothing else to clone and this cannot fail. */
+static void init_forked_state(analysis_state_t *destination,
+                              const analysis_state_t *source,
+                              dearxan_vm_t *vm) {
     *destination = *source;
-    destination->path.items = NULL;
-    destination->path.count = 0;
-    destination->path.capacity = 0;
     destination->vm = *vm;
     memset(vm, 0, sizeof(*vm));
-    if (!clone_address_list(&destination->path, &source->path)) {
-        dearxan_vm_uninit(&destination->vm);
-        return false;
-    }
-    return true;
 }
 
 static bool push_state(analysis_work_t *work, analysis_state_t *state) {
-    if (!reserve_array((void **)&work->items, &work->capacity,
-                       work->count + 1, sizeof(*work->items))) return false;
+    if (!dearxan_reserve_array((void **)&work->items, &work->capacity,
+                               work->count + 1, sizeof(*work->items))) return false;
     work->items[work->count++] = *state;
     memset(state, 0, sizeof(*state));
     return true;
@@ -258,9 +216,8 @@ static bool collect_candidates(uint64_t va, const unsigned char *bytes,
         cursor = match + 1;
         remaining -= consumed + 1;
         if (memcmp(match, pattern, sizeof(pattern)) != 0) continue;
-        if (!reserve_array((void **)&list->items, &list->capacity,
-                           list->count + 1, sizeof(*list->items))) {
-            list->valid = false;
+        if (!dearxan_reserve_array((void **)&list->items, &list->capacity,
+                                   list->count + 1, sizeof(*list->items))) {
             return false;
         }
         list->items[list->count++] = va + (uint64_t)(match - bytes);
@@ -289,16 +246,6 @@ static bool is_direct_relative_branch(const ZydisDecodedInstruction *instruction
            operand->imm.is_relative;
 }
 
-static uint64_t ret_increment(const ZydisDecodedInstruction *instruction,
-                              const ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT]) {
-    uint64_t increment = 8;
-    if (instruction->operand_count_visible != 0 &&
-        operands[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
-        increment += operands[0].imm.value.u;
-    }
-    return increment;
-}
-
 static bool extract_call_info(const analysis_state_t *state,
                               const ZydisDecodedInstruction *instruction,
                               const ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT],
@@ -307,7 +254,7 @@ static bool extract_call_info(const analysis_state_t *state,
     memset(call, 0, sizeof(*call));
     if (!dearxan_vm_read_register(&state->vm, ZYDIS_REGISTER_RSP, &rsp)) return false;
     if (instruction->meta.category == ZYDIS_CATEGORY_RET) {
-        call->target_rsp = rsp + ret_increment(instruction, operands);
+        call->target_rsp = rsp + dearxan_vm_ret_increment(instruction, operands);
         if ((call->target_rsp & 0xf) != 8) return false;
         call->return_rsp = call->target_rsp + 8;
         call->has_target_ip = dearxan_vm_read_memory(
@@ -336,6 +283,19 @@ static bool extract_call_info(const analysis_state_t *state,
         call->has_target_ip = instruction->operand_count_visible != 0 &&
             dearxan_vm_operand_value(&state->vm, instruction, &operands[0],
                                      &call->target_ip);
+        return true;
+    }
+    if (instruction->meta.category == ZYDIS_CATEGORY_SYSCALL) {
+        /* Upstream models SYSCALL/SYSENTER as a FlowControl::Call to target 0:
+         * the stack is untouched and the return point is the next instruction.
+         * The zero target is always out of the image, so the stub walker skips
+         * the "call" and clears the volatile registers the kernel would clobber. */
+        call->target_rsp = rsp;
+        call->return_rsp = rsp;
+        call->has_target_ip = true;
+        call->target_ip = 0;
+        call->has_return_ip = true;
+        call->return_ip = state->vm.rip + instruction->length;
         return true;
     }
     return false;
@@ -502,7 +462,7 @@ static bool parse_tea_regions(const unsigned char *ciphertext, size_t available,
         }
         if (!tea_reader_varint(&reader, &size) || size == 0 ||
             rva > UINT32_MAX - size || output_offset > SIZE_MAX - size) goto fail;
-        if (!reserve_array((void **)&items, &capacity, count + 1, sizeof(*items))) goto fail;
+        if (!dearxan_reserve_array((void **)&items, &capacity, count + 1, sizeof(*items))) goto fail;
         items[count++] = (dearxan_encrypted_region_t){ output_offset, size, rva };
         rva += size;
         output_offset += size;
@@ -548,7 +508,7 @@ static bool tea_has_decrypt_va(const tea_state_t *tea, uint64_t va) {
 
 static bool append_decrypt_va(tea_state_t *tea, uint64_t va) {
     if (tea_has_decrypt_va(tea, va)) return true;
-    if (!reserve_array((void **)&tea->decrypt_vas, &tea->decrypt_capacity,
+    if (!dearxan_reserve_array((void **)&tea->decrypt_vas, &tea->decrypt_capacity,
                        tea->decrypt_count + 1, sizeof(*tea->decrypt_vas))) return false;
     tea->decrypt_vas[tea->decrypt_count++] = va;
     return true;
@@ -627,7 +587,7 @@ static void on_tea_call(scan_state_t *scan, const analysis_state_t *state,
         ? dearxan_image_read(scan->image, key_va, 16, NULL) : NULL;
     if (key == NULL) return;
     if (tea->phase == TEA_SEARCH_REGIONS) {
-        if (reserve_array((void **)&tea->keys, &tea->key_capacity,
+        if (dearxan_reserve_array((void **)&tea->keys, &tea->key_capacity,
                           tea->key_count + 1, sizeof(*tea->keys))) {
             tea->keys[tea->key_count++] = (tea_key_candidate_t){
                 decrypt_va, 0, key_va, key
@@ -636,10 +596,10 @@ static void on_tea_call(scan_state_t *scan, const analysis_state_t *state,
         }
     }
     if (!dearxan_vm_read_register(&state->vm, ZYDIS_REGISTER_RCX, &stack_va) ||
-        stack_va >= scan->initial_rsp ||
+        stack_va >= ANALYSIS_INITIAL_RSP ||
         !dearxan_vm_read_memory(&state->vm, stack_va, &block, sizeof(block))) return;
     lea = find_lea_value(scan, block);
-    if (lea == NULL || !reserve_array((void **)&tea->candidates,
+    if (lea == NULL || !dearxan_reserve_array((void **)&tea->candidates,
             &tea->candidate_capacity, tea->candidate_count + 1,
             sizeof(*tea->candidates))) return;
     tea->candidates[tea->candidate_count++] = (tea_candidate_t){
@@ -670,22 +630,31 @@ static void update_rmx(scan_state_t *scan, const analysis_state_t *state,
         parse_regions_at(scan->image, va, &rmx->regions, &rmx->region_count,
                          &rmx->stream_size);
     }
+    /* `imul edx, r/m32` points RAX at the ciphertext. Upstream accepts both the
+     * register and memory r/m forms (Code::Imul_r32_rm32), so the destination
+     * operand's addressing mode is not checked. */
     if (rmx->ciphertext == NULL && instruction->mnemonic == ZYDIS_MNEMONIC_IMUL &&
         instruction->operand_count_visible == 2 &&
         operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
         operands[0].reg.value == ZYDIS_REGISTER_EDX &&
         operands[0].size == 32 && operands[1].size == 32 &&
-        operands[1].type == ZYDIS_OPERAND_TYPE_MEMORY &&
         dearxan_vm_read_register(&state->vm, ZYDIS_REGISTER_RAX, &va)) {
         rmx->ciphertext = dearxan_image_read(scan->image, va, 4,
                                              &rmx->ciphertext_available);
     }
-    if (rmx->has_key && rmx->regions != NULL && rmx->ciphertext != NULL &&
-        build_region_list(&rmx->list, DEARXAN_DECRYPTION_RMX,
-                          &rmx->regions, &rmx->region_count, rmx->stream_size,
-                          rmx->ciphertext, rmx->ciphertext_available,
-                          NULL, rmx->key)) {
-        rmx->found = true;
+    if (rmx->has_key && rmx->regions != NULL && rmx->ciphertext != NULL) {
+        if (build_region_list(&rmx->list, DEARXAN_DECRYPTION_RMX,
+                              &rmx->regions, &rmx->region_count, rmx->stream_size,
+                              rmx->ciphertext, rmx->ciphertext_available,
+                              NULL, rmx->key)) {
+            rmx->found = true;
+        } else {
+            /* Match upstream's `regions.take()`: a failed decrypt consumes the
+             * region list so a later movzx can supply a fresh one. */
+            free(rmx->regions);
+            rmx->regions = NULL;
+            rmx->region_count = 0;
+        }
     }
 }
 
@@ -761,11 +730,11 @@ static void update_scan_state(scan_state_t *scan, const analysis_state_t *state,
         operands[1].type == ZYDIS_OPERAND_TYPE_REGISTER &&
         dearxan_vm_operand_address(&state->vm, instruction, &operands[0], &write_address) &&
         dearxan_vm_operand_value(&state->vm, instruction, &operands[1], &return_address) &&
-        write_address >= scan->initial_rsp &&
-        write_address - scan->initial_rsp < 0x400) {
+        write_address >= ANALYSIS_INITIAL_RSP &&
+        write_address - ANALYSIS_INITIAL_RSP < 0x400) {
         scan->stub->has_return_gadget = true;
         scan->stub->return_gadget.stack_offset =
-            (size_t)(write_address - scan->initial_rsp);
+            (size_t)(write_address - ANALYSIS_INITIAL_RSP);
         scan->stub->return_gadget.address = return_address;
     }
     update_rmx(scan, state, instruction, operands);
@@ -780,7 +749,7 @@ static void update_scan_state(scan_state_t *scan, const analysis_state_t *state,
         for (existing = 0; existing < scan->lea_count; existing++) {
             if (scan->leas[existing].value == value) break;
         }
-        if (existing == scan->lea_count && reserve_array((void **)&scan->leas,
+        if (existing == scan->lea_count && dearxan_reserve_array((void **)&scan->leas,
                 &scan->lea_capacity, scan->lea_count + 1, sizeof(*scan->leas))) {
             scan->leas[scan->lea_count++] = (lea_value_t){ value, va };
         } else if (existing < scan->lea_count) {
@@ -815,29 +784,16 @@ static bool is_int_2d(const ZydisDecodedInstruction *instruction,
            operands[0].imm.value.u == 0x2d;
 }
 
-static bool is_cmov(ZydisMnemonic mnemonic) {
-    return mnemonic >= ZYDIS_MNEMONIC_CMOVB && mnemonic <= ZYDIS_MNEMONIC_CMOVZ;
-}
-
-static uint64_t hash_address(uint64_t value) {
-    value ^= value >> 30;
-    value *= UINT64_C(0xbf58476d1ce4e5b9);
-    value ^= value >> 27;
-    value *= UINT64_C(0x94d049bb133111eb);
-    return value ^ (value >> 31);
-}
-
-static size_t find_visited_map(const visited_map_t *map, uint64_t address) {
+static visited_slot_t *find_visited_map(const visited_map_t *map,
+                                        uint64_t address) {
     size_t slot;
-    if (map->capacity == 0) return SIZE_MAX;
-    slot = (size_t)hash_address(address) & (map->capacity - 1);
-    while (map->slots[slot].index_plus_one != 0) {
-        if (map->slots[slot].address == address) {
-            return map->slots[slot].index_plus_one - 1;
-        }
+    if (map->capacity == 0) return NULL;
+    slot = (size_t)dearxan_hash_u64(address) & (map->capacity - 1);
+    while (map->slots[slot].used) {
+        if (map->slots[slot].address == address) return &map->slots[slot];
         slot = (slot + 1) & (map->capacity - 1);
     }
-    return SIZE_MAX;
+    return NULL;
 }
 
 static bool resize_visited_map(visited_map_t *map, size_t capacity) {
@@ -848,10 +804,10 @@ static bool resize_visited_map(visited_map_t *map, size_t capacity) {
     slots = calloc(capacity, sizeof(*slots));
     if (slots == NULL) return false;
     for (size_t i = 0; i < map->capacity; i++) {
-        if (map->slots[i].index_plus_one != 0) {
-            size_t slot = (size_t)hash_address(map->slots[i].address) &
+        if (map->slots[i].used) {
+            size_t slot = (size_t)dearxan_hash_u64(map->slots[i].address) &
                           (capacity - 1);
-            while (slots[slot].index_plus_one != 0) {
+            while (slots[slot].used) {
                 slot = (slot + 1) & (capacity - 1);
             }
             slots[slot] = map->slots[i];
@@ -863,24 +819,28 @@ static bool resize_visited_map(visited_map_t *map, size_t capacity) {
     return true;
 }
 
-static bool insert_visited_map(visited_map_t *map, uint64_t address,
-                               size_t index) {
+/* Insert `address` with its CFG info if absent and return its slot. An existing
+ * entry keeps its info. No slot pointer may be held across this call, since a
+ * resize relocates the table. Returns NULL only when a resize fails. */
+static visited_slot_t *insert_visited_map(visited_map_t *map, uint64_t address,
+                                          cfg_info_t info) {
     size_t slot;
     if (map->capacity == 0 || map->count + 1 > map->capacity / 2) {
         size_t capacity = map->capacity == 0 ? 16 : map->capacity * 2;
         if (capacity < map->capacity || !resize_visited_map(map, capacity)) {
-            return false;
+            return NULL;
         }
     }
-    slot = (size_t)hash_address(address) & (map->capacity - 1);
-    while (map->slots[slot].index_plus_one != 0) {
-        if (map->slots[slot].address == address) return true;
+    slot = (size_t)dearxan_hash_u64(address) & (map->capacity - 1);
+    while (map->slots[slot].used) {
+        if (map->slots[slot].address == address) return &map->slots[slot];
         slot = (slot + 1) & (map->capacity - 1);
     }
     map->slots[slot].address = address;
-    map->slots[slot].index_plus_one = index + 1;
+    map->slots[slot].info = info;
+    map->slots[slot].used = true;
     map->count++;
-    return true;
+    return &map->slots[slot];
 }
 
 static bool target_oob_or_visited(const dearxan_image_t *image,
@@ -888,7 +848,7 @@ static bool target_oob_or_visited(const dearxan_image_t *image,
                                   const call_info_t *call) {
     return !call->has_target_ip ||
            dearxan_image_read(image, call->target_ip, 1, NULL) == NULL ||
-           find_visited_map(visited_map, call->target_ip) != SIZE_MAX;
+           find_visited_map(visited_map, call->target_ip) != NULL;
 }
 
 static void invalidate_volatile_registers(dearxan_vm_t *vm) {
@@ -941,10 +901,13 @@ static bool analyze_candidate(const dearxan_image_t *image, uint64_t start,
                               dearxan_stub_info_t *stub, bool *fatal_error) {
     ZydisDecoder decoder;
     analysis_work_t work = { 0 };
-    cfg_visited_t *visited = NULL;
     visited_map_t visited_map = { 0 };
-    size_t visited_count = 0;
-    size_t visited_capacity = 0;
+    /* The instruction addresses of the current basic block. Only this block is
+     * ever read (to mark unresolved branches), so one buffer owned here replaces
+     * the per-fork execution-path clones: it is reset whenever a state is popped
+     * and at both fork sites, which is exactly where upstream resets the basic
+     * block index. */
+    address_list_t block = { 0 };
     size_t step_count = 0;
     uint64_t cmov_pair_gen = 0;
     size_t ignored_test_rsp_branch = 1;
@@ -960,12 +923,14 @@ static bool analyze_candidate(const dearxan_image_t *image, uint64_t start,
     memset(&scan, 0, sizeof(scan));
     scan.image = image;
     scan.stub = stub;
-    scan.initial_rsp = ANALYSIS_INITIAL_RSP;
     scan.tea.phase = TEA_SEARCH_REGIONS;
     scan.sub.phase = SUB_SEARCH_REGIONS;
     memset(&initial, 0, sizeof(initial));
     if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64,
-                                       ZYDIS_STACK_WIDTH_64))) return false;
+                                       ZYDIS_STACK_WIDTH_64))) {
+        *fatal_error = true;
+        return false;
+    }
     dearxan_vm_init(&initial.vm, image, start, ANALYSIS_INITIAL_RSP);
     {
         uint64_t initial_stack = 0x10;
@@ -989,21 +954,23 @@ static bool analyze_candidate(const dearxan_image_t *image, uint64_t start,
         ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
         call_info_t call;
         bool has_call;
-        size_t visited_index;
+        visited_slot_t *known;
         bool allow_visited = false;
         uint64_t rsp;
 
         if (!state->vm.rip_known || !decode(image, &decoder, state->vm.rip,
                                             &instruction, operands)) {
             pop_state(&work);
+            block.count = 0;
             continue;
         }
-        if (!append_address(&state->path, state->vm.rip)) {
+        if (!append_address(&block, state->vm.rip)) {
             *fatal_error = true;
             break;
         }
         if (state->branch_count == 1 && work.count - 1 == ignored_test_rsp_branch) {
             pop_state(&work);
+            block.count = 0;
             continue;
         }
         if (state->branch_count == 1 && is_cmp_rax_18(&instruction, operands)) {
@@ -1011,17 +978,17 @@ static bool analyze_candidate(const dearxan_image_t *image, uint64_t start,
         }
         if (state->branch_count == 2 && work.count - 1 == bad_cmp_rax_branch) {
             pop_state(&work);
+            block.count = 0;
             continue;
         }
 
-        visited_index = find_visited_map(&visited_map, state->vm.rip);
-        if (visited_index != SIZE_MAX) {
-            cfg_info_t *known = &visited[visited_index].info;
-            allow_visited = known->unresolved_branch;
-            known->unresolved_branch = false;
+        known = find_visited_map(&visited_map, state->vm.rip);
+        if (known != NULL) {
+            allow_visited = known->info.unresolved_branch;
+            known->info.unresolved_branch = false;
             if (instruction.meta.category != ZYDIS_CATEGORY_COND_BR &&
                 state->cfg_info.cmov_id != CFG_CMOV_DETACHED &&
-                state->cfg_info.cmov_id + 1 == known->cmov_id) {
+                state->cfg_info.cmov_id + 1 == known->info.cmov_id) {
                 is_double_stepping = true;
                 allow_visited = true;
             } else if (allow_visited && is_double_stepping) {
@@ -1030,6 +997,7 @@ static bool analyze_candidate(const dearxan_image_t *image, uint64_t start,
             }
             if (!allow_visited) {
                 pop_state(&work);
+                block.count = 0;
                 continue;
             }
         } else {
@@ -1037,17 +1005,12 @@ static bool analyze_candidate(const dearxan_image_t *image, uint64_t start,
                 is_double_stepping = false;
                 state->cfg_info.cmov_id = CFG_CMOV_DETACHED;
             }
-            if (!reserve_array((void **)&visited, &visited_capacity,
-                               visited_count + 1, sizeof(*visited))) {
-                *fatal_error = true;
-                break;
-            }
+            /* No slot pointer is retained past this insert, so a resize is safe. */
             if (!insert_visited_map(&visited_map, state->vm.rip,
-                                    visited_count)) {
+                                    state->cfg_info)) {
                 *fatal_error = true;
                 break;
             }
-            visited[visited_count++] = (cfg_visited_t){ state->vm.rip, state->cfg_info };
         }
 
         step_count++;
@@ -1061,13 +1024,14 @@ static bool analyze_candidate(const dearxan_image_t *image, uint64_t start,
         if (dearxan_vm_read_register(&state->vm, ZYDIS_REGISTER_RSP, &rsp) &&
             rsp > ANALYSIS_INITIAL_RSP) {
             pop_state(&work);
+            block.count = 0;
             continue;
         }
         if (is_int_2d(&instruction, operands)) {
             state->vm.rip += instruction.length;
             continue;
         }
-        if (is_cmov(instruction.mnemonic)) {
+        if (dearxan_vm_is_cmov(&instruction)) {
             dearxan_vm_t forked_vm;
             bool has_fork = false;
             if (!dearxan_vm_step(&state->vm, &instruction, operands,
@@ -1077,25 +1041,18 @@ static bool analyze_candidate(const dearxan_image_t *image, uint64_t start,
             }
             if (has_fork) {
                 analysis_state_t forked;
-                if (!clone_analysis_state_with_vm(&forked, state,
-                                                  &forked_vm)) {
-                    dearxan_vm_uninit(&forked_vm);
-                    *fatal_error = true;
-                    break;
-                }
+                init_forked_state(&forked, state, &forked_vm);
                 cmov_pair_gen += 3;
                 state->cfg_info.cmov_id = cmov_pair_gen;
                 forked.cfg_info.cmov_id = cmov_pair_gen + 1;
                 state->branch_count++;
                 forked.branch_count = state->branch_count;
-                state->basic_block_index = state->path.count;
-                forked.fork_index = forked.path.count;
-                forked.basic_block_index = forked.path.count;
                 if (!push_state(&work, &forked)) {
                     uninit_analysis_state(&forked);
                     *fatal_error = true;
                     break;
                 }
+                block.count = 0;
             }
             continue;
         }
@@ -1118,33 +1075,24 @@ static bool analyze_candidate(const dearxan_image_t *image, uint64_t start,
             }
             if (has_fork) {
                 analysis_state_t forked;
-                if (!clone_analysis_state_with_vm(&forked, state,
-                                                  &forked_vm)) {
-                    dearxan_vm_uninit(&forked_vm);
-                    *fatal_error = true;
-                    break;
-                }
+                init_forked_state(&forked, state, &forked_vm);
                 state->branch_count++;
                 forked.branch_count = state->branch_count;
-                state->basic_block_index = state->path.count;
-                forked.fork_index = forked.path.count;
-                forked.basic_block_index = forked.path.count;
                 if (!push_state(&work, &forked)) {
                     uninit_analysis_state(&forked);
                     *fatal_error = true;
                     break;
                 }
+                block.count = 0;
             } else if ((instruction.operand_count_visible != 0 &&
                         instruction.meta.category == ZYDIS_CATEGORY_UNCOND_BR &&
                         !is_direct_relative_branch(&instruction, &operands[0])) ||
                        instruction.meta.category == ZYDIS_CATEGORY_RET) {
                 if (!state->vm.rip_known) {
-                    size_t start_index = state->basic_block_index;
-                    if (start_index > state->path.count) start_index = 0;
-                    for (size_t i = start_index; i < state->path.count; i++) {
-                        size_t index = find_visited_map(
-                            &visited_map, state->path.items[i]);
-                        if (index != SIZE_MAX) visited[index].info.unresolved_branch = true;
+                    for (size_t i = 0; i < block.count; i++) {
+                        visited_slot_t *slot = find_visited_map(
+                            &visited_map, block.items[i]);
+                        if (slot != NULL) slot->info.unresolved_branch = true;
                     }
                 }
             }
@@ -1153,7 +1101,7 @@ static bool analyze_candidate(const dearxan_image_t *image, uint64_t start,
 
     while (work.count != 0) pop_state(&work);
     free(work.items);
-    free(visited);
+    free(block.items);
     free(visited_map.slots);
     if (!*fatal_error && !max_steps_reached && scan.has_context_pop) {
         const unsigned char *context = dearxan_image_read(
@@ -1203,9 +1151,15 @@ static DWORD WINAPI analyze_candidate_worker(void *opaque) {
     return 0;
 }
 
-bool dearxan_analyze_all_stubs(const dearxan_image_t *image,
-                               dearxan_stub_list_t *stubs,
-                               const char **error_message) {
+/* Hard ceiling on analysis worker threads. GetActiveProcessorCount/4 is clamped
+ * to this, so at most ANALYSIS_MAX_WORKERS - 1 helper threads are created
+ * alongside the calling thread; the handle array is sized to match. */
+#define ANALYSIS_MAX_WORKERS 8
+
+bool dearxan_analyze_all_stubs_with_workers(const dearxan_image_t *image,
+                                            dearxan_stub_list_t *stubs,
+                                            const char **error_message,
+                                            unsigned int max_workers) {
     candidate_list_t candidates = { 0 };
     candidate_result_t *results = NULL;
     dearxan_stub_info_t *items = NULL;
@@ -1214,16 +1168,14 @@ bool dearxan_analyze_all_stubs(const dearxan_image_t *image,
     if (stubs == NULL || image == NULL) return false;
     memset(stubs, 0, sizeof(*stubs));
     if (error_message != NULL) *error_message = NULL;
-    candidates.valid = true;
-    if (!dearxan_image_for_each_section(image, collect_candidates, &candidates) ||
-        !candidates.valid) {
+    if (!dearxan_image_for_each_section(image, collect_candidates, &candidates)) {
         free(candidates.items);
         if (error_message != NULL) *error_message = "failed to scan executable sections";
         return false;
     }
     if (candidates.count != 0) {
         candidate_work_t work;
-        HANDLE handles[MAXIMUM_WAIT_OBJECTS - 1];
+        HANDLE handles[ANALYSIS_MAX_WORKERS - 1];
         DWORD handle_count = 0;
         DWORD worker_count;
         results = calloc(candidates.count, sizeof(*results));
@@ -1241,9 +1193,14 @@ bool dearxan_analyze_all_stubs(const dearxan_image_t *image,
         work.next_index = 0;
         worker_count = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) / 4;
         if (worker_count == 0) worker_count = 1;
-        if (worker_count > 8) worker_count = 8;
+        if (worker_count > ANALYSIS_MAX_WORKERS) worker_count = ANALYSIS_MAX_WORKERS;
+        if (max_workers != 0 && worker_count > max_workers) {
+            worker_count = max_workers;
+        }
         if (worker_count > candidates.count) worker_count = (DWORD)candidates.count;
-        if (worker_count > MAXIMUM_WAIT_OBJECTS) worker_count = MAXIMUM_WAIT_OBJECTS;
+        /* Only spawn helper threads when allowed to run multi-threaded. With
+         * other threads suspended a worker could deadlock on the loader or heap
+         * lock, so callers pass max_workers == 1 to stay on this thread. */
         for (DWORD i = 1; i < worker_count; i++) {
             HANDLE thread = CreateThread(NULL, 0, analyze_candidate_worker,
                                          &work, 0, NULL);
@@ -1282,6 +1239,12 @@ bool dearxan_analyze_all_stubs(const dearxan_image_t *image,
     stubs->items = items;
     stubs->count = count;
     return true;
+}
+
+bool dearxan_analyze_all_stubs(const dearxan_image_t *image,
+                               dearxan_stub_list_t *stubs,
+                               const char **error_message) {
+    return dearxan_analyze_all_stubs_with_workers(image, stubs, error_message, 0);
 }
 
 void dearxan_free_stub_list(dearxan_stub_list_t *stubs) {

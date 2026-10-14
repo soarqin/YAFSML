@@ -9,6 +9,7 @@
 #include "singleton.h"
 
 #include "pe.h"
+#include "rip_scan.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -485,13 +486,9 @@ static bool singleton_fd4_caps(const uint8_t *text, size_t text_size, singleton_
     return false;
 }
 
+/* Every captured displacement ends its instruction. */
 static uintptr_t singleton_rip_target(const uint8_t *text, uint32_t cap) {
-    int32_t disp;
-    uintptr_t rip;
-
-    memcpy(&disp, text + cap, sizeof(disp));
-    rip = (uintptr_t)(text + cap + 4);
-    return (uintptr_t)((intptr_t)rip + (intptr_t)disp);
+    return ml_rel32_target(text + cap, (uintptr_t)(text + cap + 4));
 }
 
 static void singleton_record_derived(void *image_base, const uint8_t *text, size_t text_size,
@@ -541,8 +538,11 @@ static void singleton_record_fd4(void *image_base, const uint8_t *text, size_t t
     reflection_va = singleton_rip_target(text, cap2);
     get_name_va = singleton_rip_target(text, cap3);
 
+    /* The reflection is handed to the game's get_name, so it must be a static
+     * object in .data like the slot. */
     if ((slot_va & (sizeof(void *) - 1)) != 0 ||
         !pe_section_contains_va(image_base, data, (const void *)slot_va) ||
+        !pe_section_contains_va(image_base, data, (const void *)reflection_va) ||
         !pe_section_contains_va(image_base, text_sh, (const void *)get_name_va)) {
         return;
     }
@@ -557,25 +557,23 @@ static void singleton_record_fd4(void *image_base, const uint8_t *text, size_t t
 /* One pass over .text. singleton_candidate_at is a pure function of
  * (text, text_size, pos), so the derived and fd4 scans used to compute the same
  * result twice for every MOV_EDX; the candidate kind selects which recorder
- * consumes it. */
+ * consumes it. memchr jumps from one MOV_EDX opcode byte to the next. */
 static void singleton_scan(void *image_base, const uint8_t *text, size_t text_size,
                            const IMAGE_SECTION_HEADER *text_sh, const IMAGE_SECTION_HEADER *data,
                            const IMAGE_SECTION_HEADER *rdata) {
     const char *rdata_end = (const char *)image_base + pe_section_rva_end(rdata);
+    const uint8_t *text_end = text + text_size;
+    const uint8_t *cursor = text;
 
-    for (size_t i = 0; i < text_size; i++) {
-        singleton_candidate_t candidate;
+    while ((cursor = memchr(cursor, MOV_EDX, (size_t)(text_end - cursor))) != NULL) {
+        singleton_candidate_t candidate = singleton_candidate_at(text, text_size, (uint32_t)(cursor - text));
 
-        if (text[i] != MOV_EDX) {
-            continue;
-        }
-
-        candidate = singleton_candidate_at(text, text_size, (uint32_t)i);
         if (candidate.kind == SINGLETON_CANDIDATE_DERIVED) {
             singleton_record_derived(image_base, text, text_size, data, rdata, rdata_end, candidate);
         } else if (candidate.kind == SINGLETON_CANDIDATE_FD4) {
             singleton_record_fd4(image_base, text, text_size, text_sh, data, candidate);
         }
+        cursor++;
     }
 }
 
@@ -605,9 +603,9 @@ static void singleton_build_for_image(void *image_base) {
     singleton_scan(image_base, text, text_size, text_sh, data, rdata);
 }
 
+/* parameter is the image to scan; NULL selects the game executable. */
 static BOOL CALLBACK singleton_init_once(PINIT_ONCE init_once, PVOID parameter, PVOID *context) {
     (void)init_once;
-    (void)parameter;
     (void)context;
 
     singleton_derived_map = kh_init(singleton_slots);
@@ -615,7 +613,7 @@ static BOOL CALLBACK singleton_init_once(PINIT_ONCE init_once, PVOID parameter, 
     singleton_fd4_map = kh_init(singleton_slots);
 
     if (singleton_derived_map != NULL && singleton_partial_map != NULL && singleton_fd4_map != NULL) {
-        singleton_build_for_image(GetModuleHandleW(NULL));
+        singleton_build_for_image(parameter != NULL ? parameter : GetModuleHandleW(NULL));
     }
 
     return TRUE;
@@ -682,8 +680,10 @@ static void singleton_try_finish_fd4(void) {
 
     /* Only latch the flag once a name actually resolved: an early pass can run
      * before the game has published the reflection names, and the next lookup
-     * must retry. Both callers of singleton_find are one-shot startup paths, so
-     * the retry cost is bounded. */
+     * must retry. Until then every lookup that misses the derived map repeats
+     * this pass, and lookups are not limited to startup (a step detour can look
+     * up on every tick), so per-frame callers should resolve the slot once
+     * through singleton_find_slot and dereference it. */
     if (added) {
         InterlockedExchange(&singleton_fd4_finished, 1);
     }
@@ -705,7 +705,7 @@ static void **singleton_map_get(khash_t(singleton_slots) *map, const char *name)
     return (void **)kh_value(map, k);
 }
 
-static void **singleton_find_slot(const char *name) {
+void **singleton_find_slot(const char *name) {
     if (name == NULL) {
         return NULL;
     }
@@ -736,3 +736,10 @@ void *singleton_find(const char *name) {
     void **slot = singleton_find_slot(name);
     return slot != NULL ? *slot : NULL;
 }
+
+#ifdef ML_SINGLETON_TEST
+bool singleton_test_use_image(void *image_base) {
+    return image_base != NULL &&
+           InitOnceExecuteOnce(&singleton_once, singleton_init_once, image_base, NULL) != FALSE;
+}
+#endif

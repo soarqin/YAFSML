@@ -30,6 +30,28 @@ static bool relocation_callback(uint32_t rva, void *opaque) {
     return !state->stop;
 }
 
+/* Resolve a single region list, returning 1 if it survived relocation and the
+ * entropy filter (copying its relocated stream into `out`), 0 if it was
+ * eliminated, or -1 on failure. Replaces the removed dearxan_apply_relocations:
+ * resolution applies relocations in place before the entropy/conflict passes. */
+static int resolve_single(const dearxan_image_t *image,
+                          const dearxan_encrypted_region_list_t *list,
+                          unsigned char *out, size_t out_size) {
+    const dearxan_encrypted_region_list_t *lists[] = { list };
+    dearxan_encrypted_region_list_t *resolved = NULL;
+    size_t resolved_count = 0;
+    if (!dearxan_resolve_encrypted_region_lists(image, lists, 1, &resolved,
+                                                &resolved_count)) return -1;
+    if (resolved_count == 0) return 0;
+    if (out != NULL && out_size != 0) {
+        size_t size = resolved[0].decrypted_size < out_size
+            ? resolved[0].decrypted_size : out_size;
+        memcpy(out, resolved[0].decrypted_stream, size);
+    }
+    dearxan_free_encrypted_region_lists(resolved, resolved_count);
+    return 1;
+}
+
 static int test_image_and_sections(void) {
     unsigned char bytes[0x1000];
     const uint64_t preferred_base = UINT64_C(0x140000000);
@@ -128,16 +150,25 @@ static int test_apply_relocations(void) {
     IMAGE_BASE_RELOCATION *block;
     WORD *entry;
     dearxan_image_t image;
-    dearxan_encrypted_region_t region = { 0, 16, 0x300 };
-    unsigned char decrypted[16] = { 0 };
+    dearxan_encrypted_region_t region = { 0, 64, 0x300 };
+    /* Low-entropy plaintext so the region survives the entropy filter in
+     * dearxan_resolve_encrypted_region_lists; only the relocation pointer at
+     * offset 4 varies. */
+    unsigned char decrypted[64] = { 0 };
     dearxan_encrypted_region_list_t list = {
         DEARXAN_DECRYPTION_TEA, &region, 1, decrypted, sizeof(decrypted)
     };
+    unsigned char output[sizeof(decrypted)];
     uint64_t value = preferred_base + 0x500;
     uint64_t relocated;
 
     section->VirtualAddress = 0x200;
     section->Misc.VirtualSize = 0x700;
+    /* The image bytes behind the region must be high entropy so the decrypted
+     * stream looks "less random" and is kept rather than eliminated. */
+    for (size_t i = 0; i < region.size; i++) {
+        bytes[0x300 + i] = (unsigned char)i;
+    }
     nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress = 0x700;
     nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size = 10;
     block = (IMAGE_BASE_RELOCATION *)(bytes + 0x700);
@@ -148,13 +179,14 @@ static int test_apply_relocations(void) {
     memcpy(decrypted + 4, &value, sizeof(value));
 
     EXPECT_TRUE(dearxan_image_from_module(bytes, &image));
-    EXPECT_TRUE(dearxan_apply_relocations(&image, &list));
-    memcpy(&relocated, decrypted + 4, sizeof(relocated));
+    EXPECT_EQ(resolve_single(&image, &list, output, sizeof(output)), 1);
+    memcpy(&relocated, output + 4, sizeof(relocated));
     EXPECT_EQ(relocated, image.base_va + 0x500);
 
+    /* A relocation that lands outside the image eliminates the list. */
     value = preferred_base + sizeof(bytes) + 1;
     memcpy(decrypted + 4, &value, sizeof(value));
-    EXPECT_TRUE(!dearxan_apply_relocations(&image, &list));
+    EXPECT_EQ(resolve_single(&image, &list, NULL, 0), 0);
     return 0;
 }
 
@@ -164,18 +196,25 @@ static int test_preferred_base_from_file(void) {
     const uint64_t preferred_base = UINT64_C(0x140000000);
     IMAGE_NT_HEADERS64 *nt;
     IMAGE_BASE_RELOCATION *block;
-    dearxan_encrypted_region_t region = { 0, 16, 0x300 };
-    unsigned char decrypted[16] = { 0 };
+    dearxan_encrypted_region_t region = { 0, 64, 0x300 };
+    unsigned char decrypted[64] = { 0 };
     dearxan_encrypted_region_list_t list = {
         DEARXAN_DECRYPTION_TEA, &region, 1, decrypted, sizeof(decrypted)
     };
+    unsigned char output[sizeof(decrypted)];
     uint64_t value = preferred_base + 0x500;
     wchar_t path[MAX_PATH];
     HANDLE file;
     DWORD written;
     dearxan_image_t image;
 
-    nt = dearxan_fixture_init_pe(bytes, sizeof(bytes), preferred_base, 0x200, 0);
+    nt = dearxan_fixture_init_pe(bytes, sizeof(bytes), preferred_base, 0x200, 1);
+    {
+        IMAGE_SECTION_HEADER *section = dearxan_fixture_sections(nt);
+        section->VirtualAddress = 0x200;
+        section->Misc.VirtualSize = 0x700;
+    }
+    for (size_t i = 0; i < region.size; i++) bytes[0x300 + i] = (unsigned char)i;
     nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress = 0x700;
     nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size = 10;
     block = (IMAGE_BASE_RELOCATION *)(bytes + 0x700);
@@ -199,9 +238,37 @@ static int test_preferred_base_from_file(void) {
     EXPECT_TRUE(dearxan_image_set_preferred_base_from_file(&image, path));
     EXPECT_EQ(image.preferred_base, preferred_base);
     image.base_va = actual_base;
-    EXPECT_TRUE(dearxan_apply_relocations(&image, &list));
-    memcpy(&value, decrypted + 4, sizeof(value));
+    EXPECT_EQ(resolve_single(&image, &list, output, sizeof(output)), 1);
+    memcpy(&value, output + 4, sizeof(value));
     EXPECT_EQ(value, actual_base + 0x500);
+    DeleteFileW(path);
+    return 0;
+}
+
+/* A truncated file whose e_lfanew points past EOF must terminate (returning
+ * false) rather than growing the read buffer forever. */
+static int test_truncated_file(void) {
+    unsigned char bytes[0x80] = { 0 };
+    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)bytes;
+    dearxan_image_t image = { bytes, sizeof(bytes),
+                              UINT64_C(0x140000000), UINT64_C(0x140000000), 0 };
+    wchar_t path[MAX_PATH];
+    HANDLE file;
+    DWORD written;
+
+    dos->e_magic = IMAGE_DOS_SIGNATURE;
+    dos->e_lfanew = 0x4000; /* far beyond the 0x80-byte file */
+    EXPECT_TRUE(GetTempPathW(MAX_PATH, path) != 0);
+    EXPECT_TRUE(GetTempFileNameW(path, L"dxn", 0, path) != 0);
+    file = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                       FILE_ATTRIBUTE_NORMAL, NULL);
+    EXPECT_TRUE(file != INVALID_HANDLE_VALUE);
+    EXPECT_TRUE(WriteFile(file, bytes, sizeof(bytes), &written, NULL));
+    EXPECT_EQ(written, sizeof(bytes));
+    CloseHandle(file);
+
+    EXPECT_TRUE(!dearxan_image_set_preferred_base_from_file(&image, path));
+    EXPECT_EQ(image.preferred_base, UINT64_C(0x140000000));
     DeleteFileW(path);
     return 0;
 }
@@ -227,6 +294,7 @@ int main(void) {
     if (test_image_and_sections() != 0 || test_relocations() != 0 ||
         test_apply_relocations() != 0 ||
         test_preferred_base_from_file() != 0 ||
+        test_truncated_file() != 0 ||
         test_invalid_headers() != 0) return 1;
     printf("smoke_dearxan_image: all tests passed\n");
     return 0;

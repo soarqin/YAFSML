@@ -52,21 +52,6 @@ KHASH_MAP_INIT_STR(rtti_vtables, rtti_vtable_entry_t)
 static INIT_ONCE rtti_once = INIT_ONCE_STATIC_INIT;
 static khash_t(rtti_vtables) *rtti_map = NULL;
 
-void rtti_vtable_list_insert(rtti_vtable_list_t *list, void *vtable, uint32_t offset, uint32_t *offsets) {
-    size_t index;
-    if (list == NULL || vtable == NULL || offsets == NULL) return;
-    for (index = 0; index < list->count; index++) {
-        if (list->items[index] == vtable) return;
-        if (offset < offsets[index]) break;
-    }
-    if (list->count == list->capacity) return;
-    memmove(&list->items[index + 1], &list->items[index], (list->count - index) * sizeof(*list->items));
-    memmove(&offsets[index + 1], &offsets[index], (list->count - index) * sizeof(*offsets));
-    list->items[index] = vtable;
-    offsets[index] = offset;
-    list->count++;
-}
-
 static char *local_strdup_a(const char *s) {
     size_t len;
     char *copy;
@@ -103,21 +88,22 @@ static bool read_bounded_cstr(const char *s, const char *end, char *out, size_t 
     return true;
 }
 
-static void rtti_insert(const char *class_name, void *vtable, uint32_t offset) {
+/* Keeps each class's vtables ordered by offset; the map value is the head. */
+static void rtti_insert(khash_t(rtti_vtables) *map, const char *class_name, void *vtable, uint32_t offset) {
     khiter_t k;
     int ret;
 
-    if (rtti_map == NULL || class_name == NULL || vtable == NULL) {
+    if (map == NULL || class_name == NULL || vtable == NULL) {
         return;
     }
 
-    k = kh_put(rtti_vtables, rtti_map, class_name, &ret);
+    k = kh_put(rtti_vtables, map, class_name, &ret);
     if (ret < 0) {
         return;
     }
 
     if (ret == 0) {
-        rtti_vtable_entry_t *entry = &kh_value(rtti_map, k);
+        rtti_vtable_entry_t *entry = &kh_value(map, k);
         rtti_vtable_entry_t *next;
         for (next = entry; next != NULL; next = next->next) {
             if (next->vtable == vtable) return;
@@ -128,11 +114,13 @@ static void rtti_insert(const char *class_name, void *vtable, uint32_t offset) {
         next->offset = offset;
         next->next = NULL;
         if (offset < entry->offset) {
+            /* Move the old head into the new node and take its place. */
             next->vtable = entry->vtable;
             next->offset = entry->offset;
             next->next = entry->next;
             entry->offset = offset;
             entry->vtable = vtable;
+            entry->next = next;
         } else {
             while (entry->next != NULL && entry->next->offset <= offset) entry = entry->next;
             next->next = entry->next;
@@ -141,14 +129,37 @@ static void rtti_insert(const char *class_name, void *vtable, uint32_t offset) {
         return;
     }
 
-    kh_key(rtti_map, k) = local_strdup_a(class_name);
-    if (kh_key(rtti_map, k) == NULL) {
-        kh_del(rtti_vtables, rtti_map, k);
+    kh_key(map, k) = local_strdup_a(class_name);
+    if (kh_key(map, k) == NULL) {
+        kh_del(rtti_vtables, map, k);
         return;
     }
-    kh_value(rtti_map, k).vtable = vtable;
-    kh_value(rtti_map, k).offset = offset;
-    kh_value(rtti_map, k).next = NULL;
+    kh_value(map, k).vtable = vtable;
+    kh_value(map, k).offset = offset;
+    kh_value(map, k).next = NULL;
+}
+
+static const rtti_vtable_entry_t *rtti_map_get(khash_t(rtti_vtables) *map, const char *class_name) {
+    khiter_t k;
+
+    if (map == NULL || class_name == NULL) {
+        return NULL;
+    }
+
+    k = kh_get(rtti_vtables, map, class_name);
+    return k != kh_end(map) ? &kh_value(map, k) : NULL;
+}
+
+static size_t rtti_entry_count(const rtti_vtable_entry_t *entry) {
+    size_t count = 0;
+
+    for (; entry != NULL; entry = entry->next) count++;
+    return count;
+}
+
+static void *rtti_entry_at(const rtti_vtable_entry_t *entry, size_t index) {
+    while (entry != NULL && index-- != 0) entry = entry->next;
+    return entry != NULL ? entry->vtable : NULL;
 }
 
 static void rtti_build_for_image(void *image_base) {
@@ -206,7 +217,7 @@ static void rtti_build_for_image(void *image_base) {
             continue;
         }
 
-        rtti_insert(demangled, &ptrs[i + 1], col->offset);
+        rtti_insert(rtti_map, demangled, &ptrs[i + 1], col->offset);
     }
 }
 
@@ -228,36 +239,56 @@ void *rtti_find_vtable(const char *class_name) {
 }
 
 size_t rtti_vtable_count(const char *class_name) {
-    khiter_t k;
-    size_t count = 0;
-
     if (class_name == NULL) {
         return 0;
     }
 
-    if (!InitOnceExecuteOnce(&rtti_once, rtti_init_once, NULL, NULL) || rtti_map == NULL) {
+    if (!InitOnceExecuteOnce(&rtti_once, rtti_init_once, NULL, NULL)) {
         return 0;
     }
 
-    k = kh_get(rtti_vtables, rtti_map, class_name);
-    if (k == kh_end(rtti_map)) {
-        return 0;
-    }
-
-    for (rtti_vtable_entry_t *entry = &kh_value(rtti_map, k); entry != NULL; entry = entry->next) count++;
-    return count;
+    return rtti_entry_count(rtti_map_get(rtti_map, class_name));
 }
 
 void *rtti_find_vtable_at(const char *class_name, size_t index) {
-    khiter_t k;
-    rtti_vtable_entry_t *entry;
-
     if (class_name == NULL) return NULL;
-    if (!InitOnceExecuteOnce(&rtti_once, rtti_init_once, NULL, NULL) || rtti_map == NULL) return NULL;
-    k = kh_get(rtti_vtables, rtti_map, class_name);
-    if (k == kh_end(rtti_map)) return NULL;
-
-    entry = &kh_value(rtti_map, k);
-    while (entry != NULL && index-- != 0) entry = entry->next;
-    return entry != NULL ? entry->vtable : NULL;
+    if (!InitOnceExecuteOnce(&rtti_once, rtti_init_once, NULL, NULL)) return NULL;
+    return rtti_entry_at(rtti_map_get(rtti_map, class_name), index);
 }
+
+#ifdef ML_RTTI_TEST
+void *rtti_test_map_create(void) {
+    return kh_init(rtti_vtables);
+}
+
+void rtti_test_map_destroy(void *map) {
+    khash_t(rtti_vtables) *vtables = map;
+
+    if (vtables == NULL) return;
+    for (khiter_t k = kh_begin(vtables); k != kh_end(vtables); ++k) {
+        rtti_vtable_entry_t *entry;
+
+        if (!kh_exist(vtables, k)) continue;
+        entry = kh_value(vtables, k).next;
+        while (entry != NULL) {
+            rtti_vtable_entry_t *next = entry->next;
+            LocalFree(entry);
+            entry = next;
+        }
+        LocalFree((void *)kh_key(vtables, k));
+    }
+    kh_destroy(rtti_vtables, vtables);
+}
+
+void rtti_test_insert(void *map, const char *class_name, void *vtable, uint32_t offset) {
+    rtti_insert(map, class_name, vtable, offset);
+}
+
+size_t rtti_test_vtable_count(void *map, const char *class_name) {
+    return rtti_entry_count(rtti_map_get(map, class_name));
+}
+
+void *rtti_test_find_vtable_at(void *map, const char *class_name, size_t index) {
+    return rtti_entry_at(rtti_map_get(map, class_name), index);
+}
+#endif

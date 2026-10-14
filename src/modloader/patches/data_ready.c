@@ -96,11 +96,8 @@ static void sprj_step_hooked(void *this_ptr, float time, void *argument) {
     InterlockedDecrement(&hook_active);
 }
 
-static bool pin_own_module(void *address) {
-    HMODULE module;
-    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                           GET_MODULE_HANDLE_EX_FLAG_PIN,
-                           (LPCWSTR)(uintptr_t)address, &module)) return true;
+static bool pin_own_module(void) {
+    if (ml_hook_pin_module()) return true;
     ML_LOG_WARN(L"data-ready", L"could not pin the data-ready hook module");
     return false;
 }
@@ -116,7 +113,7 @@ static bool install_named_step(const ml_game_descriptor_t *game) {
                     game->data_ready_step_name);
         return false;
     }
-    if (!pin_own_module((void *)(uintptr_t)named_step_hooked)) return false;
+    if (!pin_own_module()) return false;
     trigger_label = game->data_ready_step_name;
     result = ml_hook_install(step, named_step_hooked, (void **)&old_named_step);
     if (result != ML_HOOK_APPLIED) {
@@ -144,7 +141,7 @@ static bool install_sprj_param_step(const ml_game_descriptor_t *game) {
     sprj_step_range_t table_ranges[sizeof(table_section_names) / sizeof(table_section_names[0])];
     size_t table_range_count = 0;
     size_t vtable_count;
-    sprj_step_table_t table;
+    sprj_step_table_t table = { 0 };
     ml_hook_result_t result;
     bool resolved = false;
 
@@ -185,7 +182,7 @@ static bool install_sprj_param_step(const ml_game_descriptor_t *game) {
                     game->data_ready_class);
         return false;
     }
-    if (!pin_own_module((void *)(uintptr_t)sprj_step_hooked)) return false;
+    if (!pin_own_module()) return false;
     sprj_index_offset = table.index_offset;
     trigger_label = L"ParamStep wait step";
     result = ml_hook_install(table.second_step, sprj_step_hooked, (void **)&old_sprj_step);
@@ -221,25 +218,17 @@ bool ml_data_ready_install(const ml_game_descriptor_t *game) {
 }
 
 bool ml_data_ready_uninstall(void) {
-    MH_STATUS status;
-    bool result = true;
     void *target = hook_target;
 
     if (target != NULL) {
+        bool disabled;
         InterlockedExchange(&hook_shutting_down, 1);
         AcquireSRWLockExclusive(&hook_lock);
-        status = MH_DisableHook(target);
-        if (status != MH_OK && status != MH_ERROR_DISABLED && status != MH_ERROR_NOT_CREATED) {
-            ML_LOG_WARN(L"data-ready", L"failed to disable hook at %p: %d", target, status);
-            result = false;
-        }
+        disabled = ml_hook_disable(target, L"data-ready");
         ReleaseSRWLockExclusive(&hook_lock);
         while (InterlockedCompareExchange(&hook_active, 0, 0) != 0) Sleep(0);
-        status = MH_RemoveHook(target);
-        if (status != MH_OK && status != MH_ERROR_NOT_CREATED) {
-            ML_LOG_WARN(L"data-ready", L"failed to remove hook at %p: %d", target, status);
-            result = false;
-        }
+        /* A hook that is still in place keeps calling its original. */
+        if (!disabled || !ml_hook_remove(target, L"data-ready")) return false;
     }
     hook_target = NULL;
     old_named_step = NULL;
@@ -248,5 +237,5 @@ bool ml_data_ready_uninstall(void) {
     trigger_label = NULL;
     InterlockedExchange(&hook_shutting_down, 0);
     InterlockedExchange(&phase_reached, 0);
-    return result;
+    return true;
 }

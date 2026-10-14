@@ -105,17 +105,19 @@ static bool manager_valid(void *image_base, const IMAGE_SECTION_HEADER *data,
     if (!vector_valid(&manager->devices, abi, allocator) || !vector_valid(&manager->spis, abi, allocator) ||
         !vector_valid(&manager->virtual_roots, abi, allocator) ||
         !vector_valid(&manager->bnd3_mounts, abi, allocator) || !vector_valid(&manager->bnd4_mounts, abi, allocator)) return false;
-    if (manager->disk_device == NULL || manager->disk_device->vtable == NULL ||
-        !pointer_in_section(image_base, rdata, manager->disk_device->vtable)) return false;
-    return manager->bnd3_spi != NULL && manager->bnd4_spi != NULL &&
-           pointer_in_section(image_base, rdata, manager->mutex_vtable);
+    /* Every candidate pointer in .data gets here; dereference only last. */
+    if (manager->bnd3_spi == NULL || manager->bnd4_spi == NULL ||
+        !pointer_in_section(image_base, rdata, manager->mutex_vtable) ||
+        manager->disk_device == NULL || ((uintptr_t)manager->disk_device & (sizeof(void *) - 1)) != 0) return false;
+    return manager->disk_device->vtable != NULL &&
+           pointer_in_section(image_base, rdata, manager->disk_device->vtable);
 }
 
 ml_dl_device_manager_t *ml_dl_device_manager_find(void *image_base, ml_stl_abi_t abi) {
     const IMAGE_SECTION_HEADER *data;
     const IMAGE_SECTION_HEADER *rdata;
     uintptr_t *pointers;
-    size_t size;
+    size_t size = 0;
     if (image_base == NULL) return NULL;
     data = pe_section_by_name(image_base, ".data");
     rdata = pe_section_by_name(image_base, ".rdata");
@@ -441,44 +443,6 @@ bool ml_dl_device_extract_new(ml_dl_device_manager_t *manager, ml_stl_abi_t abi,
     return true;
 }
 
-bool ml_dl_device_restore_mounts(ml_dl_device_manager_t *manager, ml_stl_abi_t abi,
-                                 ml_dl_vfs_mounts_t *mounts) {
-    size_t device_count;
-    size_t mount_count;
-    size_t required_devices;
-    size_t required_mounts;
-    if (manager == NULL || mounts == NULL) return false;
-    device_count = ml_dl_vector_count(&manager->devices, abi, sizeof(ml_dl_device_t *));
-    mount_count = ml_dl_vector_count(&manager->bnd4_mounts, abi, sizeof(ml_dl_virtual_mount_t));
-    if (mounts->count == 0) return true;
-    if (mounts->count > SIZE_MAX - device_count || mounts->count > SIZE_MAX - mount_count) return false;
-    required_devices = device_count + mounts->count;
-    required_mounts = mount_count + mounts->count;
-    if (!vector_reserve(&manager->devices, abi, required_devices, sizeof(ml_dl_device_t *)) ||
-        !vector_reserve(&manager->bnd4_mounts, abi, required_mounts, sizeof(ml_dl_virtual_mount_t))) return false;
-    void *devices_allocator;
-    void *devices_first;
-    void *devices_last;
-    void *devices_end;
-    void *mounts_allocator;
-    void *mounts_first;
-    void *mounts_last;
-    void *mounts_end;
-    if (!vector_fields(&manager->devices, abi, &devices_allocator, &devices_first, &devices_last, &devices_end) ||
-        !vector_fields(&manager->bnd4_mounts, abi, &mounts_allocator, &mounts_first, &mounts_last, &mounts_end)) return false;
-    for (size_t i = 0; i < mounts->count; i++) {
-        ((ml_dl_device_t **)devices_first)[device_count + i] = mounts->items[i].device;
-        ((ml_dl_virtual_mount_t *)mounts_first)[mount_count + i] = mounts->items[i];
-    }
-    vector_set(&manager->devices, abi, devices_first,
-               (uint8_t *)devices_first + required_devices * sizeof(ml_dl_device_t *), devices_end);
-    vector_set(&manager->bnd4_mounts, abi, mounts_first,
-               (uint8_t *)mounts_first + required_mounts * sizeof(ml_dl_virtual_mount_t), mounts_end);
-    ml_mem_free(mounts->items);
-    memset(mounts, 0, sizeof(*mounts));
-    return true;
-}
-
 void ml_dl_mounts_destroy(ml_dl_vfs_mounts_t *mounts, ml_stl_abi_t abi) {
     if (mounts == NULL) return;
     for (size_t i = 0; i < mounts->count; i++) ml_dl_string_destroy(&mounts->items[i].root, abi);
@@ -672,14 +636,11 @@ bool ml_boot_boost_cache_store(const wchar_t *path, const uint64_t key[2], const
     if (temporary == NULL) return false;
     _snwprintf(temporary, (size_t)temporary_length + 1, L"%ls.%08lx.%08lx.tmp", path,
                GetCurrentProcessId(), GetCurrentThreadId());
-    bound = mz_compressBound(size);
+    bound = mz_compressBound((mz_ulong)size);
     compressed = ml_mem_alloc(0, bound);
     if (compressed == NULL) { ml_mem_free(temporary); return false; }
-    {
-        compressed_size = tdefl_compress_mem_to_mem(compressed, bound, data, size,
-            tdefl_create_comp_flags_from_zip_params(7, -MZ_DEFAULT_WINDOW_BITS, MZ_DEFAULT_STRATEGY));
-        if (compressed_size == 0) goto done;
-    }
+    compressed_size = tdefl_compress_mem_to_mem(compressed, bound, data, size,
+        tdefl_create_comp_flags_from_zip_params(7, -MZ_DEFAULT_WINDOW_BITS, MZ_DEFAULT_STRATEGY));
     if (compressed_size == 0 || compressed_size > MAXDWORD) goto done;
     memset(&header, 0, sizeof(header));
     memcpy(header.magic, boot_boost_cache_magic, sizeof(header.magic));

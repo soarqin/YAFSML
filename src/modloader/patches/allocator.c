@@ -6,10 +6,10 @@
 #include "modloader/mimalloc_allocator.h"
 
 #include "process/image.h"
+#include "process/pe.h"
+#include "process/rip_scan.h"
 #include "process/rtti.h"
 #include "process/scanner.h"
-
-#include <MinHook.h>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -28,8 +28,7 @@ typedef struct cs_memory_vtable_s {
 static bool system_allocator_hook_installed;
 
 static bool remove_allocator_hook(void *target) {
-    MH_STATUS status = target == NULL ? MH_OK : MH_RemoveHook(target);
-    return status == MH_OK || status == MH_ERROR_NOT_CREATED;
+    return ml_hook_remove(target, L"allocator");
 }
 
 static bool heap_allocator_failed(const ml_game_descriptor_t *game, const wchar_t *stage) {
@@ -52,7 +51,7 @@ static void __cdecl allocator_noop(void *this_ptr) {
 }
 
 static void **rip_target(uint8_t *instruction) {
-    return (void **)(instruction + 7 + *(int32_t *)(instruction + 3));
+    return (void **)ml_rel32_target(instruction + 3, (uintptr_t)instruction + 7);
 }
 
 static void **find_last_table_entry(void *image, size_t image_size, ml_allocator_strategy_t strategy) {
@@ -76,15 +75,34 @@ static void **find_last_table_entry(void *image, size_t image_size, ml_allocator
     return last;
 }
 
+/* The writable image section holding `address`, or NULL. */
+static const IMAGE_SECTION_HEADER *writable_section_of(void *image, const void *address) {
+    const IMAGE_NT_HEADERS64 *nt = pe_nt_headers(image);
+    const IMAGE_SECTION_HEADER *section;
+    if (nt == NULL) return NULL;
+    section = IMAGE_FIRST_SECTION(nt);
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; i++, section++) {
+        if ((section->Characteristics & IMAGE_SCN_MEM_WRITE) != 0 &&
+            pe_section_contains_va(image, section, address)) return section;
+    }
+    return NULL;
+}
+
 static bool allocator_table_range(const ml_game_descriptor_t *game, void *image, size_t image_size,
                                   void ***first_out, void ***last_out) {
     uint8_t *first_match = sig_scan(image, image_size,
         "48 89 05 ?? ?? ?? ?? 4C 8B C0 BA 08 00 00 00 8D 4A 08");
     void **first = first_match != NULL ? rip_target(first_match) : NULL;
     void **last = find_last_table_entry(image, image_size, game->allocator_strategy);
+    const IMAGE_SECTION_HEADER *section;
     if (first_out != NULL) *first_out = first;
     if (last_out != NULL) *last_out = last;
-    return first != NULL && last != NULL && first <= last;
+    if (first == NULL || last == NULL || first > last) return false;
+    /* The whole range is overwritten, so a false signature match must not reach
+     * outside the one writable section holding the table (about 20 entries). */
+    section = writable_section_of(image, first);
+    return section != NULL && last - first < 256 &&
+           (uintptr_t)(last + 1) <= (uintptr_t)image + pe_section_rva_end(section);
 }
 
 static cs_memory_vtable_t *find_cs_memory_vtable(void *image, size_t image_size) {
@@ -92,7 +110,7 @@ static cs_memory_vtable_t *find_cs_memory_vtable(void *image, size_t image_size)
         "E8 ?? ?? ?? ?? 90 48 8D 05 ?? ?? ?? ?? 48 89 03 C6 83 ?? 02 00 00 00 "
         "48 8B C3 48 83 C4 ?? 5B C3");
     if (match == NULL) return NULL;
-    return (cs_memory_vtable_t *)(match + 13 + *(int32_t *)(match + 9));
+    return (cs_memory_vtable_t *)ml_rel32_target(match + 9, (uintptr_t)match + 13);
 }
 
 static bool fill_allocator_table(void **first, void **last) {
@@ -106,18 +124,51 @@ static bool fill_allocator_table(void **first, void **last) {
     return true;
 }
 
+/* Sekiro has several getter calls with this shape; like me3, take the most
+ * frequent call target in .text (the highest address among ties). */
+static void *most_frequent_sekiro_debug_getter(void *image) {
+    static const char pattern[] =
+        "E8 ?? ?? ?? ?? 48 89 44 24 ?? 4C 8B C0 BA 08 00 00 00 B9 90 00 00 00 E8 ?? ?? ?? ??";
+    const size_t pattern_size = 28;
+    const IMAGE_SECTION_HEADER *text = pe_section_by_name(image, ".text");
+    size_t remaining = 0;
+    uint8_t *cursor = text == NULL ? NULL : pe_section_data(image, text, &remaining);
+    uintptr_t targets[64];
+    size_t counts[64];
+    size_t distinct = 0;
+    uintptr_t best = 0;
+    size_t best_count = 0;
+    while (cursor != NULL && remaining >= pattern_size) {
+        uint8_t *match = sig_scan(cursor, remaining, pattern);
+        uintptr_t target;
+        size_t i;
+        if (match == NULL) break;
+        target = ml_rel32_target(match + 1, (uintptr_t)match + 5);
+        for (i = 0; i < distinct && targets[i] != target; i++) {}
+        if (i == distinct && distinct < sizeof(targets) / sizeof(targets[0])) {
+            targets[distinct] = target;
+            counts[distinct++] = 0;
+        }
+        if (i < distinct) counts[i]++;
+        remaining -= (size_t)(match + pattern_size - cursor);
+        cursor = match + pattern_size;
+    }
+    for (size_t i = 0; i < distinct; i++) {
+        if (counts[i] > best_count || (counts[i] == best_count && targets[i] > best)) {
+            best = targets[i];
+            best_count = counts[i];
+        }
+    }
+    return (void *)best;
+}
+
 static void *find_debug_allocator_target(const ml_game_descriptor_t *game, void *image, size_t image_size) {
-    uint8_t *match = NULL;
     if (game->allocator_strategy == ML_ALLOCATOR_STRATEGY_DARK_SOULS_3) {
-        match = sig_scan(image, image_size,
+        uint8_t *match = sig_scan(image, image_size,
             "48 8B 1D ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B D0 45 33 C0 48 8B CB E8 ?? ?? ?? ?? E8 ?? ?? ?? ??");
-        return match == NULL ? NULL : match + 19 + *(int32_t *)(match + 15);
+        return match == NULL ? NULL : (void *)ml_rel32_target(match + 15, (uintptr_t)match + 19);
     }
-    if (game->allocator_strategy == ML_ALLOCATOR_STRATEGY_SEKIRO) {
-        match = sig_scan(image, image_size,
-            "E8 ?? ?? ?? ?? 48 89 44 24 ?? 4C 8B C0 BA 08 00 00 00 B9 90 00 00 00 E8 ?? ?? ?? ??");
-        return match == NULL ? NULL : match + 5 + *(int32_t *)(match + 1);
-    }
+    if (game->allocator_strategy == ML_ALLOCATOR_STRATEGY_SEKIRO) return most_frequent_sekiro_debug_getter(image);
     return NULL;
 }
 
@@ -134,7 +185,7 @@ bool ml_allocator_install_before_main(const ml_game_descriptor_t *game) {
         ML_LOG_WARN(L"allocator", L"system allocator getter SIGNATURE_NOT_FOUND for %ls", game->title);
         return false;
     }
-    target = match + 25 + *(int32_t *)(match + 21);
+    target = (void *)ml_rel32_target(match + 21, (uintptr_t)match + 25);
     system_allocator_hook_installed = ml_hook_install(target, get_system_allocator, NULL) == ML_HOOK_APPLIED;
     ml_log_write(system_allocator_hook_installed ? ML_LOG_LEVEL_INFO : ML_LOG_LEVEL_WARN,
                  L"allocator", system_allocator_hook_installed

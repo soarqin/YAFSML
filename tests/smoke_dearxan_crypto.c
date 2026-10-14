@@ -183,6 +183,50 @@ static int test_region_list_resolution(void) {
     return 0;
 }
 
+/* Two region lists that both clear the entropy filter but cover the same RVA
+ * must be resolved by conflict: the lower-entropy stream is kept and the other
+ * eliminated. */
+static int test_region_conflict_sweep(void) {
+    unsigned char image_bytes[0x1000];
+    unsigned char zero_stream[64] = { 0 };
+    unsigned char alternating_stream[64];
+    IMAGE_NT_HEADERS64 *nt = dearxan_fixture_init_pe(
+        image_bytes, sizeof(image_bytes), UINT64_C(0x140000000), 0x200, 1);
+    IMAGE_SECTION_HEADER *section = dearxan_fixture_sections(nt);
+    dearxan_image_t image;
+    dearxan_encrypted_region_t low_region = { 0, 64, 0x300 };
+    dearxan_encrypted_region_t high_region = { 0, 64, 0x300 };
+    dearxan_encrypted_region_list_t low = {
+        DEARXAN_DECRYPTION_SUB, &low_region, 1, zero_stream, sizeof(zero_stream)
+    };
+    dearxan_encrypted_region_list_t high = {
+        DEARXAN_DECRYPTION_RMX, &high_region, 1,
+        alternating_stream, sizeof(alternating_stream)
+    };
+    const dearxan_encrypted_region_list_t *lists[] = { &high, &low };
+    dearxan_encrypted_region_list_t *resolved = NULL;
+    size_t resolved_count = 99;
+
+    section->VirtualAddress = 0x200;
+    section->Misc.VirtualSize = 0x700;
+    /* High-entropy image bytes so both decrypted streams look non-random. */
+    for (size_t i = 0; i < low_region.size; i++) {
+        image_bytes[0x300 + i] = (unsigned char)i;
+    }
+    for (size_t i = 0; i < sizeof(alternating_stream); i++) {
+        alternating_stream[i] = (unsigned char)(i & 1);
+    }
+    EXPECT_TRUE(dearxan_image_from_module(image_bytes, &image));
+    EXPECT_TRUE(dearxan_resolve_encrypted_region_lists(
+        &image, lists, sizeof(lists) / sizeof(lists[0]),
+        &resolved, &resolved_count));
+    EXPECT_EQ(resolved_count, 1);
+    EXPECT_EQ(resolved[0].kind, DEARXAN_DECRYPTION_SUB);
+    EXPECT_EQ(resolved[0].regions[0].rva, low_region.rva);
+    dearxan_free_encrypted_region_lists(resolved, resolved_count);
+    return 0;
+}
+
 static int test_steamstub_hash(void) {
     unsigned char all_bytes[256];
     const unsigned char binary[] = { 0x00, 0xff, 0x55, 0xaa };
@@ -201,7 +245,8 @@ static int test_steamstub_hash(void) {
 int main(void) {
     if (test_block_decryptors() != 0 || test_varints() != 0 ||
         test_region_varints() != 0 || test_entropy() != 0 ||
-        test_region_list_resolution() != 0 || test_steamstub_hash() != 0) return 1;
+        test_region_list_resolution() != 0 ||
+        test_region_conflict_sweep() != 0 || test_steamstub_hash() != 0) return 1;
     printf("smoke_dearxan_crypto: all tests passed\n");
     return 0;
 }

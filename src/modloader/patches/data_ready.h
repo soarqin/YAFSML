@@ -12,8 +12,16 @@
 
 #include <stdbool.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Installs the trigger that advances ML_LIFECYCLE_PHASE_AFTER_DATA_READY once
    every game param has been loaded. Must run after the runtime-ready phase so
    that the image is unpacked and RTTI is resolvable. */
 bool ml_data_ready_install(const ml_game_descriptor_t *game);
 bool ml_data_ready_uninstall(void);
+
+#ifdef __cplusplus
+}
+#endif

@@ -181,9 +181,198 @@ static int test_xchg_aliasing(void) {
     return 0;
 }
 
-static int append_state(vm_step_record_t *records, size_t *count,
+static int step_one(dearxan_vm_t *vm, const unsigned char *code, size_t size,
+                    dearxan_vm_t *forked, bool *has_fork) {
+    ZydisDecodedInstruction instruction;
+    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
+    EXPECT_TRUE(decode(code, size, &instruction, operands));
+    EXPECT_TRUE(dearxan_vm_step(vm, &instruction, operands, forked, has_fork));
+    return 0;
+}
+
+/* PUSHFQ must invalidate the slot it writes at the *new* RSP, not the pre-push
+ * RSP. A stale value just below the stack must not survive, while the value at
+ * the old RSP is untouched. POPFQ then only advances RSP. */
+static int test_pushfq_popfq_stale_slot(void) {
+    static const unsigned char pushfq[] = { 0x9c };
+    static const unsigned char popfq[] = { 0x9d };
+    dearxan_vm_t vm;
+    dearxan_vm_t forked;
+    bool has_fork = true;
+    uint64_t stale = UINT64_C(0xAAAAAAAAAAAAAAAA);
+    uint64_t below = UINT64_C(0xBBBBBBBBBBBBBBBB);
+    uint64_t value;
+
+    dearxan_vm_init(&vm, NULL, 0x2000, 0x10000);
+    EXPECT_TRUE(dearxan_vm_write_memory(&vm, 0xFFF8, &stale, sizeof(stale)));
+    EXPECT_TRUE(dearxan_vm_write_memory(&vm, 0x10000, &below, sizeof(below)));
+    if (step_one(&vm, pushfq, sizeof(pushfq), &forked, &has_fork) != 0) return 1;
+    EXPECT_TRUE(!has_fork);
+    EXPECT_TRUE(dearxan_vm_read_register(&vm, ZYDIS_REGISTER_RSP, &value));
+    EXPECT_EQ(value, 0xFFF8);
+    EXPECT_TRUE(!dearxan_vm_read_memory(&vm, 0xFFF8, &value, sizeof(value)));
+    EXPECT_TRUE(dearxan_vm_read_memory(&vm, 0x10000, &value, sizeof(value)));
+    EXPECT_EQ(value, below);
+
+    if (step_one(&vm, popfq, sizeof(popfq), &forked, &has_fork) != 0) return 1;
+    EXPECT_TRUE(!has_fork);
+    EXPECT_TRUE(dearxan_vm_read_register(&vm, ZYDIS_REGISTER_RSP, &value));
+    EXPECT_EQ(value, 0x10000);
+    EXPECT_TRUE(!dearxan_vm_read_memory(&vm, 0xFFF8, &value, sizeof(value)));
+    dearxan_vm_uninit(&vm);
+    return 0;
+}
+
+/* Interrupt and undefined instructions end the current execution path. */
+static int test_trap_ends_path(void) {
+    static const unsigned char int3[] = { 0xcc };
+    static const unsigned char ud2[] = { 0x0f, 0x0b };
+    dearxan_vm_t vm;
+    dearxan_vm_t forked;
+    bool has_fork = true;
+
+    dearxan_vm_init(&vm, NULL, 0x3000, 0x10000);
+    if (step_one(&vm, int3, sizeof(int3), &forked, &has_fork) != 0) return 1;
+    EXPECT_TRUE(!has_fork);
+    EXPECT_TRUE(!vm.rip_known);
+    dearxan_vm_uninit(&vm);
+
+    dearxan_vm_init(&vm, NULL, 0x3000, 0x10000);
+    if (step_one(&vm, ud2, sizeof(ud2), &forked, &has_fork) != 0) return 1;
+    EXPECT_TRUE(!has_fork);
+    EXPECT_TRUE(!vm.rip_known);
+    dearxan_vm_uninit(&vm);
+    return 0;
+}
+
+/* The VM steps a SYSCALL without forking or branching, advancing to the next
+ * instruction and clobbering the volatile registers the instruction writes.
+ * This fall-through behaviour is what lets the analyzer treat it as a call. */
+static int test_syscall(void) {
+    static const unsigned char syscall_bytes[] = { 0x0f, 0x05 };
+    dearxan_vm_t vm;
+    dearxan_vm_t forked;
+    bool has_fork = true;
+    uint64_t value;
+
+    dearxan_vm_init(&vm, NULL, 0x4000, 0x10000);
+    dearxan_vm_write_register(&vm, ZYDIS_REGISTER_RCX, true, 0x1234);
+    if (step_one(&vm, syscall_bytes, sizeof(syscall_bytes), &forked, &has_fork) != 0) return 1;
+    EXPECT_TRUE(!has_fork);
+    EXPECT_TRUE(vm.rip_known);
+    EXPECT_EQ(vm.rip, 0x4002);
+    EXPECT_TRUE(dearxan_vm_read_register(&vm, ZYDIS_REGISTER_RSP, &value));
+    EXPECT_EQ(value, 0x10000);
+    EXPECT_TRUE(!dearxan_vm_read_register(&vm, ZYDIS_REGISTER_RCX, &value));
+    dearxan_vm_uninit(&vm);
+    return 0;
+}
+
+static int test_push_pop_call_ret(void) {
+    static const unsigned char push_rax[] = { 0x50 };
+    static const unsigned char pop_rcx[] = { 0x59 };
+    static const unsigned char call_rel[] = { 0xe8, 0x05, 0x00, 0x00, 0x00 };
+    static const unsigned char ret_near[] = { 0xc3 };
+    static const unsigned char ret_imm16[] = { 0xc2, 0x10, 0x00 };
+    dearxan_vm_t vm;
+    dearxan_vm_t forked;
+    bool has_fork = true;
+    uint64_t value;
+
+    /* PUSH writes the register below the new RSP; POP reads it back. */
+    dearxan_vm_init(&vm, NULL, 0x5000, 0x10000);
+    dearxan_vm_write_register(&vm, ZYDIS_REGISTER_RAX, true, UINT64_C(0xCAFEF00D));
+    if (step_one(&vm, push_rax, sizeof(push_rax), &forked, &has_fork) != 0) return 1;
+    EXPECT_TRUE(dearxan_vm_read_register(&vm, ZYDIS_REGISTER_RSP, &value));
+    EXPECT_EQ(value, 0xFFF8);
+    EXPECT_TRUE(dearxan_vm_read_memory(&vm, 0xFFF8, &value, sizeof(value)));
+    EXPECT_EQ(value, UINT64_C(0xCAFEF00D));
+    if (step_one(&vm, pop_rcx, sizeof(pop_rcx), &forked, &has_fork) != 0) return 1;
+    EXPECT_TRUE(dearxan_vm_read_register(&vm, ZYDIS_REGISTER_RCX, &value));
+    EXPECT_EQ(value, UINT64_C(0xCAFEF00D));
+    EXPECT_TRUE(dearxan_vm_read_register(&vm, ZYDIS_REGISTER_RSP, &value));
+    EXPECT_EQ(value, 0x10000);
+    dearxan_vm_uninit(&vm);
+
+    /* CALL pushes the return address and transfers control to the target. */
+    dearxan_vm_init(&vm, NULL, 0x6000, 0x10000);
+    if (step_one(&vm, call_rel, sizeof(call_rel), &forked, &has_fork) != 0) return 1;
+    EXPECT_TRUE(!has_fork);
+    EXPECT_EQ(vm.rip, 0x600A);
+    EXPECT_TRUE(dearxan_vm_read_register(&vm, ZYDIS_REGISTER_RSP, &value));
+    EXPECT_EQ(value, 0xFFF8);
+    EXPECT_TRUE(dearxan_vm_read_memory(&vm, 0xFFF8, &value, sizeof(value)));
+    EXPECT_EQ(value, 0x6005);
+    /* RET pops it. */
+    if (step_one(&vm, ret_near, sizeof(ret_near), &forked, &has_fork) != 0) return 1;
+    EXPECT_EQ(vm.rip, 0x6005);
+    EXPECT_TRUE(dearxan_vm_read_register(&vm, ZYDIS_REGISTER_RSP, &value));
+    EXPECT_EQ(value, 0x10000);
+    dearxan_vm_uninit(&vm);
+
+    /* RET imm16 additionally releases imm16 bytes of arguments. */
+    dearxan_vm_init(&vm, NULL, 0x7000, 0x10000);
+    value = 0x7777;
+    EXPECT_TRUE(dearxan_vm_write_memory(&vm, 0x10000, &value, sizeof(value)));
+    if (step_one(&vm, ret_imm16, sizeof(ret_imm16), &forked, &has_fork) != 0) return 1;
+    EXPECT_EQ(vm.rip, 0x7777);
+    EXPECT_TRUE(dearxan_vm_read_register(&vm, ZYDIS_REGISTER_RSP, &value));
+    EXPECT_EQ(value, 0x10000 + 8 + 0x10);
+    dearxan_vm_uninit(&vm);
+    return 0;
+}
+
+static int test_movsx(void) {
+    static const unsigned char movsx_eax_cl[] = { 0x0f, 0xbe, 0xc1 };
+    static const unsigned char movsxd_rax_ecx[] = { 0x48, 0x63, 0xc1 };
+    dearxan_vm_t vm;
+    dearxan_vm_t forked;
+    bool has_fork = true;
+    uint64_t value;
+
+    /* movsx eax, cl sign-extends an 8-bit 0x80 to 0xFFFFFF80. */
+    dearxan_vm_init(&vm, NULL, 0x8000, 0x10000);
+    dearxan_vm_write_register(&vm, ZYDIS_REGISTER_RCX, true, 0x80);
+    if (step_one(&vm, movsx_eax_cl, sizeof(movsx_eax_cl), &forked, &has_fork) != 0) return 1;
+    EXPECT_TRUE(dearxan_vm_read_register(&vm, ZYDIS_REGISTER_RAX, &value));
+    EXPECT_EQ(value, 0xFFFFFF80u);
+    dearxan_vm_uninit(&vm);
+
+    /* movsxd rax, ecx sign-extends a 32-bit value into all 64 bits. */
+    dearxan_vm_init(&vm, NULL, 0x8000, 0x10000);
+    dearxan_vm_write_register(&vm, ZYDIS_REGISTER_RCX, true, 0x80000000u);
+    if (step_one(&vm, movsxd_rax_ecx, sizeof(movsxd_rax_ecx), &forked, &has_fork) != 0) return 1;
+    EXPECT_TRUE(dearxan_vm_read_register(&vm, ZYDIS_REGISTER_RAX, &value));
+    EXPECT_EQ(value, UINT64_C(0xFFFFFFFF80000000));
+    dearxan_vm_uninit(&vm);
+    return 0;
+}
+
+/* A conditional branch forks: the fork takes the branch target while the
+ * original continues to the fall-through instruction. */
+static int test_conditional_branch_fork(void) {
+    static const unsigned char jz_rel8[] = { 0x74, 0x05 };
+    dearxan_vm_t vm;
+    dearxan_vm_t forked;
+    bool has_fork = false;
+
+    dearxan_vm_init(&vm, NULL, 0x9000, 0x10000);
+    if (step_one(&vm, jz_rel8, sizeof(jz_rel8), &forked, &has_fork) != 0) return 1;
+    EXPECT_TRUE(has_fork);
+    EXPECT_TRUE(vm.rip_known);
+    EXPECT_EQ(vm.rip, 0x9002);
+    EXPECT_TRUE(forked.rip_known);
+    EXPECT_EQ(forked.rip, 0x9007);
+    dearxan_vm_uninit(&forked);
+    dearxan_vm_uninit(&vm);
+    return 0;
+}
+
+static int append_state(vm_step_record_t *records, size_t capacity, size_t *count,
                         ZydisMnemonic mnemonic, const dearxan_vm_t *vm) {
-    vm_step_record_t *record = &records[(*count)++];
+    vm_step_record_t *record;
+    EXPECT_TRUE(*count < capacity);
+    record = &records[(*count)++];
     record->mnemonic = mnemonic;
     record->ecx_known = dearxan_vm_read_register(vm, ZYDIS_REGISTER_ECX, &record->ecx);
     record->edx_known = dearxan_vm_read_register(vm, ZYDIS_REGISTER_EDX, &record->edx);
@@ -238,9 +427,13 @@ static int test_cmov_upstream_golden(void) {
         }
         EXPECT_TRUE(decode(code + vm->rip, sizeof(code) - (size_t)vm->rip,
                            &instruction, operands));
-        append_state(actual, &actual_count, instruction.mnemonic, vm);
+        if (append_state(actual, sizeof(actual) / sizeof(actual[0]),
+                         &actual_count, instruction.mnemonic, vm) != 0) return 1;
         EXPECT_TRUE(dearxan_vm_step(vm, &instruction, operands, &forked, &has_fork));
-        if (has_fork) work[work_count++] = forked;
+        if (has_fork) {
+            EXPECT_TRUE(work_count < sizeof(work) / sizeof(work[0]));
+            work[work_count++] = forked;
+        }
     }
     EXPECT_EQ(actual_count, sizeof(expected) / sizeof(expected[0]));
     for (size_t i = 0; i < actual_count; i++) {
@@ -257,6 +450,12 @@ int main(void) {
     if (test_registers() != 0 || test_memory() != 0 ||
         test_memory_table_growth() != 0 ||
         test_xchg_aliasing() != 0 ||
+        test_pushfq_popfq_stale_slot() != 0 ||
+        test_trap_ends_path() != 0 ||
+        test_syscall() != 0 ||
+        test_push_pop_call_ret() != 0 ||
+        test_movsx() != 0 ||
+        test_conditional_branch_fork() != 0 ||
         test_cmov_upstream_golden() != 0) return 1;
     printf("smoke_dearxan_vm: all tests passed\n");
     return 0;

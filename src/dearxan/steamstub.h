@@ -72,8 +72,6 @@ void dearxan_steamstub_crypt_strings(unsigned char *bytes, size_t size,
                                      uint32_t *key);
 void dearxan_steamstub_decrypt_drmp(unsigned char *bytes, size_t size,
                                     const uint32_t key[4]);
-bool dearxan_steamstub_detect(const dearxan_image_t *image,
-                              dearxan_steamstub_context_t *context);
 dearxan_steamstub_probe_result_t dearxan_steamstub_probe(
     const dearxan_image_t *image, dearxan_steamstub_context_t *context);
 bool dearxan_steamstub_patch(const dearxan_image_t *image,

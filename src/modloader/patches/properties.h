@@ -12,6 +12,14 @@
 
 #include <stdbool.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 bool ml_properties_install(const ml_game_descriptor_t *game);
 void ml_properties_on_init(void);
-bool ml_properties_set_loose_params(bool enabled);
+void ml_properties_set_loose_params(bool enabled);
+
+#ifdef __cplusplus
+}
+#endif

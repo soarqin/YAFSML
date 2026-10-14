@@ -12,6 +12,14 @@
 
 #include <stdbool.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 bool ml_logo_fd4_redirect(void **step_slot, void *next_step);
 bool ml_logo_sprj_redirect(void **step_slot);
 bool ml_logo_skip_install(const ml_game_descriptor_t *game);
+
+#ifdef __cplusplus
+}
+#endif

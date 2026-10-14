@@ -11,6 +11,10 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct dlrf_runtime_class_entry_s {
     const void *type_id;
     void *runtime_class;
@@ -42,3 +46,7 @@ const void *dlrf_find_runtime_class(const dlrf_runtime_class_entry_t *registry, 
                                     const char *class_name);
 bool dlrf_find_method(const void *runtime_class, dlrf_vector_abi_t vector_abi,
                       const char *method_name, dlrf_method_info_t *info);
+
+#ifdef __cplusplus
+}
+#endif

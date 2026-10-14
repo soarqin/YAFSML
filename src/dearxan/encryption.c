@@ -6,6 +6,7 @@
  */
 
 #include "encryption.h"
+#include "util.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -88,16 +89,8 @@ bool dearxan_parse_encrypted_regions(const unsigned char *bytes, size_t length,
         if (!dearxan_read_varint(bytes + offset, length - offset, &consumed, &size) ||
             size == 0 || rva > UINT32_MAX - size || stream_offset > SIZE_MAX - size) goto fail;
         offset += consumed;
-        if (count == capacity) {
-            size_t next_capacity = capacity == 0 ? 8 : capacity * 2;
-            dearxan_encrypted_region_t *next;
-            if (next_capacity < capacity ||
-                next_capacity > SIZE_MAX / sizeof(*items)) goto fail;
-            next = realloc(items, next_capacity * sizeof(*items));
-            if (next == NULL) goto fail;
-            items = next;
-            capacity = next_capacity;
-        }
+        if (!dearxan_reserve_array((void **)&items, &capacity, count + 1,
+                                   sizeof(*items))) goto fail;
         items[count++] = (dearxan_encrypted_region_t){ stream_offset, size, rva };
         rva += size;
         stream_offset += size;
@@ -114,12 +107,6 @@ void dearxan_free_encrypted_region_list(dearxan_encrypted_region_list_t *list) {
     memset(list, 0, sizeof(*list));
 }
 
-typedef struct relocation_context {
-    const dearxan_image_t *image;
-    dearxan_encrypted_region_list_t *list;
-    bool valid;
-} relocation_context_t;
-
 typedef struct relocation_list {
     uint32_t *items;
     size_t count;
@@ -127,67 +114,15 @@ typedef struct relocation_list {
     bool valid;
 } relocation_list_t;
 
-static bool apply_relocation(uint32_t rva, void *opaque) {
-    relocation_context_t *context = opaque;
-    for (size_t i = 0; i < context->list->region_count; i++) {
-        const dearxan_encrypted_region_t *region = &context->list->regions[i];
-        uint64_t end = (uint64_t)region->rva + region->size;
-        if (rva < region->rva || (uint64_t)rva + sizeof(uint64_t) > end) continue;
-        {
-            size_t offset = region->stream_offset + (rva - region->rva);
-            uint64_t value;
-            int64_t delta = (int64_t)(context->image->base_va - context->image->preferred_base);
-            memcpy(&value, context->list->decrypted_stream + offset, sizeof(value));
-            value += delta;
-            if (dearxan_image_read(context->image, value, 1, NULL) == NULL) {
-                context->valid = false;
-                return false;
-            }
-            memcpy(context->list->decrypted_stream + offset, &value, sizeof(value));
-        }
-    }
-    return true;
-}
-
-bool dearxan_apply_relocations(const dearxan_image_t *image,
-                               dearxan_encrypted_region_list_t *list) {
-    relocation_context_t context = { image, list, true };
-    if (image == NULL || list == NULL ||
-        (list->decrypted_size != 0 && list->decrypted_stream == NULL)) return false;
-    return dearxan_image_for_each_relocation64(image, apply_relocation, &context) &&
-           context.valid;
-}
-
 static bool collect_relocation(uint32_t rva, void *opaque) {
     relocation_list_t *list = opaque;
-    if (list->count == list->capacity) {
-        size_t capacity = list->capacity == 0 ? 256 : list->capacity * 2;
-        uint32_t *items;
-        if (capacity < list->capacity || capacity > SIZE_MAX / sizeof(*items)) {
-            list->valid = false;
-            return false;
-        }
-        items = realloc(list->items, capacity * sizeof(*items));
-        if (items == NULL) {
-            list->valid = false;
-            return false;
-        }
-        list->items = items;
-        list->capacity = capacity;
+    if (!dearxan_reserve_array((void **)&list->items, &list->capacity,
+                               list->count + 1, sizeof(*list->items))) {
+        list->valid = false;
+        return false;
     }
     list->items[list->count++] = rva;
     return true;
-}
-
-static bool has_valid_pe_headers(const dearxan_image_t *image) {
-    const unsigned char *base = image->base;
-    int32_t pe_offset;
-    uint32_t signature;
-    if (base == NULL || image->size < 0x40 || base[0] != 'M' || base[1] != 'Z') return false;
-    memcpy(&pe_offset, base + 0x3c, sizeof(pe_offset));
-    if (pe_offset <= 0 || (size_t)pe_offset > image->size - sizeof(signature)) return false;
-    memcpy(&signature, base + pe_offset, sizeof(signature));
-    return signature == UINT32_C(0x00004550);
 }
 
 static int compare_u32(const void *left, const void *right) {
@@ -234,24 +169,6 @@ static bool clone_region_list(dearxan_encrypted_region_list_t *destination,
 fail:
     dearxan_free_encrypted_region_list(destination);
     return false;
-}
-
-static bool reserve_array(void **items, size_t *capacity, size_t count,
-                          size_t item_size) {
-    size_t next_capacity;
-    void *next;
-    if (count <= *capacity) return true;
-    next_capacity = *capacity == 0 ? 8 : *capacity;
-    while (next_capacity < count) {
-        if (next_capacity > SIZE_MAX / 2) return false;
-        next_capacity *= 2;
-    }
-    if (next_capacity > SIZE_MAX / item_size) return false;
-    next = realloc(*items, next_capacity * item_size);
-    if (next == NULL) return false;
-    *items = next;
-    *capacity = next_capacity;
-    return true;
 }
 
 static bool regions_intersect(const dearxan_encrypted_region_t *left,
@@ -304,15 +221,14 @@ bool dearxan_resolve_encrypted_region_lists(
         (list_count != 0 && lists == NULL)) return false;
     *resolved = NULL;
     *resolved_count = 0;
+    if (list_count == 0) return true;
     relocations.valid = true;
-    if (has_valid_pe_headers(image) &&
-        (!dearxan_image_for_each_relocation64(image, collect_relocation, &relocations) ||
-         !relocations.valid)) goto fail;
+    /* for_each_relocation64 validates the headers and treats a missing reloc
+     * directory as success with no entries, so no separate PE-header check is
+     * needed here. */
+    if (!dearxan_image_for_each_relocation64(image, collect_relocation, &relocations) ||
+        !relocations.valid) goto fail;
     qsort(relocations.items, relocations.count, sizeof(*relocations.items), compare_u32);
-    if (list_count == 0) {
-        free(relocations.items);
-        return true;
-    }
 
     processed = calloc(list_count, sizeof(*processed));
     entropies = malloc(list_count * sizeof(*entropies));
@@ -324,7 +240,7 @@ bool dearxan_resolve_encrypted_region_lists(
         if (source == NULL || source->region_count == 0) continue;
         if (!clone_region_list(&processed[count], source)) goto fail;
         if (source->region_count > SIZE_MAX - region_count ||
-            !reserve_array((void **)&regions, &region_capacity,
+            !dearxan_reserve_array((void **)&regions, &region_capacity,
                            region_count + source->region_count,
                            sizeof(*regions))) goto fail;
         for (size_t j = 0; j < source->region_count; j++) {

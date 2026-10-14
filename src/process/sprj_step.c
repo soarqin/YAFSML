@@ -31,9 +31,7 @@ static bool is_lea_rax_rip(const uint8_t *code) {
 }
 
 static const uint8_t *lea_rip_target(const uint8_t *code) {
-    int32_t displacement;
-    memcpy(&displacement, code + 3, sizeof(displacement));
-    return code + SPRJ_LEA_SIZE + (intptr_t)displacement;
+    return (const uint8_t *)ml_rel32_target(code + 3, (uintptr_t)(code + SPRJ_LEA_SIZE));
 }
 
 /* `mov [base], rax` with mod=00: rm 4 would need a SIB byte and rm 5 encodes the

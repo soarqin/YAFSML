@@ -29,8 +29,13 @@ Elden Ring 仍是主要目标。使用 `--launch-target armoredcore6`、`--launc
 2. 修改 `YAFSML.ini`，启用所需的外部 DLL 或模组。
 3. 运行 `YAFSML.exe`。
 
-启动器会依次尝试当前目录、显式路径和 Steam 库定位游戏。启动游戏后，启动器
-会先保持主进程挂起，注入加载器 DLL；除非指定 `--suspend`，否则随后恢复游戏。
+启动器使用 `--game-path` 指定的游戏；未指定时，在启动器所在目录或 Steam 库中定位
+游戏。启动游戏后，启动器会先保持主进程挂起，注入加载器 DLL；除非指定 `--suspend`，
+否则随后恢复游戏。
+
+错误会以消息框显示，并写入标准错误输出；从命令提示符启动时也会输出到该控制台。
+如果游戏目录中已放置 YAFSML 代理 DLL，启动器会拒绝启动；请移除该代理 DLL，或改为
+直接启动游戏。
 
 ### 代理 DLL
 
@@ -61,13 +66,13 @@ Elden Ring 仍是主要目标。使用 `--launch-target armoredcore6`、`--launc
 | 选项 | 默认值 | 说明 |
 | --- | --- | --- |
 | `skip_intro` | `1` | 跳过开场 Logo。 |
-| `prevent_regulation_save_write` | `1` | 阻止 mod 提供的 `regulation.bin` 写入存档；使用游戏原始文件时保持原有的存档写入机制。 |
+| `prevent_regulation_save_write` | `1` | 阻止 mod 提供的 regulation 文件（`regulation.bin`；Dark Souls III 为 `Data0.bdt`）写入存档；使用游戏原始文件时保持原有的存档写入机制。 |
 | `patch_mem` | `1` | 使用 mimalloc 替换 Dantelion 分配器。按照 me3 的行为，Armored Core VI 和 Nightreign 不支持该补丁。 |
 | `patch_mem_dedicated_heap` | `1` | 预留独立的高地址 mimalloc arena，而不使用常规 mimalloc heap。 |
 | `patch_mem_heap_size` | `0` | mimalloc 专用堆大小，单位为 MB；`0` 在当前游戏支持 `patch_mem` 时使用对应默认值。 |
 | `boot_boost` | `1` | 缓存解密后的 BHD 标头，减少归档启动时间。 |
 | `disable_arxan` | `0` | 在 Arxan 入口桩完成后执行中和。Dark Souls III 始终启用此选项。 |
-| `replace_save_filename` | 留空 | 替换存档文件名；以点号开头时仅替换扩展名。 |
+| `replace_save_filename` | 留空 | 替换存档文件名；以点号开头时仅替换扩展名。替换存档名期间，若存档路径经过游戏存档目录下的符号链接或 junction，加载器会拒绝访问，而不是重定向。 |
 | `replace_seamless_coop_save_filename` | 留空 | 替换 Seamless Co-op 使用的额外存档文件名。 |
 | `enable_ime` | `0` | 在受支持的游戏中保持 IME 启用。Elden Ring、Armored Core VI、Nightreign 和 Dark Souls III 还允许软件键盘输入非拉丁文字；Sekiro 仅保持 IME 启用。修改后需重启游戏。 |
 
@@ -121,8 +126,9 @@ DLL 卡住一帧；同一个线程也保证 `after` 依赖在跨这两种条件�
 
 只有依赖关系无法由原有顺序保证时才会调整顺序；其他条目保持配置顺序。如果 `early`
 DLL 依赖普通条目，该依赖项也会提前加载；依赖 `data_ready` 或 `delay` 条目的普通 DLL 会
-被推迟到同一个后台线程上加载。检测到循环依赖时记录错误，并保持原有顺序不变。项目自带的
-扩展 DLL 已不再随此仓库发布。
+被推迟到同一个后台线程上加载。检测到循环依赖时记录错误，并保持原有顺序不变；提前加载和
+推迟到后台线程的规则仍然生效。ModEngine 扩展的 `modengine_ext_init` 返回 false 时会记录
+警告，其后的 DLL 仍会继续加载。项目自带的扩展 DLL 已不再随此仓库发布。
 
 `[mod]` 节用于声明覆盖游戏文件的目录或 ZIP 文件。路径可以相对于配置文件，也可以是绝对路径。目标为目录时扫描散文件，目标为 `.zip` 文件时读取压缩包。多个模组包含同名文件时，后声明的模组覆盖先声明的模组；目录和 ZIP 文件混合配置时遵循相同规则。
 
@@ -141,7 +147,10 @@ ZIP 子路径支持正斜杠 `/`、反斜杠 `\` 和多层目录，也可混用�
 
 未找到 `YAFSML.ini` 时，加载器会查找对应游戏的 ModEngine2 文件：
 `config_eldenring.toml`、`config_armoredcore6.toml`、`config_nightreign.toml`、`config_sekiro.toml` 或 `config_darksouls3.toml`。
-启动器的 `-c` 选项或 `YAFSML_CONFIG` 环境变量可指定其他配置路径。
+启动器的 `-c` 选项或 `YAFSML_CONFIG` 环境变量可指定其他配置文件或目录；指定目录时使用
+其中的 `YAFSML.ini`，不存在时使用 ModEngine2 文件。相对路径的 `-c` 与 `YAFSML_CONFIG`
+均以 `YAFSML.dll` 所在目录为基准。与 ModEngine2 一致，`mods` 条目只需提供 `path`，`enabled`
+默认为 true。
 
 ## 启动器选项
 
@@ -154,7 +163,19 @@ ZIP 子路径支持正斜杠 `/`、反斜杠 `\` 和多层目录，也可混用�
 -s, --suspend               注入后保持游戏挂起。
 ```
 
-`--launch-target` 会覆盖 `YAFSML.ini` 顶层的 `game=...` 设置。
+`--launch-target` 会覆盖 `YAFSML.ini` 顶层的 `game=...` 设置。未指定该选项时，
+`--game-path` 指向已知游戏的可执行文件即选择该游戏；已指定时，指向其他游戏的可执行
+文件会报错。
+
+`--modloader-dll` 的相对路径以启动器所在目录为基准，指定的 DLL 必须存在。启动器与
+DLL 从同一份配置读取 `game=...`：`--config` 或继承的 `YAFSML_CONFIG` 的相对路径以 DLL
+所在目录为基准，两者都未指定时使用 DLL 所在目录的 `YAFSML.ini`。通过这两种方式指定的
+配置会以绝对路径传给 DLL。
+
+相对路径的 `--game-path` 先按当前目录查找，再按启动器所在目录查找；都找不到游戏时，
+启动器报错退出，不会转而在 Steam 库中查找。未指定 `--game-path` 时，启动器先查找自身
+所在目录，再按 Steam 客户端的规则读取 `libraryfolders.vdf` 与应用清单，在 Steam 库中
+查找。
 
 ## 更新记录
 
@@ -169,7 +190,8 @@ ZIP 子路径支持正斜杠 `/`、反斜杠 `\` 和多层目录，也可混用�
 - [toml-c](https://github.com/arp242/toml-c)：ModEngine2 TOML 兼容。
 - [wingetopt](https://github.com/alex85k/wingetopt)：命令行解析。
 - [mimalloc](https://github.com/microsoft/mimalloc)：加载器分配器。
+- [miniz](https://github.com/richgel999/miniz)：ZIP 模组包与 BootBoost 缓存压缩。
+- [xxHash](https://github.com/Cyan4973/xxHash)：BootBoost 缓存键。
 - [dearxan](https://github.com/tremwil/dearxan)：移植为 C11 的 Arxan 分析与中和实现。
 - [Zydis](https://github.com/zyantific/zydis)：dearxan 移植使用的 x86/x86-64 反汇编库。
-- [libofdf](https://github.com/Jan200101/libofdf)：Steam 库定位。
-- [LZMA SDK](https://7-zip.org/sdk.html)：公有领域压缩 SDK。
+- [libofdf](https://github.com/Jan200101/libofdf)：Steam VDF 读取器的接口。

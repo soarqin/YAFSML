@@ -2,17 +2,49 @@
 
 #include "dinput8.h"
 #include "winhttp.h"
+#include "log.h"
 
 #include <shlwapi.h>
 
-static bool proxy_is_named(const wchar_t *name) {
+#include <stdio.h>
+
+static HMODULE own_module(void) {
     HMODULE module;
+    return GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                              GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                              (LPCWSTR)proxy_DllCanUnloadNow, &module) ? module : NULL;
+}
+
+bool proxy_is_named(const wchar_t *name) {
+    HMODULE module = own_module();
     wchar_t path[MAX_PATH];
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            (LPCWSTR)proxy_DllCanUnloadNow, &module)) return false;
+    if (module == NULL) return false;
     if (GetModuleFileNameW(module, path, MAX_PATH) == 0) return false;
     return lstrcmpiW(PathFindFileNameW(path), name) == 0;
+}
+
+HMODULE proxy_load_system_dll(const wchar_t *name) {
+    wchar_t path[MAX_PATH];
+    wchar_t system_directory[MAX_PATH];
+    UINT length = GetSystemDirectoryW(system_directory, MAX_PATH);
+    HMODULE module;
+    if (length == 0 || length >= MAX_PATH ||
+        _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%ls\\%ls", system_directory, name) < 0) {
+        ML_LOG_ERROR(L"proxy", L"cannot resolve system directory for %ls", name);
+        return NULL;
+    }
+    module = LoadLibraryW(path);
+    if (module == NULL) {
+        ML_LOG_ERROR(L"proxy", L"cannot load original %ls library", name);
+        return NULL;
+    }
+    /* Forwarding into ourselves would loop forever in the jmp stubs. */
+    if (module == own_module()) {
+        FreeLibrary(module);
+        ML_LOG_ERROR(L"proxy", L"`%ls` resolved to the proxy itself", path);
+        return NULL;
+    }
+    return module;
 }
 
 HRESULT WINAPI proxy_DllCanUnloadNow(void) {

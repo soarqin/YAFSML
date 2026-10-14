@@ -95,20 +95,58 @@ const ml_game_descriptor_t *ml_launcher_select_game(
     return ml_game_by_id(ML_GAME_ELDEN_RING);
 }
 
+bool ml_launcher_path_is_relative(const wchar_t *path) {
+    return path != NULL && StrChrW(path, L':') == NULL && path[0] != L'\\' && path[0] != L'/';
+}
+
+bool ml_launcher_resolve_path(wchar_t path[MAX_PATH], const wchar_t *base_dir,
+                              const wchar_t *requested) {
+    wchar_t joined[MAX_PATH];
+    const wchar_t *source = requested;
+    DWORD length;
+
+    if (path == NULL) return false;
+    path[0] = L'\0';
+    if (requested == NULL || requested[0] == L'\0') return false;
+    if (base_dir != NULL && ml_launcher_path_is_relative(requested)) {
+        const size_t base_length = wcslen(base_dir);
+        const bool separator = base_length != 0 && base_dir[base_length - 1] != L'\\' &&
+                               base_dir[base_length - 1] != L'/';
+        const int count = _snwprintf(joined, MAX_PATH, separator ? L"%ls\\%ls" : L"%ls%ls",
+                                     base_dir, requested);
+        if (count < 0 || count >= MAX_PATH) return false;
+        source = joined;
+    }
+    /* Also normalizes `.`, `..` and forward slashes. */
+    length = GetFullPathNameW(source, MAX_PATH, path, NULL);
+    if (length == 0 || length >= MAX_PATH) {
+        path[0] = L'\0';
+        return false;
+    }
+    return true;
+}
+
 bool ml_launcher_resolve_config_path(wchar_t path[MAX_PATH],
                                      const wchar_t *module_dir,
                                      const wchar_t *requested_path) {
-    if (path == NULL || module_dir == NULL || module_dir[0] == L'\0') return false;
-    lstrcpynW(path, module_dir, MAX_PATH);
-    if (requested_path == NULL || requested_path[0] == L'\0') {
-        PathAppendW(path, L"YAFSML.ini");
-    } else if (StrChrW(requested_path, L':') == NULL &&
-               requested_path[0] != L'\\' && requested_path[0] != L'/') {
-        PathAppendW(path, requested_path);
-        if (PathIsDirectoryW(path)) PathAppendW(path, L"YAFSML.ini");
-    } else {
-        lstrcpynW(path, requested_path, MAX_PATH);
-        if (PathIsDirectoryW(path)) PathAppendW(path, L"YAFSML.ini");
+    if (path == NULL) return false;
+    path[0] = L'\0';
+    if (module_dir == NULL || module_dir[0] == L'\0') return false;
+    return ml_launcher_resolve_path(path, module_dir,
+                                    requested_path != NULL && requested_path[0] != L'\0'
+                                        ? requested_path : L"YAFSML.ini");
+}
+
+bool ml_launcher_config_ini_path(wchar_t path[MAX_PATH], const wchar_t *config_path) {
+    if (path == NULL) return false;
+    path[0] = L'\0';
+    if (config_path == NULL || config_path[0] == L'\0' || wcslen(config_path) >= MAX_PATH)
+        return false;
+    if (!PathIsDirectoryW(config_path)) {
+        lstrcpynW(path, config_path, MAX_PATH);
+        return true;
     }
-    return path[0] != L'\0';
+    if (PathCombineW(path, config_path, L"YAFSML.ini") != NULL) return true;
+    path[0] = L'\0';
+    return false;
 }

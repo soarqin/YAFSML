@@ -205,7 +205,7 @@ void extdlls_add_spec(const char *name, const char *value) {
     ml_mem_free(spec);
 }
 
-int extdlls_count() {
+int extdlls_count(void) {
     return extdll_count;
 }
 
@@ -216,18 +216,9 @@ static int extdll_index_by_name(const char *name) {
     return -1;
 }
 
-void extdlls_prepare() {
+void extdlls_prepare(void) {
     int *order;
-    extdll_t *sorted;
-
-    if (extdll_count < 2) {
-        return;
-    }
-    order = ml_mem_alloc(0, (size_t)extdll_count * sizeof(*order));
-    if (order == NULL) {
-        ML_LOG_ERROR(L"extdll", L"cannot allocate external DLL dependency sorter");
-        return;
-    }
+    bool cycle = false;
 
     for (int i = 0; i < extdll_count; i++) {
         for (int j = 0; j < extdlls[i].after_count; j++) {
@@ -236,6 +227,12 @@ void extdlls_prepare() {
                             extdlls[i].name, extdlls[i].after[j]);
             }
         }
+    }
+    if (extdll_count < 2) return;
+    order = ml_mem_alloc(0, (size_t)extdll_count * sizeof(*order));
+    if (order == NULL) {
+        ML_LOG_ERROR(L"extdll", L"cannot allocate external DLL dependency sorter");
+        return;
     }
 
     /* Order from the original positions. When a dependency is later than its
@@ -273,18 +270,19 @@ void extdlls_prepare() {
         if (!moved) break;
         if (move_count == extdll_count * extdll_count) {
             ML_LOG_ERROR(L"extdll", L"external DLL dependency cycle detected; preserving configured order");
-            ml_mem_free(order);
-            return;
+            cycle = true;
         }
     }
 
-    sorted = ml_mem_alloc(0, (size_t)extdll_count * sizeof(*sorted));
-    if (sorted == NULL) {
-        ML_LOG_ERROR(L"extdll", L"cannot allocate external DLL dependency order");
-    } else {
-        for (int i = 0; i < extdll_count; i++) sorted[i] = extdlls[order[i]];
-        memcpy(extdlls, sorted, (size_t)extdll_count * sizeof(*extdlls));
-        ml_mem_free(sorted);
+    if (!cycle) {
+        extdll_t *sorted = ml_mem_alloc(0, (size_t)extdll_count * sizeof(*sorted));
+        if (sorted == NULL) {
+            ML_LOG_ERROR(L"extdll", L"cannot allocate external DLL dependency order");
+        } else {
+            for (int i = 0; i < extdll_count; i++) sorted[i] = extdlls[order[i]];
+            memcpy(extdlls, sorted, (size_t)extdll_count * sizeof(*extdlls));
+            ml_mem_free(sorted);
+        }
     }
     /* Dependencies of an early DLL must also be available before the
        runtime-ready phase. Promote only the prerequisite closure. */
@@ -304,10 +302,11 @@ void extdlls_prepare() {
     }
     /* A DLL can never load before its dependencies. Both deferred stages share a
        single worker that walks the entries in array order, and the sort above put
-       every dependency before its dependents, so entries that are already
-       deferred need no adjustment whatever their dependencies are. Only entries
-       still running on the main thread have to move into the worker, because the
-       main thread finishes before the worker starts. */
+       every dependency before its dependents (except within a reported cycle), so
+       entries that are already deferred need no adjustment whatever their
+       dependencies are. Only entries still running on the main thread have to
+       move into the worker, because the main thread finishes before the worker
+       starts. */
     for (int i = 0; i < extdll_count; i++) {
         extdll_stage_t latest = EXTDLL_STAGE_NORMAL;
         int trigger = -1;
@@ -364,8 +363,14 @@ static bool load_extdll_one(int index) {
     {
         FARPROC me_ext_init = GetProcAddress(extdll->dll_module, "modengine_ext_init");
         if (me_ext_init == NULL) return true;
+        /* Like me3, a failed initializer is reported but does not stop the DLLs
+           loaded after it. */
         if (!((bool(*)(const void *, void **))me_ext_init)(
-                &modengine_connector_shim, &extension_object)) return false;
+                &modengine_connector_shim, &extension_object)) {
+            ML_LOG_WARN(L"extdll", L"ModEngine compatibility initializer of external DLL %hs returned false",
+                        extdll->name);
+            return true;
+        }
         ML_LOG_INFO(L"extdll", L"invoked ModEngine compatibility initializer for external DLL %hs",
                     extdll->name);
     }
@@ -375,13 +380,6 @@ static bool load_extdll_one(int index) {
 static bool extdlls_cancelled(void) {
     return cancel_event != NULL &&
            WaitForSingleObject(cancel_event, 0) != WAIT_TIMEOUT;
-}
-
-static bool extdlls_has_stage(extdll_stage_t stage) {
-    for (int i = 0; i < extdll_count; i++) {
-        if (extdlls[i].stage == stage) return true;
-    }
-    return false;
 }
 
 static bool stage_is_deferred(extdll_stage_t stage) {
@@ -476,23 +474,23 @@ static bool extdlls_load(bool early) {
     return loaded;
 }
 
-bool extdlls_load_early() {
+bool extdlls_load_early(void) {
     return extdlls_load(true);
 }
 
-void extdlls_load_all() {
+void extdlls_load_all(void) {
     (void)extdlls_load(false);
 }
 
 /* Only releases the deferred worker, so this stays cheap enough to call from the
    game step thread that reported data readiness. */
-void extdlls_load_data_ready() {
+void extdlls_load_data_ready(void) {
     if (data_ready_event == NULL) return;
     ML_LOG_INFO(L"extdll", L"data readiness released the deferred external DLL worker");
     SetEvent(data_ready_event);
 }
 
-void extdlls_unload_all() {
+void extdlls_unload_all(void) {
     if (cancel_event != NULL) SetEvent(cancel_event);
     if (deferred_worker != NULL) {
         WaitForSingleObject(deferred_worker, INFINITE);
@@ -540,6 +538,13 @@ void extdlls_unload_all() {
 }
 
 #ifdef ML_EXTDLL_TEST
+static bool extdlls_has_stage(extdll_stage_t stage) {
+    for (int i = 0; i < extdll_count; i++) {
+        if (extdlls[i].stage == stage) return true;
+    }
+    return false;
+}
+
 const char *extdlls_test_name_at(int index) {
     return index >= 0 && index < extdll_count ? extdlls[index].name : NULL;
 }
@@ -552,10 +557,6 @@ bool extdlls_test_is_early_at(int index) {
     return extdlls_test_stage_at(index) == (int)EXTDLL_STAGE_EARLY;
 }
 
-bool extdlls_test_is_effective_early_at(int index) {
-    return extdlls_test_is_early_at(index);
-}
-
 bool extdlls_test_is_data_ready_at(int index) {
     return extdlls_test_stage_at(index) == (int)EXTDLL_STAGE_DATA_READY;
 }
@@ -566,9 +567,8 @@ bool extdlls_test_is_deferred_at(int index) {
            extdlls[index].delay_ms == 0;
 }
 
-bool extdlls_test_has_delayed_at(bool early) {
-    /* The early stage runs before any worker exists, so it never defers. */
-    return early ? false : extdlls_has_stage(EXTDLL_STAGE_DELAY);
+bool extdlls_test_has_delayed(void) {
+    return extdlls_has_stage(EXTDLL_STAGE_DELAY);
 }
 
 uint32_t extdlls_test_delay_at(int index) {

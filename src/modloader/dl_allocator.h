@@ -62,8 +62,10 @@ _Static_assert(offsetof(dl_allocator_vtable_t, back_allocate_aligned) == 16 * si
 _Static_assert(offsetof(dl_allocator_vtable_t, block_of) == 24 * sizeof(void *), "DlAllocatorVtable block_of offset");
 _Static_assert(sizeof(dl_allocator_vtable_t) == 25 * sizeof(void *), "DlAllocatorVtable size");
 
-dl_allocator_t *dl_allocator_for_object(const void *object);
-void dl_allocator_dealloc(dl_allocator_t *allocator, void *ptr);
+static inline void dl_allocator_dealloc(dl_allocator_t *allocator, void *ptr) {
+    if (allocator == NULL || allocator->vtable == NULL || allocator->vtable->free == NULL || ptr == NULL) return;
+    allocator->vtable->free(allocator, ptr);
+}
 
 #ifdef __cplusplus
 }

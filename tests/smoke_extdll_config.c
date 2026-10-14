@@ -77,8 +77,7 @@ int main(void) {
     EXPECT_TRUE(!extdlls_test_is_deferred_at(0));
     EXPECT_TRUE(!extdlls_test_is_deferred_at(1));
     EXPECT_TRUE(extdlls_test_is_deferred_at(2));
-    EXPECT_TRUE(!extdlls_test_has_delayed_at(true));
-    EXPECT_TRUE(extdlls_test_has_delayed_at(false));
+    EXPECT_TRUE(extdlls_test_has_delayed());
     extdlls_unload_all();
 
     extdlls_add_spec("plain", "plain.dll");
@@ -104,7 +103,6 @@ int main(void) {
     extdlls_add_spec("dependency", "dependency.dll");
     extdlls_prepare();
     EXPECT_TRUE(extdlls_test_is_early_at(0));
-    EXPECT_TRUE(extdlls_test_is_effective_early_at(0));
     EXPECT_TRUE(extdlls_test_is_early_at(1));
     extdlls_unload_all();
 
@@ -220,6 +218,21 @@ int main(void) {
     extdlls_add_spec("right", "right.dll|after,left");
     extdlls_prepare();
     EXPECT_EQ(expect_order("left", "right", NULL), 0);
+    extdlls_unload_all();
+
+    /* A cycle keeps the configured order without disabling the stage rules for
+       unrelated entries. */
+    extdlls_add_spec("left", "left.dll|after,right");
+    extdlls_add_spec("right", "right.dll|after,left");
+    extdlls_add_spec("waiting", "waiting.dll|after,ready");
+    extdlls_add_spec("ready", "ready.dll|data_ready");
+    extdlls_add_spec("prerequisite", "prerequisite.dll");
+    extdlls_add_spec("early", "early.dll|early|after,prerequisite");
+    extdlls_prepare();
+    EXPECT_TRUE(strcmp(extdlls_test_name_at(0), "left") == 0);
+    EXPECT_TRUE(strcmp(extdlls_test_name_at(2), "waiting") == 0);
+    EXPECT_TRUE(extdlls_test_is_data_ready_at(2));
+    EXPECT_TRUE(extdlls_test_is_early_at(4));
     extdlls_unload_all();
 
     printf("smoke_extdll_config: all tests passed\n");

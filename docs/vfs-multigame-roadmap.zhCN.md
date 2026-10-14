@@ -79,7 +79,7 @@ Dark Souls III 已完成阶段 9，并继续保持实验性支持。项目现已
 当前核心架构已完成多游戏拆分，但产品支持范围仍不完整：
 
 - launcher 已由 Game Registry 驱动，并支持 Elden Ring、Armored Core VI、Nightreign、Sekiro 与实验性的 Dark Souls III 目标。
-- 五款游戏均具有独立 adapter；Dark Souls III 保持实验性，并强制启用 Arxan 中和。
+- 五款游戏共用由 Game Registry descriptor 驱动的 adapter（`patches/adapter.c`），统一按 me3 顺序先推进 `AFTER_RUNTIME_INIT` 再安装资源 Hook；Elden Ring 的 archive resolver 与 Dark Souls III 的准备步骤保留在各自文件中。Dark Souls III 保持实验性，并强制启用 Arxan 中和。
 - 配置使用顶层 `game=...` 选择启动目标，并将加载器设置分为 `[patch]`、`[tweak]`、`[log]`、`[dll]` 和 `[mod]` section。
 - VFS 已改为启动时扫描、last-wins 索引、分域缓存、显式可写映射和统一 Win32/Dantelion 路由。
 - 无模组时跳过普通资源查询；存档文件名替换仍可按需独立安装文件 Hook。
@@ -449,7 +449,7 @@ launcher 必须：
 - 支持 `--launch-target eldenring`、`armoredcore6`、`nightreign`、`sekiro`、`darksouls3` 及合理别名。
 - 未指定 `--launch-target` 时读取 `YAFSML.ini` 顶层的 `game=...`；未配置时默认 Elden Ring，显式启动目标优先。
 - 保留 `--modengine-dll` 作为 `--modloader-dll` 别名。
-- 从显式 EXE、游戏目录、当前目录和 Steam library manifest 按固定优先级定位游戏。
+- 显式指定的 EXE 或游戏目录中找不到游戏时报错；未指定时依次查找启动器所在目录和 Steam 库，Steam 库按 Steam 客户端的规则读取 `libraryfolders.vdf` 与 app manifest。
 - 使用游戏描述符的 App ID、工作目录和 EXE 相对路径。
 - 设置 `SteamAppId`、`SteamGameId` 与 `SteamOverlayGameId`。
 - 统一使用 Remote Thread 调用 `LoadLibraryW` 注入 DLL，并在注入完成前保持游戏主线程挂起。
@@ -532,7 +532,7 @@ data1:/param/gameparam/gameparam_dlc2.parambnd.dcx
 | Sekiro | `TitleFlowStep::STEP_Init` | 原函数返回后 |
 | Dark Souls III | `TitleFlowStep::STEP_Init` | 原函数返回后 |
 
-`ML_RENDER_READY_FILE_STEP_AFTER_ORIGINAL`（与资产 FileStep Hook 共用安装路径）保留为回退策略，当前五款游戏都不使用。
+曾与资产 FileStep Hook 共用安装路径的 `ML_RENDER_READY_FILE_STEP_AFTER_ORIGINAL` 回退策略没有游戏使用，已删除。
 
 触发 Hook 属于可选能力。安装失败时记录 warning 并保持现有 CPU 亲和性，不阻断 `AFTER_RUNTIME_INIT`、VFS、Logo、properties、regulation 或外部 DLL。卸载时先禁用 Hook，等待正在执行的调用结束，再移除 Hook；CPU worker 也会在卸载期间等待完成。
 

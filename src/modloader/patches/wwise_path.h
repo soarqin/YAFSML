@@ -13,6 +13,10 @@
 #include <stdint.h>
 #include <wchar.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* `wem/00/` plus the terminating NUL. */
 #define WWISE_WEM_BUCKET_SIZE 8
 
@@ -21,3 +25,7 @@ size_t wwise_join3(wchar_t *buffer, size_t capacity, const wchar_t *prefix,
                    const wchar_t *middle, const wchar_t *path);
 void wwise_wem_bucket(const wchar_t *path, wchar_t bucket[WWISE_WEM_BUCKET_SIZE]);
 size_t wwise_find_open_call(const uint8_t *text, size_t size);
+
+#ifdef __cplusplus
+}
+#endif

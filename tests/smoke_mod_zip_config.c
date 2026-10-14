@@ -96,6 +96,74 @@ static int test_nested_config_paths(void) {
     return 0;
 }
 
+static bool write_bytes(const wchar_t *path, const char *contents) {
+    FILE *file = _wfopen(path, L"wb");
+    bool written;
+    if (file == NULL) return false;
+    written = fputs(contents, file) >= 0;
+    return fclose(file) == 0 && written;
+}
+
+/* config_load resolves YAFSML_CONFIG like the launcher: forward slashes and
+ * directories are accepted, and a directory without YAFSML.ini falls back to the
+ * ModEngine2 TOML. */
+static int test_config_resolution(const wchar_t *root, const wchar_t *config_path) {
+    wchar_t forward[MAX_PATH];
+    wchar_t me2[MAX_PATH];
+    wchar_t toml_path[MAX_PATH];
+    lstrcpyW(forward, root);
+    for (wchar_t *p = forward; *p != L'\0'; p++) {
+        if (*p == L'\\') *p = L'/';
+    }
+    config_init(NULL);
+    lstrcpyW(env_config_path, forward);
+    mods_init();
+    config_load();
+    EXPECT_STREQ_W(env_config_path, config_path);
+    EXPECT_EQ(mods_count(), 2);
+    EXPECT_TRUE(read_matches(mods_file_search(L"parts/test.bin"), "selected"));
+    mods_uninit();
+    lstrcatW(forward, L"/YAFSML.ini");
+    config_init(NULL);
+    lstrcpyW(env_config_path, forward);
+    mods_init();
+    config_load();
+    EXPECT_STREQ_W(env_config_path, config_path);
+    EXPECT_EQ(mods_count(), 2);
+    mods_uninit();
+#ifndef ML_STRIP_MODENGINE_CONFIG
+    _snwprintf(me2, MAX_PATH, L"%ls\\me2", root);
+    _snwprintf(toml_path, MAX_PATH, L"%ls\\config_eldenring.toml", me2);
+    EXPECT_TRUE(CreateDirectoryW(me2, NULL));
+    EXPECT_TRUE(write_bytes(toml_path, "[extension.mod_loader]\nenabled = true\n"
+                                       "mods = [ { path = '..\\模组.zip:def' } ]\n"));
+    config_init(NULL);
+    lstrcpyW(env_config_path, me2);
+    mods_init();
+    config_load();
+    EXPECT_STREQ_W(env_config_path, toml_path);
+    EXPECT_EQ(mods_count(), 1);
+    EXPECT_TRUE(read_matches(mods_file_search(L"parts/test.bin"), "selected"));
+    mods_uninit();
+
+    /* A malformed TOML yields an empty configuration instead of parsing the
+     * exhausted stream as INI. */
+    EXPECT_TRUE(write_bytes(toml_path, "[extension.mod_loader\nenabled = true\n"));
+    config_init(NULL);
+    lstrcpyW(env_config_path, me2);
+    mods_init();
+    config_load();
+    EXPECT_EQ(mods_count(), 0);
+    mods_uninit();
+    EXPECT_TRUE(DeleteFileW(toml_path));
+    EXPECT_TRUE(RemoveDirectoryW(me2));
+#else
+    (void)me2;
+    (void)toml_path;
+#endif
+    return 0;
+}
+
 int main(void) {
     wchar_t temp[MAX_PATH];
     wchar_t root[MAX_PATH];
@@ -169,6 +237,7 @@ int main(void) {
 #endif
 
     EXPECT_EQ(test_nested_config_paths(), 0);
+    EXPECT_EQ(test_config_resolution(root, config_path), 0);
 
     EXPECT_TRUE(DeleteFileW(config_path));
     EXPECT_TRUE(DeleteFileW(zip_path));

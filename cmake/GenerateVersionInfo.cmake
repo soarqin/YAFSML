@@ -33,6 +33,7 @@ include (CMakeParseArguments)
 #   ORIGINAL_FILENAME  - ${NAME} is default
 #   INTERNAL_NAME      - ${NAME} is default
 #   FILE_DESCRIPTION   - ${NAME} is default
+#   FILE_TYPE          - VFT_APP is default (VFT_DLL for libraries)
 function(generate_version_info outfiles)
     set (options)
     set (oneValueArgs
@@ -48,7 +49,8 @@ function(generate_version_info outfiles)
         COMMENTS
         ORIGINAL_FILENAME
         INTERNAL_NAME
-        FILE_DESCRIPTION)
+        FILE_DESCRIPTION
+        FILE_TYPE)
     set (multiValueArgs)
     cmake_parse_arguments(PRODUCT "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
@@ -84,6 +86,9 @@ function(generate_version_info outfiles)
     endif()
     if (NOT PRODUCT_FILE_DESCRIPTION OR "${PRODUCT_FILE_DESCRIPTION}" STREQUAL "")
         set(PRODUCT_FILE_DESCRIPTION "${PRODUCT_NAME}")
+    endif()
+    if (NOT PRODUCT_FILE_TYPE OR "${PRODUCT_FILE_TYPE}" STREQUAL "")
+        set(PRODUCT_FILE_TYPE VFT_APP)
     endif()
 
     set(_VersionInfoFile ${CMAKE_CURRENT_BINARY_DIR}/versioninfo.h)

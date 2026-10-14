@@ -10,6 +10,10 @@
 
 #include <stdbool.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef enum ml_lifecycle_phase_e {
     ML_LIFECYCLE_PHASE_UNKNOWN = 0,
     ML_LIFECYCLE_PHASE_PRE_ENTRY_SAFE,
@@ -32,3 +36,7 @@ void ml_lifecycle_uninit(void);
 ml_lifecycle_phase_t ml_lifecycle_current(void);
 bool ml_lifecycle_on_phase(ml_lifecycle_phase_t phase, ml_lifecycle_callback_t callback, void *userp);
 bool ml_lifecycle_advance(ml_lifecycle_phase_t phase);
+
+#ifdef __cplusplus
+}
+#endif

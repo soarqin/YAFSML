@@ -10,8 +10,18 @@
 
 #include "modloader/hook.h"
 
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 ml_hook_result_t ml_window_flash_install(void);
 void ml_window_class_blacken(const WNDCLASSEXW *source, HBRUSH background, WNDCLASSEXW *result);
+
+#ifdef __cplusplus
+}
+#endif

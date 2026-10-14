@@ -34,9 +34,8 @@ typedef struct {
 } config_t;
 
 extern void config_init(void *module);
-extern void config_load();
+extern void config_load(void);
 
-extern const wchar_t *module_path();
 extern void config_full_path(wchar_t *path, const wchar_t *filename);
 extern wchar_t *config_full_path_alloc(const wchar_t *filename);
 

@@ -73,7 +73,12 @@ bool dearxan_image_set_preferred_base_from_file(dearxan_image_t *image,
             uint64_t needed;
             if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0) goto done;
             needed = (uint64_t)(uint32_t)dos->e_lfanew + sizeof(*nt);
-            if (needed <= read_size || needed > UINT32_MAX) goto done;
+            /* `read_size < size` means the read hit EOF before filling the
+             * buffer: the file is too short for e_lfanew, so growing it further
+             * would read the same truncated bytes forever. Only grow when the
+             * headers genuinely extend past what was requested. */
+            if (read_size < size || needed <= read_size ||
+                needed > UINT32_MAX) goto done;
             size = (DWORD)needed;
         }
     }
@@ -106,13 +111,28 @@ static const IMAGE_NT_HEADERS64 *image_nt_headers(const dearxan_image_t *image) 
     return nt;
 }
 
+bool dearxan_image_data_directory(const dearxan_image_t *image,
+                                  unsigned int index, uint32_t *rva,
+                                  uint32_t *size) {
+    const IMAGE_NT_HEADERS64 *nt = image_nt_headers(image);
+    const IMAGE_DATA_DIRECTORY *directory;
+    if (nt == NULL || rva == NULL || size == NULL) return false;
+    if (index >= nt->OptionalHeader.NumberOfRvaAndSizes ||
+        index >= IMAGE_NUMBEROF_DIRECTORY_ENTRIES) return false;
+    directory = &nt->OptionalHeader.DataDirectory[index];
+    if (directory->VirtualAddress == 0 || directory->Size == 0) return false;
+    *rva = directory->VirtualAddress;
+    *size = directory->Size;
+    return true;
+}
+
 bool dearxan_image_for_each_section(const dearxan_image_t *image,
                                     dearxan_section_callback_t callback,
                                     void *opaque) {
     const IMAGE_NT_HEADERS64 *nt = image_nt_headers(image);
     const IMAGE_SECTION_HEADER *section;
     size_t section_table_offset;
-    if (nt == NULL || callback == NULL || nt->Signature != IMAGE_NT_SIGNATURE) return false;
+    if (nt == NULL || callback == NULL) return false;
     section = IMAGE_FIRST_SECTION(nt);
     section_table_offset = (const unsigned char *)section - image->base;
     if (section_table_offset > image->size ||
@@ -135,7 +155,7 @@ bool dearxan_image_for_each_relocation64(const dearxan_image_t *image,
     const IMAGE_NT_HEADERS64 *nt = image_nt_headers(image);
     const IMAGE_DATA_DIRECTORY *directory;
     size_t offset = 0;
-    if (nt == NULL || callback == NULL || nt->Signature != IMAGE_NT_SIGNATURE) return false;
+    if (nt == NULL || callback == NULL) return false;
     directory = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
     if (directory->VirtualAddress == 0 || directory->Size == 0) return true;
     if (directory->VirtualAddress >= image->size ||

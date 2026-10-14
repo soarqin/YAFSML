@@ -40,6 +40,14 @@ typedef struct dearxan_stub_list {
 bool dearxan_analyze_all_stubs(const dearxan_image_t *image,
                                dearxan_stub_list_t *stubs,
                                const char **error_message);
+/* As above, but caps the worker threads: `max_workers == 1` keeps all work on
+ * the calling thread, which is required when other process threads are suspended
+ * (a worker could otherwise deadlock on a lock a suspended thread holds).
+ * `max_workers == 0` selects the default based on the processor count. */
+bool dearxan_analyze_all_stubs_with_workers(const dearxan_image_t *image,
+                                            dearxan_stub_list_t *stubs,
+                                            const char **error_message,
+                                            unsigned int max_workers);
 void dearxan_free_stub_list(dearxan_stub_list_t *stubs);
 
 #ifdef __cplusplus

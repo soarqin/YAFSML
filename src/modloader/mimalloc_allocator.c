@@ -324,7 +324,13 @@ static void *__cdecl mimalloc_reallocate_aligned(dl_allocator_t *self, void *ptr
     size = round_up_size(size, alignment, &ok);
     if (!ok) return NULL;
     heap = mimalloc_dl_heap();
-    return heap != NULL ? mi_heap_realloc_aligned(heap, ptr, size, alignment) : mi_realloc_aligned(ptr, size, alignment);
+    /* Like allocation, fall back to the global heap when the dedicated heap is
+       missing or exhausted. */
+    if (heap != NULL) {
+        void *moved = mi_heap_realloc_aligned(heap, ptr, size, alignment);
+        if (moved != NULL) return moved;
+    }
+    return mi_realloc_aligned(ptr, size, alignment);
 }
 
 static void *__cdecl mimalloc_reallocate(dl_allocator_t *self, void *ptr, size_t size) {

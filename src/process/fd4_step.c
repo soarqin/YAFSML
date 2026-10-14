@@ -194,18 +194,6 @@ static void fd4_step_rebuild_locked(void) {
     fd4_step_build_for_image(GetModuleHandleW(NULL));
 }
 
-static void fd4_step_rebuild_if_empty(void) {
-    if (fd4_step_map == NULL || kh_size(fd4_step_map) != 0) {
-        return;
-    }
-
-    AcquireSRWLockExclusive(&fd4_step_lock);
-    if (kh_size(fd4_step_map) == 0) {
-        fd4_step_rebuild_locked();
-    }
-    ReleaseSRWLockExclusive(&fd4_step_lock);
-}
-
 static void **fd4_step_lookup_unlocked(const wchar_t *step_name) {
     khiter_t k = kh_get(wstr, fd4_step_map, step_name);
     if (k == kh_end(fd4_step_map)) {
@@ -214,9 +202,16 @@ static void **fd4_step_lookup_unlocked(const wchar_t *step_name) {
     return (void **)kh_value(fd4_step_map, k);
 }
 
-void **fd4_step_find_slot(const wchar_t *step_name) {
+/* Looks step_name up in the map, rebuilding it once on a miss (an empty map
+ * takes the same path), then falls back to the static initializer scan, which
+ * is skipped when the map is unavailable. *scanned and *found report that scan
+ * so that fd4_step_find never repeats it. */
+static void **fd4_step_resolve_slot(const wchar_t *step_name, fd4_step_static_result_t *result,
+                                    bool *scanned, bool *found) {
     void **slot;
 
+    *scanned = false;
+    *found = false;
     if (step_name == NULL) {
         return NULL;
     }
@@ -224,8 +219,6 @@ void **fd4_step_find_slot(const wchar_t *step_name) {
     if (!InitOnceExecuteOnce(&fd4_step_once, fd4_step_init_once, NULL, NULL) || fd4_step_map == NULL) {
         return NULL;
     }
-
-    fd4_step_rebuild_if_empty();
 
     AcquireSRWLockShared(&fd4_step_lock);
     slot = fd4_step_lookup_unlocked(step_name);
@@ -239,19 +232,30 @@ void **fd4_step_find_slot(const wchar_t *step_name) {
     fd4_step_rebuild_locked();
     slot = fd4_step_lookup_unlocked(step_name);
     ReleaseSRWLockExclusive(&fd4_step_lock);
-    if (slot == NULL) {
-        fd4_step_static_result_t result;
-        if (fd4_step_find_static(GetModuleHandleW(NULL), step_name, &result)) {
-            slot = result.slot;
-        }
+    if (slot != NULL) {
+        return slot;
     }
-    return slot;
+
+    *scanned = true;
+    *found = fd4_step_find_static(GetModuleHandleW(NULL), step_name, result);
+    return *found ? result->slot : NULL;
+}
+
+void **fd4_step_find_slot(const wchar_t *step_name) {
+    fd4_step_static_result_t result;
+    bool scanned;
+    bool found;
+
+    return fd4_step_resolve_slot(step_name, &result, &scanned, &found);
 }
 
 void *fd4_step_find(const wchar_t *step_name) {
-    void **slot = fd4_step_find_slot(step_name);
     fd4_step_static_result_t result;
+    bool scanned;
+    bool found;
+    void **slot = fd4_step_resolve_slot(step_name, &result, &scanned, &found);
+
     if (slot != NULL && *slot != NULL) return *slot;
-    return fd4_step_find_static(GetModuleHandleW(NULL), step_name, &result)
-        ? result.step : NULL;
+    if (!scanned) found = fd4_step_find_static(GetModuleHandleW(NULL), step_name, &result);
+    return found ? result.step : NULL;
 }

@@ -30,4 +30,4 @@ target_include_directories(modloader_launcher PRIVATE ${CMAKE_SOURCE_DIR}/src/co
 if (NOT MSVC)
     target_link_options(modloader_launcher PRIVATE -municode)
 endif ()
-target_link_libraries(modloader_launcher game_registry steam wingetopt inih #[[lzma]] shlwapi psapi)
+target_link_libraries(modloader_launcher game_registry steam wingetopt inih #[[lzma]] shlwapi psapi user32)

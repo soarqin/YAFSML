@@ -21,7 +21,11 @@
 extern "C" {
 #endif
 
+/* Returns the NT headers of a mapped PE32+ image, or NULL when the DOS or NT
+ * signature or the optional header magic does not match. */
+extern const IMAGE_NT_HEADERS64 *pe_nt_headers(const void *image_base);
 extern const IMAGE_SECTION_HEADER *pe_section_by_name(void *image_base, const char *name);
+/* *out_size is the section size pe_section_rva_end also uses. */
 extern void *pe_section_data(void *image_base, const IMAGE_SECTION_HEADER *sh, size_t *out_size);
 extern uint32_t pe_section_rva_start(const IMAGE_SECTION_HEADER *sh);
 extern uint32_t pe_section_rva_end(const IMAGE_SECTION_HEADER *sh);

@@ -2,6 +2,11 @@
 #include <stdint.h>
 #include <string.h>
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
 #include "test_common.h"
 #include "process/dlrf.h"
 
@@ -52,6 +57,55 @@ typedef struct fake_full_class_s {
     const char *name;
     const wchar_t *name_wide;
 } fake_full_class_t;
+
+/* Names and vectors that end at, or run into, an inaccessible page. */
+static int test_readability_boundaries(void) {
+    static const char name[] = "CSAutoControlAPI";
+    SYSTEM_INFO system;
+    uint8_t *pages;
+    size_t page;
+    DWORD old_protect;
+    fake_full_class_t runtime_class = { 0 };
+    dlrf_runtime_class_entry_t entry = { NULL, &runtime_class };
+    fake_method_t method = { 0 };
+    fake_resolver_t resolver = { 0 };
+    void *invokers[1];
+    dlrf_method_info_t method_info;
+
+    GetSystemInfo(&system);
+    page = system.dwPageSize;
+    pages = VirtualAlloc(NULL, page * 2, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    EXPECT_NOT_NULL(pages);
+    EXPECT_TRUE(VirtualProtect(pages + page, page, PAGE_NOACCESS, &old_protect));
+
+    /* The terminator is the last readable byte. */
+    runtime_class.name = (const char *)pages + page - sizeof(name);
+    memcpy(pages + page - sizeof(name), name, sizeof(name));
+    EXPECT_EQ(dlrf_find_runtime_class(&entry, 1, name), &runtime_class);
+    EXPECT_NULL(dlrf_find_runtime_class(&entry, 1, "CSAutoControlAP"));
+    EXPECT_NULL(dlrf_find_runtime_class(&entry, 1, "CSAutoControlAPI2"));
+
+    /* The terminator would sit in the inaccessible page. */
+    runtime_class.name = (const char *)pages + page - (sizeof(name) - 1);
+    memcpy(pages + page - (sizeof(name) - 1), name, sizeof(name) - 1);
+    EXPECT_NULL(dlrf_find_runtime_class(&entry, 1, name));
+
+    /* A method vector whose storage is inaccessible. */
+    runtime_class.methods = (fake_vector_t){ NULL, pages + page, pages + page + sizeof(method),
+                                             pages + page + sizeof(method) };
+    EXPECT_TRUE(!dlrf_find_method(&runtime_class, DLRF_VECTOR_ABI_MSVC2015, "SetGameProperty", &method_info));
+
+    /* A readable method whose only invoker is inaccessible. */
+    method.name = "SetGameProperty";
+    method.resolver = &resolver;
+    invokers[0] = pages + page;
+    resolver.invokers = (fake_vector_t){ NULL, invokers, invokers + 1, invokers + 1 };
+    runtime_class.methods = (fake_vector_t){ NULL, &method, &method + 1, &method + 1 };
+    EXPECT_TRUE(!dlrf_find_method(&runtime_class, DLRF_VECTOR_ABI_MSVC2015, "SetGameProperty", &method_info));
+
+    EXPECT_TRUE(VirtualFree(pages, 0, MEM_RELEASE));
+    return 0;
+}
 
 int main(void) {
     struct {
@@ -109,6 +163,7 @@ int main(void) {
         EXPECT_TRUE(dlrf_find_method(&legacy_class, DLRF_VECTOR_ABI_MSVC2012, "SetGameProperty", &method_info));
         EXPECT_EQ(method_info.address, (void *)(uintptr_t)0x12345678);
     }
+    EXPECT_EQ(test_readability_boundaries(), 0);
     printf("smoke_dlrf: all tests passed\n");
     return 0;
 }

@@ -6,6 +6,7 @@
  */
 
 #include "vm.h"
+#include "util.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -41,20 +42,12 @@ static uint64_t size_mask(size_t size) {
     return size >= 8 ? UINT64_MAX : (UINT64_C(1) << (size * 8)) - 1;
 }
 
-static uint64_t hash_block_index(uint64_t value) {
-    value ^= value >> 30;
-    value *= UINT64_C(0xbf58476d1ce4e5b9);
-    value ^= value >> 27;
-    value *= UINT64_C(0x94d049bb133111eb);
-    return value ^ (value >> 31);
-}
-
 /* Probe for `index`. Returns the matching slot, or the first free slot when the
  * index is absent. Never returns NULL: the table is kept below half full, so a
  * free slot always exists. */
 static dearxan_vm_memory_block_t *probe_block(dearxan_vm_memory_block_t *blocks,
                                               size_t capacity, uint64_t index) {
-    size_t slot = (size_t)hash_block_index(index) & (capacity - 1);
+    size_t slot = (size_t)dearxan_hash_u64(index) & (capacity - 1);
     while (blocks[slot].index_plus_one != 0 && blocks[slot].index_plus_one != index + 1) {
         slot = (slot + 1) & (capacity - 1);
     }
@@ -223,21 +216,20 @@ bool dearxan_vm_write_memory(dearxan_vm_t *vm, uint64_t address,
     return true;
 }
 
-void dearxan_vm_invalidate_memory(dearxan_vm_t *vm, uint64_t address,
+bool dearxan_vm_invalidate_memory(dearxan_vm_t *vm, uint64_t address,
                                   size_t size) {
     while (size != 0) {
         size_t offset = (size_t)(address % 64);
         size_t chunk = 64 - offset;
         dearxan_vm_memory_block_t *block = find_block(vm, address / 64, true);
+        if (block == NULL) return false;
         if (chunk > size) chunk = size;
-        if (block != NULL) {
-            uint64_t mask = chunk == 64 ? UINT64_MAX
-                : ((UINT64_C(1) << chunk) - 1) << offset;
-            block->known &= ~mask;
-        }
+        block->known &= ~(chunk == 64 ? UINT64_MAX
+            : ((UINT64_C(1) << chunk) - 1) << offset);
         address += chunk;
         size -= chunk;
     }
+    return true;
 }
 
 bool dearxan_vm_operand_address(const dearxan_vm_t *vm,
@@ -288,72 +280,79 @@ bool dearxan_vm_operand_value(const dearxan_vm_t *vm,
     }
 }
 
-static void set_operand(dearxan_vm_t *vm,
-                        const ZydisDecodedInstruction *instruction,
-                        const ZydisDecodedOperand *operand,
-                        bool known, uint64_t value) {
-    uint64_t address;
+/* Store `value` in a register, or in memory at an address resolved before the
+ * instruction changed any state. An unknown value invalidates the destination;
+ * an unresolved address leaves memory alone. Fails only when out of memory. */
+static bool store_operand(dearxan_vm_t *vm, const ZydisDecodedOperand *operand,
+                          bool has_address, uint64_t address,
+                          bool known, uint64_t value) {
     size_t size = operand->size / 8;
     if (operand->type == ZYDIS_OPERAND_TYPE_REGISTER) {
         dearxan_vm_write_register(vm, operand->reg.value, known, value);
-    } else if (operand->type == ZYDIS_OPERAND_TYPE_MEMORY && size != 0 &&
-               dearxan_vm_operand_address(vm, instruction, operand, &address)) {
-        if (known && size <= sizeof(value)) dearxan_vm_write_memory(vm, address, &value, size);
-        else dearxan_vm_invalidate_memory(vm, address, size);
+        return true;
     }
-}
-
-static bool is_cmov(ZydisMnemonic mnemonic) {
-    return mnemonic >= ZYDIS_MNEMONIC_CMOVB && mnemonic <= ZYDIS_MNEMONIC_CMOVZ;
-}
-
-static bool operand_mentions_rsp(const ZydisDecodedOperand *operand) {
-    return (operand->type == ZYDIS_OPERAND_TYPE_REGISTER &&
-            ZydisRegisterGetLargestEnclosing(ZYDIS_MACHINE_MODE_LONG_64,
-                                             operand->reg.value) == ZYDIS_REGISTER_RSP) ||
-           (operand->type == ZYDIS_OPERAND_TYPE_MEMORY &&
-            (operand->mem.base == ZYDIS_REGISTER_RSP ||
-             operand->mem.index == ZYDIS_REGISTER_RSP));
-}
-
-static int64_t generic_stack_increment(const ZydisDecodedInstruction *instruction) {
-    switch (instruction->meta.category) {
-        case ZYDIS_CATEGORY_PUSH:
-            return -8;
-        case ZYDIS_CATEGORY_POP:
-            return 8;
-        default:
-            return 0;
+    if (operand->type != ZYDIS_OPERAND_TYPE_MEMORY || !has_address || size == 0) {
+        return true;
     }
+    if (known && size <= sizeof(value)) {
+        return dearxan_vm_write_memory(vm, address, &value, size);
+    }
+    return dearxan_vm_invalidate_memory(vm, address, size);
 }
 
-static void handle_generic(dearxan_vm_t *vm,
+static bool set_operand(dearxan_vm_t *vm,
+                        const ZydisDecodedInstruction *instruction,
+                        const ZydisDecodedOperand *operand,
+                        bool known, uint64_t value) {
+    uint64_t address = 0;
+    bool has_address = operand->type == ZYDIS_OPERAND_TYPE_MEMORY &&
+        dearxan_vm_operand_address(vm, instruction, operand, &address);
+    return store_operand(vm, operand, has_address, address, known, value);
+}
+
+static bool visible_operand_value(const dearxan_vm_t *vm,
+                                  const ZydisDecodedInstruction *instruction,
+                                  const ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT],
+                                  ZyanU8 index, uint64_t *value) {
+    return index < instruction->operand_count_visible &&
+           dearxan_vm_operand_value(vm, instruction, &operands[index], value);
+}
+
+/* Invalidate every register and memory location the instruction writes. PUSH,
+ * POP and their flag variants are handled explicitly in dearxan_vm_step, so no
+ * instruction reaching here in long mode adjusts RSP implicitly (PUSHA/POPA and
+ * the 32-bit flag forms do not decode); the implicit-RSP skip upstream performs
+ * is therefore unnecessary. */
+static bool handle_generic(dearxan_vm_t *vm,
                            const ZydisDecodedInstruction *instruction,
                            const ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT]) {
-    bool rsp_is_explicit = false;
-    int64_t stack_increment = generic_stack_increment(instruction);
-
-    for (ZyanU8 i = 0; i < instruction->operand_count_visible; i++) {
-        if (operand_mentions_rsp(&operands[i])) rsp_is_explicit = true;
-    }
     for (ZyanU8 i = 0; i < instruction->operand_count; i++) {
         const ZydisDecodedOperand *operand = &operands[i];
         if ((operand->actions & ZYDIS_OPERAND_ACTION_WRITE) == 0) continue;
-
-        if (stack_increment != 0 && !rsp_is_explicit &&
-            operand->type == ZYDIS_OPERAND_TYPE_REGISTER &&
-            ZydisRegisterGetLargestEnclosing(ZYDIS_MACHINE_MODE_LONG_64,
-                                             operand->reg.value) == ZYDIS_REGISTER_RSP) {
-            continue;
-        }
-        set_operand(vm, instruction, operand, false, 0);
+        if (!set_operand(vm, instruction, operand, false, 0)) return false;
     }
-    if (stack_increment != 0 && !rsp_is_explicit) {
-        uint64_t rsp;
-        if (dearxan_vm_read_register(vm, ZYDIS_REGISTER_RSP, &rsp)) {
-            dearxan_vm_write_register(vm, ZYDIS_REGISTER_RSP, true,
-                                      rsp + (uint64_t)stack_increment);
-        }
+    return true;
+}
+
+/* Instructions that terminate the current execution path by leaving RIP
+ * unknown, matching upstream's `rip = None` for the Interrupt, Exception and
+ * transaction (XBEGIN/XABORT/XEND) flow classes plus IRET. Zydis places XBEGIN
+ * and XEND in the conditional-branch category and XABORT in the unconditional
+ * one, so these must be caught before the branch handling runs. */
+static bool ends_execution_path(const ZydisDecodedInstruction *instruction) {
+    switch (instruction->mnemonic) {
+        case ZYDIS_MNEMONIC_UD0:
+        case ZYDIS_MNEMONIC_UD1:
+        case ZYDIS_MNEMONIC_UD2:
+        case ZYDIS_MNEMONIC_XBEGIN:
+        case ZYDIS_MNEMONIC_XABORT:
+        case ZYDIS_MNEMONIC_XEND:
+        case ZYDIS_MNEMONIC_IRET:
+        case ZYDIS_MNEMONIC_IRETD:
+        case ZYDIS_MNEMONIC_IRETQ:
+            return true;
+        default:
+            return instruction->meta.category == ZYDIS_CATEGORY_INTERRUPT;
     }
 }
 
@@ -361,87 +360,112 @@ bool dearxan_vm_step(dearxan_vm_t *vm,
                      const ZydisDecodedInstruction *instruction,
                      const ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT],
                      dearxan_vm_t *forked, bool *has_fork) {
-    uint64_t lhs, rhs, address, rsp;
-    bool lhs_known, rhs_known;
+    uint64_t lhs = 0;
+    uint64_t rhs = 0;
+    uint64_t address = 0;
+    uint64_t rsp;
+    bool lhs_known = false;
+    bool rhs_known = false;
     *has_fork = false;
-    lhs_known = instruction->operand_count_visible > 0 &&
-                dearxan_vm_operand_value(vm, instruction, &operands[0], &lhs);
-    rhs_known = instruction->operand_count_visible > 1 &&
-                dearxan_vm_operand_value(vm, instruction, &operands[1], &rhs);
+    if (ends_execution_path(instruction)) {
+        vm->rip_known = false;
+        return true;
+    }
+    /* Every case reads its operands before it changes any state. */
     switch (instruction->mnemonic) {
         case ZYDIS_MNEMONIC_MOV:
         case ZYDIS_MNEMONIC_MOVZX:
-            set_operand(vm, instruction, &operands[0], rhs_known, rhs);
+            rhs_known = visible_operand_value(vm, instruction, operands, 1, &rhs);
+            if (!set_operand(vm, instruction, &operands[0], rhs_known, rhs)) return false;
             break;
         case ZYDIS_MNEMONIC_MOVSX:
         case ZYDIS_MNEMONIC_MOVSXD:
+            rhs_known = visible_operand_value(vm, instruction, operands, 1, &rhs);
             if (rhs_known && operands[1].size != 0 && operands[1].size < 64) {
                 uint64_t mask = (UINT64_C(1) << operands[1].size) - 1;
                 uint64_t sign = UINT64_C(1) << (operands[1].size - 1);
                 rhs &= mask;
                 rhs = (rhs ^ sign) - sign;
             }
-            set_operand(vm, instruction, &operands[0], rhs_known, rhs);
+            if (!set_operand(vm, instruction, &operands[0], rhs_known, rhs)) return false;
             break;
         case ZYDIS_MNEMONIC_LEA:
             rhs_known = dearxan_vm_operand_address(vm, instruction, &operands[1], &address);
-            set_operand(vm, instruction, &operands[0], rhs_known, address);
+            if (!set_operand(vm, instruction, &operands[0], rhs_known, address)) return false;
             break;
         case ZYDIS_MNEMONIC_ADD:
-            set_operand(vm, instruction, &operands[0], lhs_known && rhs_known, lhs + rhs);
+            lhs_known = visible_operand_value(vm, instruction, operands, 0, &lhs);
+            rhs_known = visible_operand_value(vm, instruction, operands, 1, &rhs);
+            if (!set_operand(vm, instruction, &operands[0], lhs_known && rhs_known,
+                             lhs + rhs)) return false;
             break;
         case ZYDIS_MNEMONIC_SUB:
-            set_operand(vm, instruction, &operands[0], lhs_known && rhs_known, lhs - rhs);
+            lhs_known = visible_operand_value(vm, instruction, operands, 0, &lhs);
+            rhs_known = visible_operand_value(vm, instruction, operands, 1, &rhs);
+            if (!set_operand(vm, instruction, &operands[0], lhs_known && rhs_known,
+                             lhs - rhs)) return false;
             break;
         case ZYDIS_MNEMONIC_XCHG:
             {
                 uint64_t addresses[2] = { 0, 0 };
                 bool has_address[2] = { false, false };
+                lhs_known = visible_operand_value(vm, instruction, operands, 0, &lhs);
+                rhs_known = visible_operand_value(vm, instruction, operands, 1, &rhs);
                 for (size_t i = 0; i < 2; i++) {
                     if (operands[i].type == ZYDIS_OPERAND_TYPE_MEMORY) {
                         has_address[i] = dearxan_vm_operand_address(
                             vm, instruction, &operands[i], &addresses[i]);
                     }
                 }
-                for (size_t i = 0; i < 2; i++) {
-                    bool known = i == 0 ? rhs_known : lhs_known;
-                    uint64_t value = i == 0 ? rhs : lhs;
-                    size_t size = operands[i].size / 8;
-                    if (operands[i].type == ZYDIS_OPERAND_TYPE_REGISTER) {
-                        dearxan_vm_write_register(vm, operands[i].reg.value,
-                                                  known, value);
-                    } else if (has_address[i] && size != 0) {
-                        if (known && size <= sizeof(value)) {
-                            dearxan_vm_write_memory(vm, addresses[i], &value,
-                                                    size);
-                        } else {
-                            dearxan_vm_invalidate_memory(vm, addresses[i], size);
-                        }
-                    }
-                }
+                if (!store_operand(vm, &operands[0], has_address[0], addresses[0],
+                                   rhs_known, rhs) ||
+                    !store_operand(vm, &operands[1], has_address[1], addresses[1],
+                                   lhs_known, lhs)) return false;
             }
             break;
         case ZYDIS_MNEMONIC_PUSH:
+            /* Read the operand first so PUSH RSP and PUSH [RSP] see the old RSP. */
+            lhs_known = visible_operand_value(vm, instruction, operands, 0, &lhs);
             if (dearxan_vm_read_register(vm, ZYDIS_REGISTER_RSP, &rsp)) {
                 rsp -= 8;
                 dearxan_vm_write_register(vm, ZYDIS_REGISTER_RSP, true, rsp);
-                if (lhs_known) dearxan_vm_write_memory(vm, rsp, &lhs, 8);
-                else dearxan_vm_invalidate_memory(vm, rsp, 8);
+                if (!(lhs_known ? dearxan_vm_write_memory(vm, rsp, &lhs, 8)
+                                : dearxan_vm_invalidate_memory(vm, rsp, 8))) return false;
             }
             break;
         case ZYDIS_MNEMONIC_POP:
             if (dearxan_vm_read_register(vm, ZYDIS_REGISTER_RSP, &rsp)) {
                 lhs_known = dearxan_vm_read_memory(vm, rsp, &lhs, operands[0].size / 8);
                 dearxan_vm_write_register(vm, ZYDIS_REGISTER_RSP, true, rsp + 8);
-                set_operand(vm, instruction, &operands[0], lhs_known, lhs);
+                if (!set_operand(vm, instruction, &operands[0], lhs_known, lhs)) return false;
+            }
+            break;
+        case ZYDIS_MNEMONIC_PUSHF:
+        case ZYDIS_MNEMONIC_PUSHFQ:
+            /* RFLAGS is not modeled, so the pushed slot is simply invalidated.
+             * operand_width is 64 for PUSHFQ and 16 for the 66-prefixed PUSHF. */
+            if (dearxan_vm_read_register(vm, ZYDIS_REGISTER_RSP, &rsp)) {
+                size_t width = instruction->operand_width / 8;
+                rsp -= width;
+                dearxan_vm_write_register(vm, ZYDIS_REGISTER_RSP, true, rsp);
+                if (!dearxan_vm_invalidate_memory(vm, rsp, width)) return false;
+            }
+            break;
+        case ZYDIS_MNEMONIC_POPF:
+        case ZYDIS_MNEMONIC_POPFQ:
+            /* The popped value lands in the unmodeled RFLAGS, so only RSP moves. */
+            if (dearxan_vm_read_register(vm, ZYDIS_REGISTER_RSP, &rsp)) {
+                dearxan_vm_write_register(vm, ZYDIS_REGISTER_RSP, true,
+                                          rsp + instruction->operand_width / 8);
             }
             break;
         case ZYDIS_MNEMONIC_CALL:
+            lhs_known = visible_operand_value(vm, instruction, operands, 0, &lhs);
             if (dearxan_vm_read_register(vm, ZYDIS_REGISTER_RSP, &rsp)) {
                 uint64_t return_ip = vm->rip + instruction->length;
                 rsp -= 8;
                 dearxan_vm_write_register(vm, ZYDIS_REGISTER_RSP, true, rsp);
-                dearxan_vm_write_memory(vm, rsp, &return_ip, 8);
+                if (!dearxan_vm_write_memory(vm, rsp, &return_ip, 8)) return false;
             }
             if (lhs_known) vm->rip = lhs;
             else vm->rip_known = false;
@@ -449,12 +473,9 @@ bool dearxan_vm_step(dearxan_vm_t *vm,
         case ZYDIS_MNEMONIC_RET:
             if (dearxan_vm_read_register(vm, ZYDIS_REGISTER_RSP, &rsp)) {
                 bool target_known = dearxan_vm_read_memory(vm, rsp, &address, 8);
-                uint64_t increment = 8;
-                if (instruction->operand_count_visible != 0 &&
-                    operands[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
-                    increment += operands[0].imm.value.u;
-                }
-                dearxan_vm_write_register(vm, ZYDIS_REGISTER_RSP, true, rsp + increment);
+                dearxan_vm_write_register(vm, ZYDIS_REGISTER_RSP, true,
+                                          rsp + dearxan_vm_ret_increment(instruction,
+                                                                         operands));
                 if (target_known) vm->rip = address;
                 else vm->rip_known = false;
             } else {
@@ -462,25 +483,31 @@ bool dearxan_vm_step(dearxan_vm_t *vm,
             }
             return true;
         default:
-            if (is_cmov(instruction->mnemonic)) {
+            if (dearxan_vm_is_cmov(instruction)) {
+                lhs_known = visible_operand_value(vm, instruction, operands, 0, &lhs);
+                rhs_known = visible_operand_value(vm, instruction, operands, 1, &rhs);
                 vm->rip += instruction->length;
                 if (lhs_known && rhs_known) {
                     if (!dearxan_vm_clone(forked, vm)) return false;
-                    set_operand(forked, instruction, &operands[0], true, rhs);
+                    /* CMOV always writes a register, which cannot fail. */
+                    (void)set_operand(forked, instruction, &operands[0], true, rhs);
                     *has_fork = true;
                 } else if (rhs_known) {
-                    set_operand(vm, instruction, &operands[0], true, rhs);
+                    (void)set_operand(vm, instruction, &operands[0], true, rhs);
                 }
                 return true;
             }
-            handle_generic(vm, instruction, operands);
+            if (instruction->meta.category == ZYDIS_CATEGORY_COND_BR ||
+                instruction->meta.category == ZYDIS_CATEGORY_UNCOND_BR) {
+                lhs_known = visible_operand_value(vm, instruction, operands, 0, &lhs);
+            }
+            if (!handle_generic(vm, instruction, operands)) return false;
             break;
     }
     if (instruction->meta.category == ZYDIS_CATEGORY_COND_BR &&
-        instruction->operand_count_visible == 1 &&
-        dearxan_vm_operand_value(vm, instruction, &operands[0], &address)) {
+        instruction->operand_count_visible == 1 && lhs_known) {
         if (!dearxan_vm_clone(forked, vm)) return false;
-        forked->rip = address;
+        forked->rip = lhs;
         forked->rip_known = true;
         *has_fork = true;
     }

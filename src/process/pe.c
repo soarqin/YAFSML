@@ -10,7 +10,7 @@
 
 #include <string.h>
 
-static const IMAGE_NT_HEADERS64 *pe_nt_headers(void *image_base) {
+const IMAGE_NT_HEADERS64 *pe_nt_headers(const void *image_base) {
     if (image_base == NULL) {
         return NULL;
     }
@@ -26,6 +26,11 @@ static const IMAGE_NT_HEADERS64 *pe_nt_headers(void *image_base) {
     }
 
     return nt;
+}
+
+/* VirtualSize, or SizeOfRawData for linkers that leave VirtualSize zero. */
+static uint32_t pe_section_size(const IMAGE_SECTION_HEADER *sh) {
+    return sh->Misc.VirtualSize != 0 ? sh->Misc.VirtualSize : sh->SizeOfRawData;
 }
 
 static bool section_name_equals(const IMAGE_SECTION_HEADER *sh, const char *name) {
@@ -72,7 +77,7 @@ void *pe_section_data(void *image_base, const IMAGE_SECTION_HEADER *sh, size_t *
     }
 
     if (out_size != NULL) {
-        *out_size = (size_t)sh->Misc.VirtualSize;
+        *out_size = (size_t)pe_section_size(sh);
     }
 
     return (uint8_t *)image_base + sh->VirtualAddress;
@@ -83,14 +88,11 @@ uint32_t pe_section_rva_start(const IMAGE_SECTION_HEADER *sh) {
 }
 
 uint32_t pe_section_rva_end(const IMAGE_SECTION_HEADER *sh) {
-    uint32_t size;
-
     if (sh == NULL) {
         return 0;
     }
 
-    size = sh->Misc.VirtualSize != 0 ? sh->Misc.VirtualSize : sh->SizeOfRawData;
-    return sh->VirtualAddress + size;
+    return sh->VirtualAddress + pe_section_size(sh);
 }
 
 bool pe_section_contains_rva(const IMAGE_SECTION_HEADER *sh, uint32_t rva) {

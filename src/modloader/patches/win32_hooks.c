@@ -98,10 +98,7 @@ static BOOL WINAPI replace_file_w_hooked(LPCWSTR replaced_path, LPCWSTR replacem
                                          LPVOID exclude, LPVOID reserved);
 
 static bool remove_hook(void *target) {
-    MH_STATUS status = MH_RemoveHook(target);
-    if (status == MH_OK || status == MH_ERROR_NOT_CREATED) return true;
-    ML_LOG_WARN(L"win32-vfs", L"failed to remove hook at %p: %d", target, status);
-    return false;
+    return ml_hook_remove(target, L"win32-vfs");
 }
 
 static ml_hook_result_t install_hook(void *target, void *detour, void **original) {

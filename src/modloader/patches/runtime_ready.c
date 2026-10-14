@@ -4,21 +4,27 @@
 
 #include "modloader/hook.h"
 
-#include <MinHook.h>
-
 typedef bool (__cdecl *steam_api_init_t)(void);
 
 static steam_api_init_t old_steam_api_init;
 static HMODULE steam_api_module;
 static void *steam_api_init_hook_target;
-static INIT_ONCE after_runtime_once = INIT_ONCE_STATIC_INIT;
+/* 0 = pending, 1 = running, 2 = done. Not an INIT_ONCE: an external DLL loaded by
+ * the callback may call SteamAPI_Init itself, and INIT_ONCE would then wait for
+ * its own pending initialization forever. Nested calls simply pass through. */
+static volatile LONG after_runtime_state;
 static ml_runtime_ready_callback_t after_runtime_callback;
 static const wchar_t *hook_log_scope;
 
 static bool __cdecl steam_api_init_hooked(void) {
     bool result = old_steam_api_init();
-    if (result && !InitOnceExecuteOnce(&after_runtime_once, after_runtime_callback, NULL, NULL)) {
-        ML_LOG_WARN(hook_log_scope, L"AFTER_RUNTIME_INIT setup failed; deferred initialization will retry");
+    if (result && InterlockedCompareExchange(&after_runtime_state, 1, 0) == 0) {
+        if (after_runtime_callback()) {
+            InterlockedExchange(&after_runtime_state, 2);
+        } else {
+            InterlockedExchange(&after_runtime_state, 0);
+            ML_LOG_WARN(hook_log_scope, L"AFTER_RUNTIME_INIT setup failed; deferred initialization will retry");
+        }
     }
     return result;
 }
@@ -50,20 +56,12 @@ bool ml_runtime_ready_hook_install(const wchar_t *log_scope,
 }
 
 bool ml_runtime_ready_hook_uninstall(const wchar_t *log_scope) {
-    MH_STATUS status = MH_OK;
-    if (steam_api_init_hook_target != NULL) {
-        status = MH_RemoveHook(steam_api_init_hook_target);
-        if (status != MH_OK && status != MH_ERROR_NOT_CREATED) {
-            ML_LOG_WARN(log_scope, L"failed to remove runtime-ready hook at %p: %d",
-                        steam_api_init_hook_target, status);
-            return false;
-        }
-    }
+    if (!ml_hook_remove(steam_api_init_hook_target, log_scope)) return false;
     steam_api_init_hook_target = NULL;
     old_steam_api_init = NULL;
     after_runtime_callback = NULL;
     hook_log_scope = NULL;
-    InitOnceInitialize(&after_runtime_once);
+    InterlockedExchange(&after_runtime_state, 0);
     if (steam_api_module != NULL) FreeLibrary(steam_api_module);
     steam_api_module = NULL;
     return true;

@@ -38,6 +38,28 @@ below so that they are not mistaken for unreviewed parity gaps.
 - Previously deferred system-property overrides remain deferred as documented
   below; this review does not change that configuration or ABI decision.
 
+### Code review alignment (2026-10-14)
+
+A review of the whole code base re-checked the following behavior against
+`5f4fa47`:
+
+- The SPRJ regulation-writer scan again requires `test al, al; je` after the
+  call, as me3 does. The looser pattern also matched the save-regulation reader
+  and Dark Souls III stats requests.
+- A `modengine_ext_init` that returns false is reported, and the external DLLs
+  after it still load.
+- Every game advances `AFTER_RUNTIME_INIT` before installing the asset hooks;
+  Elden Ring and Sekiro used to install them first.
+- `MountEbl` detection prefers the call-site signature and uses the
+  whole-function signature only when no call site matches.
+- BootBoost measures the PEM key with `strlen` instead of the game's `key_len`,
+  and reports a successful full mount as mounted even when no mount can be
+  extracted for the cache.
+- Sekiro's debug allocator getter is the most frequent call target in `.text`.
+- Intentional difference: when the dedicated heap cannot satisfy a
+  reallocation, YAFSML retries through the global mimalloc heap. me3 retries
+  only allocations (`15a19de`).
+
 ### Review through `1ae84ae` (2026-08-13)
 
 - Ported the dedicated mimalloc arena from `da9abcf`: YAFSML now reserves the
@@ -85,3 +107,7 @@ The VFS dictionary cache follows this fork's stable cached-object optimization.
   including the deferred system-property map support. This fork does not yet
   contain original me3's later changes through `5f4fa47`; those are reviewed and
   ported separately under the Original Repository section.
+- 2026-10-14: the ordinary `MountEbl` path no longer extracts the newly mounted
+  devices and pushes them back. As in this fork, the mounts stay resident in the
+  device manager and their BND4 `open_file` is hooked; original me3 instead
+  moves them into its `VFS_MOUNTS` list.

@@ -1,4 +1,5 @@
 #include "dxgi.h"
+#include "common.h"
 #include "log.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -32,23 +33,9 @@ void *dxgi_orig_PIXGetCaptureState;
 void *dxgi_orig_SetAppCompatStringPointer;
 void *dxgi_orig_UpdateHMDEmulationStatus;
 
-#if defined(__cplusplus)
-extern "C" {
-#endif
-
-bool load_dxgi_proxy() {
-    wchar_t path[MAX_PATH], syspath[MAX_PATH];
-    if (GetSystemDirectoryW(syspath, MAX_PATH) == 0) {
-        ML_LOG_ERROR(L"proxy", L"cannot resolve system directory for dxgi.dll");
-        return false;
-    }
-    _snwprintf(path, MAX_PATH, L"%ls\\dxgi.dll", syspath);
-    path[MAX_PATH - 1] = L'\0';
-    dxgi_dll = LoadLibraryW(path);
-    if (!dxgi_dll) {
-        ML_LOG_ERROR(L"proxy", L"cannot load original dxgi.dll library");
-        return false;
-    }
+bool load_dxgi_proxy(void) {
+    dxgi_dll = proxy_load_system_dll(L"dxgi.dll");
+    if (dxgi_dll == NULL) return false;
     dxgi_orig_ApplyCompatResolutionQuirking = (void *)GetProcAddress(dxgi_dll, "ApplyCompatResolutionQuirking");
     dxgi_orig_CompatString = (void *)GetProcAddress(dxgi_dll, "CompatString");
     dxgi_orig_CompatValue = (void *)GetProcAddress(dxgi_dll, "CompatValue");
@@ -71,7 +58,3 @@ bool load_dxgi_proxy() {
     dxgi_orig_UpdateHMDEmulationStatus = (void *)GetProcAddress(dxgi_dll, "UpdateHMDEmulationStatus");
     return true;
 }
-
-#if defined(__cplusplus)
-}
-#endif

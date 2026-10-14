@@ -59,6 +59,40 @@ static int test_static_initializer_lookup(void) {
     return 0;
 }
 
+/* Step table entries laid out the way the game keeps them in .data: the step
+   function followed by a pointer to its UTF-16 name in .rdata. */
+static int step_target;
+static int late_step_target;
+static const __declspec(align(8)) wchar_t step_entry_name[] = L"SmokeStep::STEP_Mapped";
+static const __declspec(align(8)) wchar_t late_step_entry_name[] = L"SmokeStep::STEP_Late";
+static void *step_entry[2] = { &step_target, (void *)step_entry_name };
+/* Not a name until the "game" fills it in after the first map build. */
+static void *late_step_entry[2] = { &late_step_target, (void *)1 };
+
+static int test_map_lookup(void) {
+    EXPECT_EQ(fd4_step_find_slot(L"SmokeStep::STEP_Mapped"), &step_entry[0]);
+    EXPECT_EQ(fd4_step_find(L"SmokeStep::STEP_Mapped"), (void *)&step_target);
+
+    /* A slot the game has not filled falls through to the static scan, which
+       finds nothing in this image. */
+    step_entry[0] = NULL;
+    EXPECT_EQ(fd4_step_find_slot(L"SmokeStep::STEP_Mapped"), &step_entry[0]);
+    EXPECT_NULL(fd4_step_find(L"SmokeStep::STEP_Mapped"));
+    step_entry[0] = &step_target;
+
+    /* A miss rebuilds the map and picks up entries initialized since. */
+    EXPECT_NULL(fd4_step_find_slot(L"SmokeStep::STEP_Late"));
+    late_step_entry[1] = (void *)late_step_entry_name;
+    EXPECT_EQ(fd4_step_find_slot(L"SmokeStep::STEP_Late"), &late_step_entry[0]);
+    EXPECT_EQ(fd4_step_find(L"SmokeStep::STEP_Late"), (void *)&late_step_target);
+
+    EXPECT_NULL(fd4_step_find_slot(L"SmokeStep::STEP_Missing"));
+    EXPECT_NULL(fd4_step_find(L"SmokeStep::STEP_Missing"));
+    EXPECT_NULL(fd4_step_find_slot(NULL));
+    EXPECT_NULL(fd4_step_find(NULL));
+    return 0;
+}
+
 int main(void) {
     fd4_time_t time = { 0, 1.0f };
     int object = 0;
@@ -67,6 +101,7 @@ int main(void) {
     EXPECT_EQ(seen_this, &object);
     EXPECT_EQ(seen_time, &time);
     EXPECT_EQ(test_static_initializer_lookup(), 0);
+    EXPECT_EQ(test_map_lookup(), 0);
     printf("smoke_fd4_step: all tests passed\n");
     return 0;
 }

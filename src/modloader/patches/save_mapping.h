@@ -5,6 +5,10 @@
 #include <stdbool.h>
 #include <wchar.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Resolves the save root (%APPDATA%\<game save dir>) and clears any registered
  * extension mappings. Call before ml_save_mapping_add_extension. */
 bool ml_save_mapping_init_root(const ml_game_descriptor_t *game);
@@ -20,3 +24,7 @@ bool ml_save_mapping_init(const ml_game_descriptor_t *game, const wchar_t *overr
 
 bool ml_save_mapping_route(const wchar_t *path, const wchar_t **mapped_path);
 void ml_save_mapping_uninit(void);
+
+#ifdef __cplusplus
+}
+#endif

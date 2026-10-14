@@ -58,12 +58,31 @@ static void apply_offline_property(ml_lifecycle_phase_t phase, void *userp) {
     }
 }
 
-bool ml_properties_set_loose_params(bool enabled) {
+void ml_properties_set_loose_params(bool enabled) {
     loose_param_property = (internal_property_t){
         "Game.Debug.EnableRegulationFile", "false"
     };
     loose_param_property_enabled = enabled;
-    return true;
+}
+
+/* The initializer reference sits in .text or, in Arxan builds of Elden Ring and
+ * Nightreign, in a later executable section. Data sections are never scanned, so
+ * a false match can not be patched as code. */
+static const uint8_t *find_property_initializer(void *image, const uint8_t *property_string) {
+    const IMAGE_NT_HEADERS64 *nt = pe_nt_headers(image);
+    const IMAGE_SECTION_HEADER *section;
+    if (nt == NULL) return NULL;
+    section = IMAGE_FIRST_SECTION(nt);
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; i++, section++) {
+        size_t size = 0;
+        const uint8_t *data;
+        const uint8_t *found;
+        if ((section->Characteristics & IMAGE_SCN_MEM_EXECUTE) == 0) continue;
+        data = pe_section_data(image, section, &size);
+        found = data == NULL ? NULL : ml_find_rip_relative_lea(data, size, property_string);
+        if (found != NULL) return found;
+    }
+    return NULL;
 }
 
 void ml_properties_on_init(void) {
@@ -81,11 +100,8 @@ bool ml_properties_install(const ml_game_descriptor_t *game) {
     dlrf_method_info_t method;
     size_t image_size;
     void *image;
-    const IMAGE_SECTION_HEADER *text_section;
     const IMAGE_SECTION_HEADER *rdata_section;
-    uint8_t *text;
     uint8_t *rdata;
-    size_t text_size = 0;
     size_t rdata_size = 0;
     const uint8_t *property_string;
     const uint8_t *property_init;
@@ -112,9 +128,7 @@ bool ml_properties_install(const ml_game_descriptor_t *game) {
     set_game_property = (set_game_property_t)method.address;
 
     image = get_module_image_base(NULL, &image_size);
-    text_section = pe_section_by_name(image, ".text");
     rdata_section = pe_section_by_name(image, ".rdata");
-    text = text_section == NULL ? NULL : pe_section_data(image, text_section, &text_size);
     rdata = rdata_section == NULL ? NULL : pe_section_data(image, rdata_section, &rdata_size);
     property_string = ml_find_utf16_string(rdata, rdata_size, L"Game.Debug.NearOnlyDraw");
     if (property_string == NULL) {
@@ -128,16 +142,9 @@ bool ml_properties_install(const ml_game_descriptor_t *game) {
                     image, image_size, rdata, rdata_size);
         return false;
     }
-    property_init = ml_find_rip_relative_lea(text, text_size, property_string);
-    if (property_init == NULL && text != (uint8_t *)image) {
-        property_init = ml_find_rip_relative_lea((const uint8_t *)image, image_size, property_string);
-        if (property_init != NULL) {
-            ML_LOG_INFO(L"properties", L"property reference found outside .text at %p", property_init);
-        }
-    }
+    property_init = find_property_initializer(image, property_string);
     if (property_init == NULL) {
-        ML_LOG_WARN(L"properties", L"property initializer reference not found string=%p text=%p size=%zu",
-                    property_string, text, text_size);
+        ML_LOG_WARN(L"properties", L"property initializer reference not found string=%p", property_string);
         return false;
     }
     property_init_target = (void *)property_init;

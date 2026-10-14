@@ -28,7 +28,9 @@ int main(void) {
     EXPECT_STREQ_W(game->title, L"Armored Core VI: Fires of Rubicon");
     EXPECT_STREQ_W(game->exe_relpaths[0], L"Game\\armoredcore6.exe");
     EXPECT_STREQ_W(game->save_root_name, L"ArmoredCore6");
-    EXPECT_STREQ_W(game->ini_section, L"armoredcore6");
+    EXPECT_STREQ_W(game->log_scope, L"armoredcore6");
+    EXPECT_STREQ_W(game->regulation_file, L"regulation.bin");
+    EXPECT_EQ(game->wwise_strategy, ML_WWISE_AFTER_RUNTIME);
     EXPECT_STREQ_W(game->modengine_config_name, L"config_armoredcore6.toml");
     EXPECT_STREQ_W(game->file_step_name, L"CSFileStep::STEP_Init");
     EXPECT_STREQ_A(game->control_api_class, "CSAutoControlAPI");
@@ -54,7 +56,8 @@ int main(void) {
     EXPECT_EQ(game->data_ready_strategy, ML_DATA_READY_FD4_NAMED_STEP);
     EXPECT_STREQ_W(game->exe_relpaths[0], L"Game\\nightreign.exe");
     EXPECT_STREQ_W(game->save_root_name, L"Nightreign");
-    EXPECT_STREQ_W(game->ini_section, L"nightreign");
+    EXPECT_STREQ_W(game->log_scope, L"nightreign");
+    EXPECT_EQ(game->wwise_strategy, ML_WWISE_AFTER_RUNTIME);
     EXPECT_STREQ_W(game->modengine_config_name, L"config_nightreign.toml");
     EXPECT_STREQ_W(game->file_step_name, L"CSFileStep::STEP_Init");
     EXPECT_EQ(game->stl_abi, ML_STL_ABI_MSVC2015);
@@ -65,6 +68,11 @@ int main(void) {
     EXPECT_EQ(game->allocator_strategy, ML_ALLOCATOR_STRATEGY_UNSUPPORTED);
     EXPECT_EQ(game->regulation_strategy, ML_REGULATION_STRATEGY_FD4);
     EXPECT_EQ(ml_game_by_key(L"NIGHTREIGN")->id, ML_GAME_NIGHTREIGN);
+    EXPECT_STREQ_W(ml_game_by_id(ML_GAME_DARK_SOULS_3)->regulation_file, L"Data0.bdt");
+    EXPECT_EQ(ml_game_by_id(ML_GAME_ELDEN_RING)->wwise_strategy, ML_WWISE_AT_INSTALL);
+    EXPECT_EQ(ml_game_by_exe_path(L"C:\\games\\Game\\DarkSoulsIII.exe")->id, ML_GAME_DARK_SOULS_3);
+    EXPECT_EQ(ml_game_by_exe_path(L"ARMOREDCORE6.EXE")->id, ML_GAME_ARMORED_CORE_6);
+    EXPECT_NULL(ml_game_by_exe_path(L"Game\\other.exe"));
     EXPECT_EQ(ml_game_by_key(L"nightrein")->id, ML_GAME_NIGHTREIGN);
 
     game = ml_game_by_key(L"sekiro");
@@ -77,7 +85,8 @@ int main(void) {
     EXPECT_EQ(game->data_ready_strategy, ML_DATA_READY_SPRJ_PARAM_STEP);
     EXPECT_STREQ_W(game->exe_relpaths[0], L"sekiro.exe");
     EXPECT_STREQ_W(game->save_root_name, L"Sekiro");
-    EXPECT_STREQ_W(game->ini_section, L"sekiro");
+    EXPECT_STREQ_W(game->log_scope, L"sekiro");
+    EXPECT_EQ(game->wwise_strategy, ML_WWISE_UNSUPPORTED);
     EXPECT_STREQ_W(game->modengine_config_name, L"config_sekiro.toml");
     EXPECT_STREQ_W(game->file_step_name, L"SprjFileStep::STEP_Init");
     EXPECT_EQ(game->stl_abi, ML_STL_ABI_MSVC2015);

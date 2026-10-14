@@ -48,12 +48,13 @@ static const char *__cdecl test_wine_version(void) {
     return "test";
 }
 
+/* Only ntdll is faked; injection and proxy detection use the real modules. */
 static HMODULE WINAPI test_get_module_handle(LPCWSTR name) {
-    return wcscmp(name, L"ntdll.dll") == 0 ? (HMODULE)(uintptr_t)1 : NULL;
+    return wcscmp(name, L"ntdll.dll") == 0 ? (HMODULE)(uintptr_t)1 : GetModuleHandleW(name);
 }
 
 static FARPROC WINAPI test_get_proc_address(HMODULE module, LPCSTR name) {
-    (void)module;
+    if (module != (HMODULE)(uintptr_t)1) return GetProcAddress(module, name);
     if (test_wine && strcmp(name, "wine_get_version") == 0) return (FARPROC)test_wine_version;
     if (test_getter_available && strcmp(name, "__wine_get_unix_env") == 0) return (FARPROC)test_unix_getenv;
     if (test_setter_available && strcmp(name, "__wine_set_unix_env") == 0) return (FARPROC)test_unix_setenv;
@@ -69,7 +70,8 @@ static BOOL WINAPI test_create_process(LPCWSTR executable, LPWSTR command_line,
                                         LPPROCESS_INFORMATION process) {
     test_spawns++;
     test_spawn_arguments_valid = wcscmp(executable, L"C:\\模组\\game.exe") == 0 &&
-        command_line == NULL && process_attributes == NULL && thread_attributes == NULL &&
+        command_line != NULL && wcscmp(command_line, L"\"C:\\模组\\game.exe\"") == 0 &&
+        process_attributes == NULL && thread_attributes == NULL &&
         !inherit_handles && creation_flags == CREATE_SUSPENDED && environment == NULL &&
         wcscmp(working_directory, L"C:\\模组") == 0 && startup->cb == sizeof(*startup) &&
         process != NULL && (!test_expect_locale_cleared || !test_locale_present);
@@ -77,6 +79,8 @@ static BOOL WINAPI test_create_process(LPCWSTR executable, LPWSTR command_line,
     return test_spawn_result;
 }
 
+/* Start with one slot so every module lookup exercises the buffer growth. */
+#define ML_LAUNCHER_INITIAL_MODULES 1
 #define GetModuleHandleW test_get_module_handle
 #define GetProcAddress test_get_proc_address
 #define CreateProcessW test_create_process
@@ -182,26 +186,32 @@ static DWORD WINAPI completed_thread(void *value) {
 }
 
 static int test_remote_thread_wait(void) {
+    DWORD exit_code = 0;
     HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, GetCurrentProcessId());
     EXPECT_NOT_NULL(process);
     HANDLE thread = CreateThread(NULL, 0, completed_thread, (void *)(uintptr_t)1, 0, NULL);
     EXPECT_NOT_NULL(thread);
-    EXPECT_TRUE(ml_launcher_wait_for_remote_thread(process, thread));
-    EXPECT_TRUE(!ml_launcher_wait_for_remote_thread(NULL, thread));
+    EXPECT_TRUE(ml_launcher_wait_for_remote_thread(process, thread, &exit_code));
+    EXPECT_EQ(exit_code, 1);
+    EXPECT_TRUE(!ml_launcher_wait_for_remote_thread(NULL, thread, &exit_code));
     EXPECT_EQ(GetLastError(), ERROR_INVALID_HANDLE);
 
     HANDLE exited = CreateEventW(NULL, TRUE, TRUE, NULL);
     EXPECT_NOT_NULL(exited);
     /* Both handles are signaled: game exit must take precedence. */
-    EXPECT_TRUE(!ml_launcher_wait_for_remote_thread(exited, thread));
+    EXPECT_TRUE(!ml_launcher_wait_for_remote_thread(exited, thread, &exit_code));
     EXPECT_EQ(GetLastError(), ERROR_PROCESS_ABORTED);
     EXPECT_TRUE(CloseHandle(exited));
     EXPECT_TRUE(CloseHandle(thread));
 
+    /* A zero exit code is returned rather than judged: for LoadLibraryW it is
+     * the low half of a 4 GiB-aligned module address. */
     thread = CreateThread(NULL, 0, completed_thread, NULL, 0, NULL);
     EXPECT_NOT_NULL(thread);
-    EXPECT_TRUE(!ml_launcher_wait_for_remote_thread(process, thread));
-    EXPECT_EQ(GetLastError(), ERROR_DLL_INIT_FAILED);
+    exit_code = 1;
+    EXPECT_TRUE(ml_launcher_wait_for_remote_thread(process, thread, &exit_code));
+    EXPECT_EQ(exit_code, 0);
+    EXPECT_TRUE(ml_launcher_wait_for_remote_thread(process, thread, NULL));
     EXPECT_TRUE(CloseHandle(thread));
     EXPECT_TRUE(CloseHandle(process));
     return 0;
@@ -219,11 +229,160 @@ static int test_game_exit_before_attach(void) {
     startup.cb = sizeof(startup);
     EXPECT_TRUE(CreateProcessW(executable, command_line, NULL, NULL, FALSE, 0,
                                 NULL, NULL, &startup, &process));
-    EXPECT_TRUE(!ml_launcher_wait_for_remote_thread(process.hProcess, pending_attach));
+    EXPECT_TRUE(!ml_launcher_wait_for_remote_thread(process.hProcess, pending_attach, NULL));
     EXPECT_EQ(GetLastError(), ERROR_PROCESS_ABORTED);
     EXPECT_TRUE(CloseHandle(pending_attach));
     EXPECT_TRUE(CloseHandle(process.hThread));
     EXPECT_TRUE(CloseHandle(process.hProcess));
+    return 0;
+}
+
+/* This executable stands in for YAFSML.dll. In the suspended child it runs
+ * before the C runtime is initialized, so it may only call kernel32. */
+__declspec(dllexport) DWORD WINAPI YAFSMLInit(LPVOID parameter) {
+    (void)parameter;
+    return GetEnvironmentVariableW(L"YAFSML_TEST_INIT_FAIL", NULL, 0) == 0 ? 1 : 0;
+}
+
+static int make_temp_dir(wchar_t path[MAX_PATH]) {
+    wchar_t temp_dir[MAX_PATH];
+    EXPECT_TRUE(GetTempPathW(MAX_PATH, temp_dir) != 0);
+    EXPECT_TRUE(GetTempFileNameW(temp_dir, L"yaf", 0, path) != 0);
+    EXPECT_TRUE(DeleteFileW(path));
+    EXPECT_TRUE(CreateDirectoryW(path, NULL));
+    return 0;
+}
+
+static int test_find_module(void) {
+    const HANDLE process = GetCurrentProcess();
+    const HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+    wchar_t path[MAX_PATH];
+    wchar_t folder[MAX_PATH];
+    wchar_t copy[MAX_PATH];
+    HMODULE system_module;
+    HMODULE copy_module;
+    EXPECT_NOT_NULL(kernel32);
+    EXPECT_TRUE(GetModuleFileNameW(kernel32, path, MAX_PATH) != 0);
+    EXPECT_EQ(ml_launcher_find_remote_module(process, path), kernel32);
+    for (wchar_t *c = path; *c != L'\0'; c++) *c = (wchar_t)towupper(*c);
+    EXPECT_EQ(ml_launcher_find_remote_module(process, path), kernel32);
+    /* Only the full path identifies a module; the base name alone is ambiguous. */
+    EXPECT_NULL(ml_launcher_find_remote_module(process, L"kernel32.dll"));
+    EXPECT_EQ(GetLastError(), ERROR_MOD_NOT_FOUND);
+    EXPECT_NULL(ml_launcher_find_remote_module(process, L"C:\\YAFSML\\kernel32.dll"));
+    EXPECT_TRUE(GetModuleFileNameW(NULL, path, MAX_PATH) != 0);
+    EXPECT_EQ(ml_launcher_find_remote_module(process, path), GetModuleHandleW(NULL));
+
+    /* Two loaded DLLs with one base name, like `-d ...\dxgi.dll` next to
+     * System32's dxgi.dll, are told apart. */
+    EXPECT_TRUE(GetSystemDirectoryW(path, MAX_PATH) != 0);
+    EXPECT_TRUE(PathAppendW(path, L"version.dll"));
+    EXPECT_EQ(make_temp_dir(folder), 0);
+    EXPECT_NOT_NULL(PathCombineW(copy, folder, L"version.dll"));
+    EXPECT_TRUE(CopyFileW(path, copy, FALSE));
+    system_module = LoadLibraryW(path);
+    copy_module = LoadLibraryExW(copy, NULL, DONT_RESOLVE_DLL_REFERENCES);
+    EXPECT_NOT_NULL(system_module);
+    EXPECT_NOT_NULL(copy_module);
+    EXPECT_TRUE(system_module != copy_module);
+    EXPECT_EQ(ml_launcher_find_remote_module(process, path), system_module);
+    EXPECT_EQ(ml_launcher_find_remote_module(process, copy), copy_module);
+    EXPECT_TRUE(FreeLibrary(copy_module));
+    EXPECT_TRUE(FreeLibrary(system_module));
+    EXPECT_TRUE(DeleteFileW(copy));
+    EXPECT_TRUE(RemoveDirectoryW(folder));
+    return 0;
+}
+
+static int test_proxy_copy(void) {
+    wchar_t folder[MAX_PATH];
+    wchar_t path[MAX_PATH];
+    wchar_t source[MAX_PATH];
+    wchar_t found[MAX_PATH];
+    const wchar_t *names[] = { L"dinput8.dll", L"dxgi.dll", L"winhttp.dll" };
+    FILE *file;
+    EXPECT_EQ(make_temp_dir(folder), 0);
+    EXPECT_TRUE(!ml_launcher_find_proxy_copy(folder, found));
+    EXPECT_STREQ_W(found, L"");
+
+    /* Unloadable files and other DLLs with proxy names are not YAFSML copies. */
+    EXPECT_NOT_NULL(PathCombineW(path, folder, L"winhttp.dll"));
+    file = _wfopen(path, L"wb");
+    EXPECT_NOT_NULL(file);
+    EXPECT_EQ(fclose(file), 0);
+    EXPECT_TRUE(GetSystemDirectoryW(source, MAX_PATH) != 0);
+    EXPECT_TRUE(PathAppendW(source, L"version.dll"));
+    EXPECT_NOT_NULL(PathCombineW(path, folder, L"dxgi.dll"));
+    EXPECT_TRUE(CopyFileW(source, path, FALSE));
+    EXPECT_TRUE(!ml_launcher_find_proxy_copy(folder, found));
+
+    /* This executable exports YAFSMLInit like YAFSML.dll. */
+    EXPECT_TRUE(GetModuleFileNameW(NULL, source, MAX_PATH) != 0);
+    EXPECT_NOT_NULL(PathCombineW(path, folder, L"dinput8.dll"));
+    EXPECT_TRUE(CopyFileW(source, path, FALSE));
+    EXPECT_TRUE(ml_launcher_find_proxy_copy(folder, found));
+    EXPECT_STREQ_W(found, path);
+
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        EXPECT_NOT_NULL(PathCombineW(path, folder, names[i]));
+        EXPECT_TRUE(DeleteFileW(path));
+    }
+    EXPECT_TRUE(RemoveDirectoryW(folder));
+    return 0;
+}
+
+static int spawn_suspended_child(PROCESS_INFORMATION *process) {
+    wchar_t executable[MAX_PATH];
+    STARTUPINFOW startup = { 0 };
+    EXPECT_TRUE(GetModuleFileNameW(NULL, executable, MAX_PATH) != 0);
+    startup.cb = sizeof(startup);
+    /* The child never resumes: only the injected threads run in it. */
+    EXPECT_TRUE(CreateProcessW(executable, NULL, NULL, NULL, FALSE, CREATE_SUSPENDED,
+                                NULL, NULL, &startup, process));
+    return 0;
+}
+
+static void end_child(PROCESS_INFORMATION *process) {
+    TerminateProcess(process->hProcess, 0);
+    WaitForSingleObject(process->hProcess, 10000);
+    CloseHandle(process->hThread);
+    CloseHandle(process->hProcess);
+}
+
+static int expect_injection(const wchar_t *dll_path, bool expected, DWORD expected_error) {
+    PROCESS_INFORMATION process = { 0 };
+    bool injected;
+    DWORD error;
+    EXPECT_EQ(spawn_suspended_child(&process), 0);
+    injected = ml_launcher_inject_dll(process.hProcess, dll_path);
+    error = GetLastError();
+    end_child(&process);
+    EXPECT_EQ(injected, expected);
+    if (!expected) EXPECT_EQ(error, expected_error);
+    return 0;
+}
+
+static int test_injection(void) {
+    wchar_t executable[MAX_PATH];
+    wchar_t folder[MAX_PATH];
+    wchar_t path[MAX_PATH];
+    EXPECT_TRUE(GetModuleFileNameW(NULL, executable, MAX_PATH) != 0);
+    EXPECT_TRUE(SetEnvironmentVariableW(L"YAFSML_TEST_INIT_FAIL", NULL) ||
+                GetLastError() == ERROR_ENVVAR_NOT_FOUND);
+    EXPECT_EQ(expect_injection(executable, true, 0), 0);
+    /* The child inherits the variable, so its YAFSMLInit returns zero. */
+    EXPECT_TRUE(SetEnvironmentVariableW(L"YAFSML_TEST_INIT_FAIL", L"1"));
+    EXPECT_EQ(expect_injection(executable, false, ERROR_DLL_INIT_FAILED), 0);
+    EXPECT_TRUE(SetEnvironmentVariableW(L"YAFSML_TEST_INIT_FAIL", NULL));
+
+    EXPECT_EQ(make_temp_dir(folder), 0);
+    EXPECT_NOT_NULL(PathCombineW(path, folder, L"YAFSML.dll"));
+    EXPECT_EQ(expect_injection(path, false, ERROR_MOD_NOT_FOUND), 0);
+    EXPECT_TRUE(GetSystemDirectoryW(path, MAX_PATH) != 0);
+    EXPECT_TRUE(PathAppendW(path, L"version.dll"));
+    EXPECT_EQ(expect_injection(path, false, ERROR_PROC_NOT_FOUND), 0);
+
+    EXPECT_TRUE(RemoveDirectoryW(folder));
     return 0;
 }
 
@@ -232,6 +391,9 @@ int main(int argc, char **argv) {
     EXPECT_EQ(test_wine_locale(), 0);
     EXPECT_EQ(test_remote_thread_wait(), 0);
     EXPECT_EQ(test_game_exit_before_attach(), 0);
+    EXPECT_EQ(test_find_module(), 0);
+    EXPECT_EQ(test_proxy_copy(), 0);
+    EXPECT_EQ(test_injection(), 0);
     printf("smoke_launcher_process: all tests passed\n");
     return 0;
 }

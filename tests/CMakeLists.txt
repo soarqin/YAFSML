@@ -1,7 +1,6 @@
-# Smoke tests for hash table migrations.
-# Each add_executable is gated by file existence so that Wave 2 tasks can land
-# independently — when a .c file is added by T5/T6/T7, CMake's automatic
-# reconfigure picks it up. Until then, the corresponding target simply does not exist.
+# Every tests/smoke_*.c file becomes one executable and one CTest test.
+# SMOKE_<name>_SOURCES, _LIBRARIES and _DEFINITIONS add the production sources,
+# libraries and compile definitions that a test needs.
 set(TEST_INCLUDES
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/common
@@ -43,8 +42,10 @@ set(SMOKE_smoke_win32_hooks_SOURCES
 set(SMOKE_smoke_win32_hooks_LIBRARIES minhook shlwapi)
 set(SMOKE_smoke_win32_hooks_DEFINITIONS ML_WIN32_HOOKS_TEST)
 set(SMOKE_smoke_lifecycle_SOURCES ${CMAKE_SOURCE_DIR}/src/modloader/lifecycle.c)
-set(SMOKE_smoke_cpu_affinity_LIBRARIES process)
-set(SMOKE_smoke_fd4_step_SOURCES ${CMAKE_SOURCE_DIR}/src/process/fd4_step_static.c)
+set(SMOKE_smoke_rtti_SOURCES ${CMAKE_SOURCE_DIR}/src/process/rtti.c)
+set(SMOKE_smoke_rtti_DEFINITIONS ML_RTTI_TEST)
+set(SMOKE_smoke_singleton_SOURCES ${CMAKE_SOURCE_DIR}/src/process/singleton.c)
+set(SMOKE_smoke_singleton_DEFINITIONS ML_SINGLETON_TEST)
 set(SMOKE_smoke_logo_SOURCES ${CMAKE_SOURCE_DIR}/src/modloader/patches/logo.c)
 set(SMOKE_smoke_regulation_sig_SOURCES
     ${CMAKE_SOURCE_DIR}/src/modloader/patches/regulation_sig.c)
@@ -53,8 +54,6 @@ set(SMOKE_smoke_ime_sig_SOURCES
 set(SMOKE_smoke_regulation_SOURCES
     ${CMAKE_SOURCE_DIR}/src/modloader/patches/regulation.c)
 set(SMOKE_smoke_regulation_DEFINITIONS ML_REGULATION_TEST)
-set(SMOKE_smoke_dlrf_SOURCES ${CMAKE_SOURCE_DIR}/src/process/dlrf.c)
-set(SMOKE_smoke_rip_scan_SOURCES ${CMAKE_SOURCE_DIR}/src/process/rip_scan.c)
 set(SMOKE_smoke_mod_routing_SOURCES ${CMAKE_SOURCE_DIR}/src/modloader/mod.c)
 set(SMOKE_smoke_mod_routing_LIBRARIES shlwapi)
 set(SMOKE_smoke_mod_zip_config_SOURCES
@@ -74,6 +73,7 @@ set(SMOKE_smoke_launcher_startup_SOURCES
     ${CMAKE_SOURCE_DIR}/src/launcher/launch_config.c
     ${CMAKE_SOURCE_DIR}/src/launcher/launch_process.c)
 set(SMOKE_smoke_launcher_startup_LIBRARIES inih wingetopt shlwapi psapi)
+set(SMOKE_smoke_launcher_process_LIBRARIES shlwapi psapi)
 set(SMOKE_smoke_ini_LIBRARIES inih)
 set(SMOKE_smoke_ini_allocation_SOURCES ${CMAKE_SOURCE_DIR}/deps/inih/ini.c)
 set(SMOKE_smoke_ini_allocation_DEFINITIONS
@@ -119,7 +119,6 @@ foreach(SMOKE_TARGET smoke_save_mapping smoke_save_mapping_mt)
 endforeach()
 
 set(SMOKE_smoke_dl_device_SOURCES
-    ${CMAKE_SOURCE_DIR}/src/modloader/dl_allocator.c
     ${CMAKE_SOURCE_DIR}/src/modloader/patches/dl_device.c)
 set(SMOKE_smoke_dl_device_LIBRARIES shlwapi miniz xxhash::headers)
 set(SMOKE_smoke_asset_hooks_SOURCES

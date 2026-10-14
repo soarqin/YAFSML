@@ -14,19 +14,20 @@ generate_version_info(dll_res_files
     VERSION_REVISION ${PROJECT_VERSION_TWEAK}
     ORIGINAL_FILENAME "YAFSML.dll"
     COMPANY_NAME "Soar Qin"
-    FILE_DESCRIPTION "Yet Another FromSoftware Mod Loader")
+    FILE_DESCRIPTION "Yet Another FromSoftware Mod Loader"
+    FILE_TYPE VFT_DLL)
 
 add_project(modloader_dll SHARED
     modloader.c
     ${CMAKE_SOURCE_DIR}/src/common/allocator.c
-    ${CMAKE_SOURCE_DIR}/src/common/log.h
+    ${CMAKE_SOURCE_DIR}/src/common/log.c ${CMAKE_SOURCE_DIR}/src/common/log.h
     config.c config.h
     extdll.c extdll.h
     gamehook.c gamehook.h
     hook.c hook.h
     hook_batch.c hook_batch.h
     lifecycle.c lifecycle.h
-    dl_allocator.c dl_allocator.h
+    dl_allocator.h
     mimalloc_allocator.c mimalloc_allocator.h
     mod.c mod.h
     path_convert.c path_convert.h
@@ -48,10 +49,8 @@ add_project(modloader_dll SHARED
     patches/dl_device.c patches/dl_device.h
     patches/asset_sig.c patches/asset_sig.h
     patches/asset_hooks.c patches/asset_hooks.h
-    patches/armoredcore6.c patches/armoredcore6.h
+    patches/adapter.c patches/adapter.h
     patches/eldenring.c patches/eldenring.h
-    patches/nightreign.c patches/nightreign.h
-    patches/sekiro.c patches/sekiro.h
     patches/darksouls3.c patches/darksouls3.h
 
     proxy/winhttp.c proxy/winhttp.h proxy/winhttp.def
@@ -69,17 +68,12 @@ add_project(modloader_dll SHARED
 
 target_include_directories(modloader_dll PRIVATE ..)
 target_include_directories(modloader_dll PRIVATE ${CMAKE_SOURCE_DIR}/src/common)
-add_library(modloader_log OBJECT ${CMAKE_SOURCE_DIR}/src/common/log.c)
-target_include_directories(modloader_log PRIVATE ${CMAKE_SOURCE_DIR}/src/common)
-target_sources(modloader_dll PRIVATE $<TARGET_OBJECTS:modloader_log>)
-target_compile_definitions(modloader_dll PRIVATE ML_USE_MIMALLOC)
 if (ML_STRIP_MODENGINE_CONFIG_SUPPORT)
     target_compile_definitions(modloader_dll PRIVATE ML_STRIP_MODENGINE_CONFIG)
 else ()
     target_link_libraries(modloader_dll toml-c)
 endif ()
-target_link_libraries(modloader_dll dearxan game_registry process steam minhook inih klib mimalloc-static miniz xxhash gdi32 shlwapi version)
-set_source_files_properties(${CMAKE_SOURCE_DIR}/src/common/log.c PROPERTIES COMPILE_DEFINITIONS "ML_LOG_IMPLEMENTATION")
+target_link_libraries(modloader_dll dearxan game_registry process minhook inih klib mimalloc-static miniz xxhash gdi32 shlwapi)
 if (NOT MSVC)
     target_link_options(modloader_dll PRIVATE -municode)
 endif ()

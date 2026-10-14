@@ -9,13 +9,16 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-extern bool eldenring_install(void);
-extern void eldenring_uninstall(void);
+/* Elden Ring's archive position resolver hook, which redirects "dataN:/" paths
+ * that a mod overrides to loose files. */
+extern bool eldenring_archive_resolver_install(void *image_base, size_t image_size);
+extern void eldenring_archive_resolver_uninstall(void);
 
 #ifdef __cplusplus
 }

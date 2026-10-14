@@ -3,6 +3,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <shlwapi.h>
 
 #include "test_common.h"
 #include "game/game.h"
@@ -123,6 +124,75 @@ static int test_long_comments(void) {
     return 0;
 }
 
+static int test_path_resolution(void) {
+    wchar_t temp_dir[MAX_PATH];
+    wchar_t dir[MAX_PATH];
+    wchar_t cwd[MAX_PATH];
+    wchar_t resolved[MAX_PATH];
+    wchar_t ini_path[MAX_PATH];
+    wchar_t expected[MAX_PATH];
+    wchar_t long_name[MAX_PATH + 16];
+
+    EXPECT_TRUE(GetTempPathW(MAX_PATH, temp_dir) != 0);
+    EXPECT_TRUE(GetTempFileNameW(temp_dir, L"yaf", 0, dir) != 0);
+    EXPECT_TRUE(DeleteFileW(dir));
+    EXPECT_TRUE(CreateDirectoryW(dir, NULL));
+
+    /* A configuration directory, relative or absolute, is exported as is... */
+    EXPECT_TRUE(ml_launcher_resolve_config_path(resolved, temp_dir, PathFindFileNameW(dir)));
+    EXPECT_STREQ_W(resolved, dir);
+    EXPECT_TRUE(ml_launcher_resolve_config_path(resolved, L"C:\\unused", dir));
+    EXPECT_STREQ_W(resolved, dir);
+    /* ... while the launcher reads the game from its YAFSML.ini. */
+    EXPECT_TRUE(ml_launcher_config_ini_path(ini_path, resolved));
+    EXPECT_NOT_NULL(PathCombineW(expected, dir, L"YAFSML.ini"));
+    EXPECT_STREQ_W(ini_path, expected);
+
+    /* A relative file is normalized against the launcher directory. */
+    EXPECT_TRUE(ml_launcher_resolve_config_path(resolved, dir, L"sub/../custom.ini"));
+    EXPECT_NOT_NULL(PathCombineW(expected, dir, L"custom.ini"));
+    EXPECT_STREQ_W(resolved, expected);
+    EXPECT_TRUE(ml_launcher_config_ini_path(ini_path, resolved));
+    EXPECT_STREQ_W(ini_path, expected);
+    /* Without a request, the configuration is YAFSML.ini beside the launcher. */
+    EXPECT_TRUE(ml_launcher_resolve_config_path(resolved, dir, NULL));
+    EXPECT_NOT_NULL(PathCombineW(expected, dir, L"YAFSML.ini"));
+    EXPECT_STREQ_W(resolved, expected);
+    EXPECT_TRUE(ml_launcher_resolve_config_path(resolved, dir, L""));
+    EXPECT_STREQ_W(resolved, expected);
+    EXPECT_TRUE(!ml_launcher_resolve_config_path(resolved, NULL, NULL));
+    EXPECT_TRUE(!ml_launcher_resolve_config_path(resolved, L"", L"custom.ini"));
+
+    /* Without a base directory, relative paths use the working directory. */
+    EXPECT_TRUE(GetCurrentDirectoryW(MAX_PATH, cwd) != 0);
+    EXPECT_TRUE(SetCurrentDirectoryW(dir));
+    EXPECT_TRUE(ml_launcher_resolve_path(resolved, NULL, L"eldenring.exe"));
+    EXPECT_TRUE(SetCurrentDirectoryW(cwd));
+    EXPECT_NOT_NULL(PathCombineW(expected, dir, L"eldenring.exe"));
+    EXPECT_STREQ_W(resolved, expected);
+    EXPECT_TRUE(ml_launcher_resolve_path(resolved, L"C:\\Games\\", L"YAFSML.dll"));
+    EXPECT_STREQ_W(resolved, L"C:\\Games\\YAFSML.dll");
+    EXPECT_TRUE(ml_launcher_resolve_path(resolved, L"C:\\Games", L"D:/Mods/./YAFSML.dll"));
+    EXPECT_STREQ_W(resolved, L"D:\\Mods\\YAFSML.dll");
+    EXPECT_TRUE(ml_launcher_path_is_relative(L"mods\\YAFSML.dll"));
+    EXPECT_TRUE(ml_launcher_path_is_relative(L"..\\YAFSML.dll"));
+    EXPECT_TRUE(!ml_launcher_path_is_relative(L"\\YAFSML.dll"));
+    EXPECT_TRUE(!ml_launcher_path_is_relative(L"/YAFSML.dll"));
+    EXPECT_TRUE(!ml_launcher_path_is_relative(L"C:YAFSML.dll"));
+    EXPECT_TRUE(!ml_launcher_path_is_relative(L"\\\\server\\share\\YAFSML.dll"));
+
+    /* Paths that do not fit are rejected instead of truncated. */
+    wmemset(long_name, L'x', MAX_PATH + 8);
+    long_name[MAX_PATH + 8] = L'\0';
+    EXPECT_TRUE(!ml_launcher_resolve_path(resolved, L"C:\\Games", long_name));
+    EXPECT_STREQ_W(resolved, L"");
+    EXPECT_TRUE(!ml_launcher_resolve_path(resolved, NULL, long_name));
+    EXPECT_TRUE(!ml_launcher_resolve_path(resolved, L"C:\\Games", NULL));
+    EXPECT_TRUE(!ml_launcher_resolve_path(resolved, L"C:\\Games", L""));
+    EXPECT_TRUE(RemoveDirectoryW(dir));
+    return 0;
+}
+
 int main(void) {
     const ml_game_descriptor_t *game = NULL;
     wchar_t invalid_key[64];
@@ -183,17 +253,7 @@ int main(void) {
               ML_LAUNCHER_GAME_CONFIG_ERROR);
     EXPECT_NULL(game);
 
-    {
-        wchar_t root[MAX_PATH];
-        wchar_t config_path[MAX_PATH];
-        EXPECT_TRUE(GetTempPathW(MAX_PATH, root) != 0);
-        EXPECT_TRUE(GetTempFileNameW(root, L"yaf", 0, config_path) != 0);
-        EXPECT_TRUE(DeleteFileW(config_path));
-        EXPECT_TRUE(CreateDirectoryW(config_path, NULL));
-        EXPECT_TRUE(ml_launcher_resolve_config_path(config_path, root, NULL));
-        EXPECT_TRUE(wcsstr(config_path, L"YAFSML.ini") != NULL);
-        RemoveDirectoryW(config_path);
-    }
+    EXPECT_EQ(test_path_resolution(), 0);
 
     EXPECT_EQ(ml_launcher_select_game(ml_game_by_id(ML_GAME_SEKIRO),
                                       ml_game_by_id(ML_GAME_DARK_SOULS_3))->id,

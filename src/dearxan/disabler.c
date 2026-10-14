@@ -11,6 +11,7 @@
 #include "image.h"
 #include "patch.h"
 #include "steamstub.h"
+#include "util.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -88,51 +89,8 @@ static void flush_callbacks(bool is_arxan_detected,
                             bool is_executing_entrypoint);
 static bool install_schedule_hook(void);
 
-static void *allocate_near(uintptr_t origin, size_t size) {
-    SYSTEM_INFO information;
-    uintptr_t minimum;
-    uintptr_t maximum;
-    uintptr_t address;
-    GetSystemInfo(&information);
-    minimum = origin > INT32_MAX
-        ? origin - INT32_MAX
-        : (uintptr_t)information.lpMinimumApplicationAddress;
-    if (minimum < (uintptr_t)information.lpMinimumApplicationAddress) {
-        minimum = (uintptr_t)information.lpMinimumApplicationAddress;
-    }
-    maximum = origin <= UINTPTR_MAX - INT32_MAX
-        ? origin + INT32_MAX
-        : (uintptr_t)information.lpMaximumApplicationAddress;
-    if (maximum > (uintptr_t)information.lpMaximumApplicationAddress) {
-        maximum = (uintptr_t)information.lpMaximumApplicationAddress;
-    }
-    address = minimum - minimum % information.dwAllocationGranularity;
-    if (address < minimum) address += information.dwAllocationGranularity;
-    while (address <= maximum && size <= maximum - address) {
-        MEMORY_BASIC_INFORMATION region;
-        uintptr_t next;
-        if (VirtualQuery((void *)address, &region, sizeof(region)) == 0) break;
-        if (region.State == MEM_FREE && region.RegionSize >= size) {
-            void *result = VirtualAlloc((void *)address, size,
-                                        MEM_COMMIT | MEM_RESERVE,
-                                        PAGE_EXECUTE_READWRITE);
-            if (result != NULL) return result;
-        }
-        if ((uintptr_t)region.BaseAddress >
-            UINTPTR_MAX - region.RegionSize) break;
-        next = (uintptr_t)region.BaseAddress + region.RegionSize;
-        if (next > UINTPTR_MAX - information.dwAllocationGranularity + 1) break;
-        next = (next + information.dwAllocationGranularity - 1) -
-               (next + information.dwAllocationGranularity - 1) %
-                   information.dwAllocationGranularity;
-        if (next <= address) break;
-        address = next;
-    }
-    return NULL;
-}
-
 static void *make_absolute_jump_near(uintptr_t origin, const void *target) {
-    unsigned char *bridge = allocate_near(origin, 14);
+    unsigned char *bridge = dearxan_allocate_near(origin, origin, 14);
     if (bridge == NULL) return NULL;
     bridge[0] = 0xff;
     bridge[1] = 0x25;
@@ -290,18 +248,11 @@ static void flush_callbacks(bool is_arxan_detected,
 static bool write_call_target(unsigned char *call, const void *target) {
     intptr_t displacement;
     int32_t relative;
-    DWORD old_protection;
     if (call == NULL || target == NULL || call[0] != 0xe8) return false;
     displacement = (const unsigned char *)target - (call + 5);
     if (displacement < INT32_MIN || displacement > INT32_MAX) return false;
     relative = (int32_t)displacement;
-    if (!VirtualProtect(call + 1, sizeof(relative), PAGE_EXECUTE_READWRITE,
-                        &old_protection)) return false;
-    memcpy(call + 1, &relative, sizeof(relative));
-    if (!VirtualProtect(call + 1, sizeof(relative), old_protection,
-                        &old_protection)) return false;
-    FlushInstructionCache(GetCurrentProcess(), call, 5);
-    return true;
+    return dearxan_write_protected(call + 1, &relative, sizeof(relative));
 }
 
 static void security_init_cookie_detour(void) {
@@ -314,7 +265,7 @@ static void security_init_cookie_detour(void) {
     (void)write_call_target(shared->security_init_cookie_call,
                             (const void *)shared->original_security_init_cookie);
     shared->original_security_init_cookie();
-    if (shared != NULL) detected = shared->is_arxan_detected != 0;
+    detected = shared->is_arxan_detected != 0;
     flush_callbacks(detected, true);
 }
 
@@ -374,7 +325,7 @@ static DWORD WINAPI post_entry_worker(LPVOID parameter) {
     (void)parameter;
     if (shared == NULL) return 0;
     if (!dearxan_wait_for_gs_cookie(&shared->scheduled_image, INFINITE)) Sleep(1000);
-    if (shared != NULL) detected = shared->is_arxan_detected != 0;
+    detected = shared->is_arxan_detected != 0;
     flush_callbacks(detected, false);
     return 0;
 }
@@ -407,7 +358,7 @@ static bool initialize_schedule(void) {
             shared->steamstub_context->header.original_entry_point;
         if (!dearxan_is_pre_entry_point(&shared->scheduled_image)) {
             dearxan_msvc_entrypoint_t entrypoint;
-            if (shared != NULL && dearxan_parse_msvc_entrypoint(
+            if (dearxan_parse_msvc_entrypoint(
                     &shared->scheduled_image,
                     shared->steamstub_original_entrypoint, &entrypoint)) {
                 InterlockedExchange(&shared->is_arxan_detected,
@@ -439,10 +390,8 @@ static bool initialize_schedule(void) {
                 shared->scheduled_image.base_va +
                 shared->scheduled_image.entrypoint_rva,
                 &entrypoint)) return false;
-        if (shared != NULL) {
-            InterlockedExchange(&shared->is_arxan_detected,
-                                entrypoint.is_arxan_hooked);
-        }
+        InterlockedExchange(&shared->is_arxan_detected,
+                            entrypoint.is_arxan_hooked);
         return start_post_entry_worker();
     }
     return install_schedule_hook();
@@ -492,18 +441,10 @@ void dearxan_schedule_after_arxan(DearxanScheduleCallback callback, void *opaque
     }
     if (!initialize && !pre_entry_point &&
         InterlockedCompareExchange(&shared->state, 0, 0) != 2) {
+        /* The draining thread invokes every queued callback (including this
+         * one) before publishing state 3, and no callback is queued once the
+         * state is 3, so by the time this returns the queue is already empty. */
         wait_for_state(&shared->state, 3, schedule_drained_event);
-        {
-            schedule_callback_node_t *callbacks;
-            bool present;
-            WaitForSingleObject(schedule_mutex, INFINITE);
-            callbacks = shared->head;
-            shared->head = NULL;
-            shared->tail = NULL;
-            present = shared->is_arxan_detected != 0;
-            ReleaseMutex(schedule_mutex);
-            invoke_callbacks(callbacks, present, false);
-        }
         return;
     }
     if (initialize && !initialize_schedule()) {
@@ -558,8 +499,14 @@ static DearxanResult neuter_once(bool is_executing_entrypoint) {
                              "failed to make executable sections writable", true,
                              is_executing_entrypoint);
     } else {
+        /* When other threads are suspended, analysis must stay single-threaded:
+         * a worker thread could block on the loader or heap lock held by a
+         * suspended thread and deadlock. */
+        unsigned int max_workers = suspended ? 1u : 0u;
         for (;;) {
-            if (!dearxan_analyze_all_stubs(&image, &stubs, &error_message)) {
+            if (!dearxan_analyze_all_stubs_with_workers(&image, &stubs,
+                                                        &error_message,
+                                                        max_workers)) {
                 result = make_result(DearxanError,
                                      error_message != NULL ? error_message
                                                            : "failed to analyze Arxan stubs",

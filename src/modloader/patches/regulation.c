@@ -45,12 +45,12 @@ static bool __cdecl skip_regulation_write(void *state) {
     return true;
 }
 
-bool ml_regulation_override_present(void) {
-    return mods_file_search(L"regulation.bin") != NULL;
+bool ml_regulation_override_present(const ml_game_descriptor_t *game) {
+    return game != NULL && game->regulation_file != NULL && mods_file_search(game->regulation_file) != NULL;
 }
 
-bool ml_regulation_requested(void) {
-    return config.prevent_regulation_save_write && ml_regulation_override_present();
+bool ml_regulation_requested(const ml_game_descriptor_t *game) {
+    return config.prevent_regulation_save_write && ml_regulation_override_present(game);
 }
 
 #ifdef ML_REGULATION_TEST
@@ -63,13 +63,14 @@ bool ml_regulation_test_skip_write(void *state) {
 }
 #else
 static fd4_step_fn_t old_regulation_step_idle;
+static void **regulation_manager_slot;
 
 static void __cdecl regulation_step_idle_hooked(void *this_ptr, fd4_time_t *time) {
-    cs_regulation_manager_t *manager;
-
     old_regulation_step_idle(this_ptr, time);
-    manager = singleton_find("CSRegulationManager");
-    suppress_fd4_regulation_save(manager);
+    /* The step runs every frame: resolve the static slot once and dereference
+       it on each tick. FD4 names resolve late, so keep retrying while NULL. */
+    if (regulation_manager_slot == NULL) regulation_manager_slot = singleton_find_slot("CSRegulationManager");
+    if (regulation_manager_slot != NULL) suppress_fd4_regulation_save(*regulation_manager_slot);
 }
 
 static bool install_fd4(void) {
@@ -129,14 +130,6 @@ static bool install_sprj(void) {
 bool ml_regulation_install(const ml_game_descriptor_t *game) {
     bool result = false;
     if (game == NULL) return false;
-    if (!config.prevent_regulation_save_write) {
-        ML_LOG_INFO(L"regulation", L"protection SKIPPED_DISABLED for %ls", game->title);
-        return true;
-    }
-    if (!ml_regulation_override_present()) {
-        ML_LOG_INFO(L"regulation", L"protection SKIPPED_NO_OVERRIDE for %ls", game->title);
-        return true;
-    }
     if (game->regulation_strategy == ML_REGULATION_STRATEGY_FD4) result = install_fd4();
     if (game->regulation_strategy == ML_REGULATION_STRATEGY_SPRJ) result = install_sprj();
     ml_log_write(result ? ML_LOG_LEVEL_INFO : ML_LOG_LEVEL_WARN,

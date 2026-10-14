@@ -337,7 +337,7 @@ int main(void) {
         vfs_mounts.items = LocalAlloc(0, sizeof(*vfs_mounts.items));
         vfs_mounts.items[0].device = &device;
         vfs_mounts.count = vfs_mounts.capacity = 1;
-        EXPECT_TRUE(ml_dl_device_restore_mounts(&manager, ML_STL_ABI_MSVC2015, &vfs_mounts));
+        EXPECT_TRUE(ml_dl_device_push_mounts_permanent(&manager, ML_STL_ABI_MSVC2015, &vfs_mounts));
         EXPECT_EQ(ml_dl_vector_count(&manager.devices, ML_STL_ABI_MSVC2015, sizeof(ml_dl_device_t *)), 1);
         EXPECT_EQ(ml_dl_vector_count(&manager.bnd4_mounts, ML_STL_ABI_MSVC2015, sizeof(ml_dl_virtual_mount_t)), 1);
         EXPECT_NULL(vfs_mounts.items);

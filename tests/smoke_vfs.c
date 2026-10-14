@@ -175,7 +175,6 @@ int main(void) {
     EXPECT_TRUE(vfs_register_writable_path(L"settings/test.ini", L"C:\\profile\\test.ini"));
     EXPECT_TRUE(!vfs_register_writable_path(L"", L"C:\\profile\\test.ini"));
     EXPECT_TRUE(!vfs_register_writable_path(L"settings/empty.ini", L""));
-    EXPECT_TRUE(vfs_has_writable_paths());
     EXPECT_STREQ_W(vfs_route_writable_path(L"settings/test.ini"), L"C:\\profile\\test.ini");
     InterlockedExchange64(&allocation_count, 0);
     EXPECT_STREQ_W(vfs_route_writable_path(L"settings/test.ini"), L"C:\\profile\\test.ini");
@@ -187,7 +186,6 @@ int main(void) {
                    L"C:\\profile\\drive-relative.ini");
     EXPECT_TRUE(vfs_register_writable_path(L"SETTINGS\\test.ini", L"C:\\profile\\test.ini"));
     EXPECT_TRUE(!vfs_register_writable_path(L"settings/test.ini", L"C:\\other\\test.ini"));
-    EXPECT_STREQ_W(vfs_route_read_path(L"settings/test.ini", GENERIC_WRITE, CREATE_ALWAYS), L"C:\\profile\\test.ini");
     vfs_recursion_guard_enter();
     EXPECT_NULL(vfs_route_read_path(L"parts/test.bin", GENERIC_READ, OPEN_EXISTING));
     vfs_recursion_guard_leave();

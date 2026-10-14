@@ -1,4 +1,5 @@
 #include "dinput8.h"
+#include "common.h"
 #include "log.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -16,10 +17,6 @@ void *dinput8_orig_DllRegisterServer;
 void *dinput8_orig_DllUnregisterServer;
 void *dinput8_orig_GetdfDIJoystick;
 
-#if defined(__cplusplus)
-extern "C" {
-#endif
-
 HRESULT dinput8_DllCanUnloadNow(void) {
     typedef HRESULT (STDAPICALLTYPE *function_t)(void);
     return dinput8_orig_DllCanUnloadNow == NULL ? E_NOINTERFACE : ((function_t)dinput8_orig_DllCanUnloadNow)();
@@ -32,19 +29,9 @@ HRESULT dinput8_DllGetClassObject(REFCLSID class_id, REFIID interface_id, void *
         : ((function_t)dinput8_orig_DllGetClassObject)(class_id, interface_id, object);
 }
 
-bool load_dinput8_proxy() {
-    wchar_t path[MAX_PATH], syspath[MAX_PATH];
-    if (GetSystemDirectoryW(syspath, MAX_PATH) == 0) {
-        ML_LOG_ERROR(L"proxy", L"cannot resolve system directory for dinput8.dll");
-        return false;
-    }
-    _snwprintf(path, MAX_PATH, L"%ls\\dinput8.dll", syspath);
-    path[MAX_PATH - 1] = L'\0';
-    dinput8_dll = LoadLibraryW(path);
-    if (!dinput8_dll) {
-        ML_LOG_ERROR(L"proxy", L"cannot load original dinput8.dll library");
-        return false;
-    }
+bool load_dinput8_proxy(void) {
+    dinput8_dll = proxy_load_system_dll(L"dinput8.dll");
+    if (dinput8_dll == NULL) return false;
     dinput8_orig_DirectInput8Create = (void *)GetProcAddress(dinput8_dll, "DirectInput8Create");
     dinput8_orig_DllCanUnloadNow = (void *)GetProcAddress(dinput8_dll, "DllCanUnloadNow");
     dinput8_orig_DllGetClassObject = (void *)GetProcAddress(dinput8_dll, "DllGetClassObject");
@@ -53,7 +40,3 @@ bool load_dinput8_proxy() {
     dinput8_orig_GetdfDIJoystick = (void *)GetProcAddress(dinput8_dll, "GetdfDIJoystick");
     return true;
 }
-
-#if defined(__cplusplus)
-}
-#endif

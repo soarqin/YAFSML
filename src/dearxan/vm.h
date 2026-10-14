@@ -50,7 +50,7 @@ bool dearxan_vm_read_memory(const dearxan_vm_t *vm, uint64_t address,
                             void *bytes, size_t size);
 bool dearxan_vm_write_memory(dearxan_vm_t *vm, uint64_t address,
                              const void *bytes, size_t size);
-void dearxan_vm_invalidate_memory(dearxan_vm_t *vm, uint64_t address,
+bool dearxan_vm_invalidate_memory(dearxan_vm_t *vm, uint64_t address,
                                   size_t size);
 bool dearxan_vm_operand_address(const dearxan_vm_t *vm,
                                 const ZydisDecodedInstruction *instruction,
@@ -60,10 +60,28 @@ bool dearxan_vm_operand_value(const dearxan_vm_t *vm,
                               const ZydisDecodedInstruction *instruction,
                               const ZydisDecodedOperand *operand,
                               uint64_t *value);
+/* Emulate one instruction. Returns false only when memory could not be
+ * allocated; `*has_fork` reports a second state written to `forked`. */
 bool dearxan_vm_step(dearxan_vm_t *vm,
                      const ZydisDecodedInstruction *instruction,
                      const ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT],
                      dearxan_vm_t *forked, bool *has_fork);
+
+static inline bool dearxan_vm_is_cmov(const ZydisDecodedInstruction *instruction) {
+    return instruction->meta.category == ZYDIS_CATEGORY_CMOV;
+}
+
+/* Bytes a RET releases: the return address plus its optional imm16 operand. */
+static inline uint64_t dearxan_vm_ret_increment(
+    const ZydisDecodedInstruction *instruction,
+    const ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT]) {
+    uint64_t increment = 8;
+    if (instruction->operand_count_visible != 0 &&
+        operands[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
+        increment += operands[0].imm.value.u;
+    }
+    return increment;
+}
 
 #ifdef __cplusplus
 }

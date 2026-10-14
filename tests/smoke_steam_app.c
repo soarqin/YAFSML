@@ -48,8 +48,8 @@ static int setup_fixture(void) {
     wchar_t path[MAX_PATH];
     HKEY steam_key;
     const wchar_t *directories[] = {
-        L"Steam", L"Steam\\steamapps", L"Steam\\steamapps\\common",
-        L"Steam\\steamapps\\common\\ELDEN RING",
+        L"Steam", L"Steam\\config", L"Steam\\steamapps", L"Steam\\steamapps\\common",
+        L"Steam\\steamapps\\common\\ELDEN RING", L"Steam\\steamapps\\common\\1245620",
         L"额外游戏库", L"额外游戏库\\steamapps", L"额外游戏库\\steamapps\\common",
         L"额外游戏库\\steamapps\\common\\艾尔登法环",
     };
@@ -82,13 +82,15 @@ static int setup_fixture(void) {
 static void cleanup_fixture(void) {
     wchar_t path[MAX_PATH];
     const wchar_t *files[] = {
+        L"Steam\\config\\libraryfolders.vdf",
         L"Steam\\steamapps\\libraryfolders.vdf",
         L"Steam\\steamapps\\appmanifest_1245620.acf",
         L"额外游戏库\\steamapps\\appmanifest_1245620.acf",
     };
     const wchar_t *directories[] = {
-        L"Steam\\steamapps\\common\\ELDEN RING", L"Steam\\steamapps\\common",
-        L"Steam\\steamapps", L"Steam",
+        L"Steam\\steamapps\\common\\ELDEN RING", L"Steam\\steamapps\\common\\1245620",
+        L"Steam\\steamapps\\common",
+        L"Steam\\steamapps", L"Steam\\config", L"Steam",
         L"额外游戏库\\steamapps\\common\\艾尔登法环", L"额外游戏库\\steamapps\\common",
         L"额外游戏库\\steamapps", L"额外游戏库",
     };
@@ -105,68 +107,131 @@ static void cleanup_fixture(void) {
     RemoveDirectoryW(fixture_root);
 }
 
-static int test_discovery(void) {
-    char steam_path[MAX_PATH * 6];
-    char extra_path[MAX_PATH * 6];
-    char libraries[MAX_PATH * 12 + 512];
+static int expect_found(const wchar_t *relative) {
     wchar_t found[MAX_PATH];
     wchar_t expected[MAX_PATH];
-    const char *manifest = "\"AppState\"\n{\n\"appid\" \"1245620\"\n"
-                           "\"installdir\" \"ELDEN RING\"\n}\n";
-    EXPECT_TRUE(escape_vdf_path(steam_root, steam_path, sizeof(steam_path)));
-    EXPECT_TRUE(escape_vdf_path(extra_root, extra_path, sizeof(extra_path)));
+    EXPECT_TRUE(fixture_path(expected, relative));
+    EXPECT_TRUE(app_find_game_path(1245620, found));
+    EXPECT_STREQ_W(found, expected);
+    return 0;
+}
 
+static int expect_not_found(uint32_t app_id) {
+    wchar_t found[MAX_PATH];
+    wcscpy(found, L"unchanged");
+    EXPECT_TRUE(!app_find_game_path(app_id, found));
+    EXPECT_STREQ_W(found, L"");
+    return 0;
+}
+
+static int test_manifests(const char *steam_path) {
+    static const char *const rejected[] = {
+        /* Another app, another or no universe, or no installed directory. */
+        "\"AppState\" {\"appid\" \"1245621\" \"Universe\" \"1\" \"installdir\" \"ELDEN RING\"}",
+        "\"AppState\" {\"appid\" \"1245620\" \"Universe\" \"2\" \"installdir\" \"ELDEN RING\"}",
+        "\"AppState\" {\"appid\" \"1245620\" \"installdir\" \"ELDEN RING\"}",
+        "\"AppState\" {\"appid\" \"1245620\" \"Universe\" \"1\" \"installdir\" \"Not Installed\"}",
+        "\"AppState\" {\"appid\" \"1245620\" \"Universe\" \"1\" \"installdir\" {}}",
+        "\"AppState\" {\"appid\" \"1245620\" \"Universe\" \"1\"}",
+        /* Values only count inside the first entry. */
+        "\"AppState\" {} \"AppState\" {\"appid\" \"1245620\" \"Universe\" \"1\" \"installdir\" \"ELDEN RING\"}",
+    };
+    char libraries[MAX_PATH * 6 + 256];
     /* Reproduce an installed game omitted from Steam's cached apps list. */
     snprintf(libraries, sizeof(libraries),
              "\"libraryfolders\"\n{\n\"0\" {\"path\" \"%s\" \"apps\" {\"374320\" \"1\"}}\n}\n",
              steam_path);
     EXPECT_TRUE(write_fixture(L"Steam\\steamapps\\libraryfolders.vdf", libraries));
-    EXPECT_TRUE(write_fixture(L"Steam\\steamapps\\appmanifest_1245620.acf", manifest));
-    EXPECT_TRUE(fixture_path(expected, L"Steam\\steamapps\\common\\ELDEN RING"));
-    EXPECT_TRUE(app_find_game_path(1245620, found));
-    EXPECT_STREQ_W(found, expected);
-
-    wcscpy(found, L"unchanged");
-    EXPECT_TRUE(!app_find_game_path(999999999, found));
-    EXPECT_STREQ_W(found, L"");
-
-    /* A manifest without an existing install directory is not a found game. */
     EXPECT_TRUE(write_fixture(L"Steam\\steamapps\\appmanifest_1245620.acf",
-                              "\"AppState\" {\"installdir\" \"Not Installed\"}\n"));
-    wcscpy(found, L"unchanged");
-    EXPECT_TRUE(!app_find_game_path(1245620, found));
-    EXPECT_STREQ_W(found, L"");
+                              "\"AppState\"\n{\n\"appid\" \"1245620\"\n\"Universe\" \"1\"\n"
+                              "\"installdir\" \"ELDEN RING\"\n}\n"));
+    EXPECT_EQ(expect_found(L"Steam\\steamapps\\common\\ELDEN RING"), 0);
+    EXPECT_EQ(expect_not_found(999999999), 0);
 
-    /* Secondary libraries also work without an apps index, with CRLF and UTF-8. */
+    for (size_t i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++) {
+        EXPECT_TRUE(write_fixture(L"Steam\\steamapps\\appmanifest_1245620.acf", rejected[i]));
+        EXPECT_EQ(expect_not_found(1245620), 0);
+    }
+
+    /* Steam takes the first entry whatever its name, key names ignore case,
+     * GetInt reads hex, and an all-digit install directory is still a name. */
+    EXPECT_TRUE(write_fixture(L"Steam\\steamapps\\appmanifest_1245620.acf",
+                              "\"State\" {\"APPID\" \"0x1301b4\" \"universe\" \"+1\" "
+                              "\"InstallDir\" \"1245620\"}"));
+    return expect_found(L"Steam\\steamapps\\common\\1245620");
+}
+
+static int test_libraries(const char *steam_path, const char *extra_path) {
+    char libraries[MAX_PATH * 12 + 512];
+    wchar_t cwd[MAX_PATH];
+    int result;
+    const char *rejected[] = {
+        /* The "0" entry always means Steam's own folder. */
+        "\"libraryfolders\" {\"0\" {\"path\" \"%s\"}}",
+        /* Older string entries and empty paths are not libraries. */
+        "\"LibraryFolders\" {\"TimeNextStatsReport\" \"1\" \"1\" \"%s\"}",
+        "\"libraryfolders\" {\"1\" {\"path\" \"\"} \"2\" {}}",
+        /* Only the first entry is the library list. */
+        "\"libraryfolders\" {} \"libraryfolders\" {\"1\" {\"path\" \"%s\"}}",
+    };
+    /* Secondary libraries also work without an apps index, with CRLF and
+     * UTF-8, and are searched before Steam's own folder. */
     snprintf(libraries, sizeof(libraries),
              "\"libraryfolders\"\r\n{\r\n\"0\" {\"path\" \"%s\"}\r\n"
              "\"1\" {\"path\" \"%s\"}\r\n}\r\n", steam_path, extra_path);
     EXPECT_TRUE(write_fixture(L"Steam\\steamapps\\libraryfolders.vdf", libraries));
     EXPECT_TRUE(write_fixture(L"额外游戏库\\steamapps\\appmanifest_1245620.acf",
-                              "\"AppState\"\r\n{\r\n\"appid\" \"1245620\"\r\n"
+                              "\"AppState\"\r\n{\r\n\"appid\" \"1245620\"\r\n\"Universe\" \"1\"\r\n"
                               "\"installdir\" \"艾尔登法环\"\r\n}\r\n"));
-    EXPECT_TRUE(fixture_path(expected, L"额外游戏库\\steamapps\\common\\艾尔登法环"));
-    EXPECT_TRUE(app_find_game_path(1245620, found));
-    EXPECT_STREQ_W(found, expected);
+    EXPECT_EQ(expect_found(L"额外游戏库\\steamapps\\common\\艾尔登法环"), 0);
 
-    /* Older Steam versions store numbered library roots directly as strings. */
-    snprintf(libraries, sizeof(libraries),
-             "\"LibraryFolders\"\n{\n\"TimeNextStatsReport\" \"1\"\n\"1\" \"%s\"\n}\n", extra_path);
+    /* Library block names do not matter. */
+    snprintf(libraries, sizeof(libraries), "\"x\" {\"library\" {\"PATH\" \"%s\"}}", extra_path);
     EXPECT_TRUE(write_fixture(L"Steam\\steamapps\\libraryfolders.vdf", libraries));
-    EXPECT_TRUE(app_find_game_path(1245620, found));
-    EXPECT_STREQ_W(found, expected);
+    EXPECT_EQ(expect_found(L"额外游戏库\\steamapps\\common\\艾尔登法环"), 0);
 
-    /* The default library remains searchable if libraryfolders.vdf is missing. */
-    EXPECT_TRUE(fixture_path(found, L"Steam\\steamapps\\libraryfolders.vdf"));
-    EXPECT_TRUE(DeleteFileW(found));
-    EXPECT_TRUE(write_fixture(L"Steam\\steamapps\\appmanifest_1245620.acf", manifest));
-    EXPECT_TRUE(fixture_path(expected, L"Steam\\steamapps\\common\\ELDEN RING"));
-    EXPECT_TRUE(app_find_game_path(1245620, found));
-    EXPECT_STREQ_W(found, expected);
+    for (size_t i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++) {
+        snprintf(libraries, sizeof(libraries), rejected[i], extra_path);
+        EXPECT_TRUE(write_fixture(L"Steam\\steamapps\\libraryfolders.vdf", libraries));
+        EXPECT_EQ(expect_found(L"Steam\\steamapps\\common\\1245620"), 0);
+    }
 
-    EXPECT_TRUE(write_fixture(L"Steam\\steamapps\\libraryfolders.vdf", "invalid\n"));
-    EXPECT_TRUE(app_find_game_path(1245620, found));
-    EXPECT_STREQ_W(found, expected);
+    /* A relative path is not a library, even from where it names one. */
+    EXPECT_TRUE(write_fixture(L"Steam\\steamapps\\libraryfolders.vdf",
+                              "\"libraryfolders\" {\"1\" {\"path\" \"额外游戏库\"}}"));
+    EXPECT_TRUE(GetCurrentDirectoryW(MAX_PATH, cwd) != 0);
+    EXPECT_TRUE(SetCurrentDirectoryW(fixture_root));
+    result = expect_found(L"Steam\\steamapps\\common\\1245620");
+    EXPECT_TRUE(SetCurrentDirectoryW(cwd));
+    EXPECT_EQ(result, 0);
+
+    /* Steam falls back to config\libraryfolders.vdf. */
+    snprintf(libraries, sizeof(libraries), "\"libraryfolders\" {\"1\" {\"path\" \"%s\"}}", extra_path);
+    EXPECT_TRUE(write_fixture(L"Steam\\config\\libraryfolders.vdf", libraries));
+    EXPECT_TRUE(write_fixture(L"Steam\\steamapps\\libraryfolders.vdf", "\"libraryfolders\" {"));
+    EXPECT_EQ(expect_found(L"额外游戏库\\steamapps\\common\\艾尔登法环"), 0);
+    EXPECT_TRUE(write_fixture(L"Steam\\steamapps\\libraryfolders.vdf", ""));
+    EXPECT_EQ(expect_found(L"额外游戏库\\steamapps\\common\\艾尔登法环"), 0);
+
+    /* Steam's own folder remains a library without any library index. */
+    EXPECT_TRUE(write_fixture(L"Steam\\config\\libraryfolders.vdf", "invalid\n"));
+    return expect_found(L"Steam\\steamapps\\common\\1245620");
+}
+
+static int test_discovery(void) {
+    char steam_path[MAX_PATH * 6];
+    char extra_path[MAX_PATH * 6];
+    wchar_t path[MAX_PATH];
+    EXPECT_TRUE(escape_vdf_path(steam_root, steam_path, sizeof(steam_path)));
+    EXPECT_TRUE(escape_vdf_path(extra_root, extra_path, sizeof(extra_path)));
+    EXPECT_EQ(test_manifests(steam_path), 0);
+    EXPECT_EQ(test_libraries(steam_path, extra_path), 0);
+
+    EXPECT_TRUE(fixture_path(path, L"Steam\\steamapps\\libraryfolders.vdf"));
+    EXPECT_TRUE(DeleteFileW(path));
+    EXPECT_TRUE(fixture_path(path, L"Steam\\config\\libraryfolders.vdf"));
+    EXPECT_TRUE(DeleteFileW(path));
+    EXPECT_EQ(expect_found(L"Steam\\steamapps\\common\\1245620"), 0);
     EXPECT_TRUE(!app_find_game_path(1245620, NULL));
     return 0;
 }

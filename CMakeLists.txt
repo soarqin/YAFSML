@@ -7,7 +7,7 @@ endif()
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(CustomCompilerOptions)
 fix_compile_flags()
-fix_release_flags(STRIP_BINARY ON USE_LTO ON USE_STATIC_CRT ON)
+fix_release_flags(STRIP_BINARY ON USE_LTO ON USE_STATIC_CRT OFF)
 
 include(GlobalOptions)
 add_global_options(C_STANDARD 11)

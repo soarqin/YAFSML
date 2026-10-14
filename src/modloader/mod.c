@@ -23,7 +23,7 @@ static wchar_t game_folder[MAX_PATH];
 
 static int mod_count = 0;
 
-void mods_init() {
+void mods_init(void) {
     GetModuleFileNameW(NULL, game_folder, MAX_PATH);
     PathRemoveFileSpecW(game_folder);
     PathRemoveBackslashW(game_folder);
@@ -31,7 +31,7 @@ void mods_init() {
     vfs_init();
 }
 
-void mods_uninit() {
+void mods_uninit(void) {
     mod_count = 0;
     vfs_uninit();
 }
@@ -55,6 +55,10 @@ void mods_add(const char *name, const wchar_t *path) {
     }
     memcpy(disk_path, path, length * sizeof(*disk_path));
     disk_path[length] = L'\0';
+    /* Classify and resolve with one separator; the ZIP subpath keeps its own. */
+    for (size_t i = 0; i < length; i++) {
+        if (disk_path[i] == L'/') disk_path[i] = L'\\';
+    }
     if (disk_path[0] == L'\\' && disk_path[1] != L'\\') {
         config_full_path(base_path, NULL);
         PathStripToRootW(base_path);
@@ -86,7 +90,7 @@ void mods_add(const char *name, const wchar_t *path) {
     ml_mem_free(package_path);
 }
 
-int mods_count() {
+int mods_count(void) {
     return mod_count;
 }
 
@@ -108,23 +112,4 @@ const wchar_t *mods_file_route_read(const wchar_t *path, DWORD desired_access, D
     uid_path = vfs_uid_to_path(path);
     if (uid_path != NULL) return uid_path;
     return vfs_route_read_path_prefixed(path, game_folder, desired_access, creation_disposition);
-}
-
-const wchar_t *mods_file_route_read_a(const char *path, DWORD desired_access, DWORD creation_disposition) {
-    int length;
-    wchar_t stack_path[MAX_PATH];
-    wchar_t *wide;
-    const wchar_t *result;
-    if (mod_count <= 0 || path == NULL) return NULL;
-    length = MultiByteToWideChar(CP_ACP, 0, path, -1, NULL, 0);
-    if (length <= 0) return NULL;
-    wide = length <= MAX_PATH ? stack_path : ml_mem_alloc(0, (size_t)length * sizeof(*wide));
-    if (wide == NULL) return NULL;
-    if (MultiByteToWideChar(CP_ACP, 0, path, -1, wide, length) == 0) {
-        if (wide != stack_path) ml_mem_free(wide);
-        return NULL;
-    }
-    result = mods_file_route_read(wide, desired_access, creation_disposition);
-    if (wide != stack_path) ml_mem_free(wide);
-    return result;
 }

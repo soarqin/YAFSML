@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-extern bool load_winhttp_proxy();
+extern bool load_winhttp_proxy(void);
 extern HRESULT winhttp_DllCanUnloadNow(void);
 extern HRESULT winhttp_DllGetClassObject(REFCLSID class_id, REFIID interface_id, void **object);
 

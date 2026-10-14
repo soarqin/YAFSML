@@ -141,7 +141,7 @@ int main(void) {
         lstrcpyW(linked_source, link_path); PathAppendW(linked_source, L"DS30000.sl2");
         EXPECT_TRUE(create_empty_file(linked_source));
         mapped = (const wchar_t *)1;
-        EXPECT_TRUE(!ml_save_mapping_route(linked_source, &mapped));
+        EXPECT_TRUE(ml_save_mapping_route(linked_source, &mapped));
         EXPECT_NULL(mapped);
         DeleteFileW(linked_source);
         RemoveDirectoryW(link_path);
@@ -162,6 +162,7 @@ int main(void) {
         wchar_t er_account[MAX_PATH];
         wchar_t er_sl2[MAX_PATH];
         wchar_t er_co2[MAX_PATH];
+        wchar_t er_mapped[MAX_PATH];
         EXPECT_NOT_NULL(er);
         lstrcpyW(er_root, root); PathAppendW(er_root, L"EldenRing");
         EXPECT_TRUE(CreateDirectoryW(er_root, NULL));
@@ -194,6 +195,46 @@ int main(void) {
 
         DeleteFileW(vfs_route_writable_path(er_sl2));
         DeleteFileW(vfs_route_writable_path(er_co2));
+        ml_save_mapping_uninit();
+        vfs_uninit();
+
+        vfs_init();
+        EXPECT_TRUE(ml_save_mapping_init_root(er));
+        EXPECT_TRUE(ml_save_mapping_add_extension(L".sl2", L".mod.sl2"));
+        mapped = NULL;
+        EXPECT_TRUE(ml_save_mapping_route(er_sl2, &mapped));
+        EXPECT_NOT_NULL(mapped);
+        EXPECT_TRUE(wcsstr(mapped, L"ER0000.mod.sl2") != NULL);
+        lstrcpyW(er_mapped, mapped);
+        mapped = NULL;
+        EXPECT_TRUE(ml_save_mapping_route(er_mapped, &mapped));
+        EXPECT_NOT_NULL(mapped);
+        EXPECT_TRUE(lstrcmpiW(mapped, er_mapped) == 0);
+        lstrcatW(er_mapped, L".bak");
+        mapped = NULL;
+        EXPECT_TRUE(ml_save_mapping_route(er_mapped, &mapped));
+        EXPECT_NOT_NULL(mapped);
+        EXPECT_TRUE(lstrcmpiW(mapped, er_mapped) == 0);
+        EXPECT_TRUE(!PathFileExistsW(er_mapped));
+        er_mapped[wcslen(er_mapped) - 4] = L'\0';
+        DeleteFileW(er_mapped);
+        ml_save_mapping_uninit();
+        vfs_uninit();
+
+        vfs_init();
+        EXPECT_TRUE(!ml_save_mapping_init_root(NULL));
+        EXPECT_TRUE(!ml_save_mapping_add_extension(L".co2", L"ER-coop.co2"));
+        mapped = (const wchar_t *)1;
+        EXPECT_TRUE(ml_save_mapping_route(er_co2, &mapped));
+        EXPECT_NULL(mapped);
+        lstrcpyW(er_mapped, er_co2);
+        lstrcatW(er_mapped, L".bak");
+        mapped = (const wchar_t *)1;
+        EXPECT_TRUE(ml_save_mapping_route(er_mapped, &mapped));
+        EXPECT_NULL(mapped);
+        mapped = (const wchar_t *)1;
+        EXPECT_TRUE(!ml_save_mapping_route(er_sl2, &mapped));
+        EXPECT_NULL(mapped);
         ml_save_mapping_uninit();
         vfs_uninit();
         DeleteFileW(er_sl2);

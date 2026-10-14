@@ -1,5 +1,7 @@
 #include "fd4_step_static.h"
 
+#include "rip_scan.h"
+
 #include <stdbool.h>
 #include <string.h>
 
@@ -33,12 +35,6 @@ static bool initializer_matches(const uint8_t *code) {
 static bool range_contains(uintptr_t start, size_t size, uintptr_t address,
                            size_t needed) {
     return address >= start && needed <= size && address - start <= size - needed;
-}
-
-static uintptr_t rip_target(uintptr_t instruction_va, const uint8_t *disp32) {
-    int32_t displacement;
-    memcpy(&displacement, disp32, sizeof(displacement));
-    return instruction_va + 7 + (intptr_t)displacement;
 }
 
 static bool step_name_equals(const fd4_step_static_sections_t *sections,
@@ -75,10 +71,10 @@ bool fd4_step_static_find(const fd4_step_static_sections_t *sections,
 
         if (!initializer_matches(code)) continue;
         instruction_va = sections->text_va + i;
-        step_va = rip_target(instruction_va, code + 3);
-        slot_va = rip_target(instruction_va + 7, code + 10);
-        name_va = rip_target(instruction_va + 14, code + 17);
-        name_slot_va = rip_target(instruction_va + 21, code + 24);
+        step_va = ml_rel32_target(code + 3, instruction_va + 7);
+        slot_va = ml_rel32_target(code + 10, instruction_va + 14);
+        name_va = ml_rel32_target(code + 17, instruction_va + 21);
+        name_slot_va = ml_rel32_target(code + 24, instruction_va + 28);
         if ((step_va & 15) != 0 || (slot_va & (sizeof(void *) - 1)) != 0 ||
             (name_va & (sizeof(wchar_t) - 1)) != 0 ||
             (name_slot_va & (sizeof(void *) - 1)) != 0 ||

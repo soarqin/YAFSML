@@ -34,19 +34,21 @@ size_t ml_regulation_sprj_find_writers(uint8_t *text, size_t text_size,
 
     if (text == NULL) return 0;
     /*
-     * The stable semantic anchor is the direct call whose RCX argument is a
-     * stack object. Sekiro 1.06 consumes the returned bool with
-     * `movzx ebp, al`, while older me3 signatures expected
-     * `test al, al; je`. Do not constrain the instruction after the call.
+     * Like me3: a direct call with a stack object in RCX, followed by
+     * `test al, al; je`. The same call and wrapper shapes also reach the save
+     * regulation reader (Sekiro 1.06 and Dark Souls III consume its bool with
+     * `movzx ebp, al`) and Dark Souls III stats requests, which must keep
+     * running.
      */
-    for (size_t offset = 0; offset + 10 <= text_size; offset++) {
+    for (size_t offset = 0; offset + 14 <= text_size; offset++) {
         int32_t displacement;
         int64_t target_offset;
         uint8_t *target;
 
         if (writers != NULL && count == writer_capacity) break;
         if (memcmp(text + offset, "\x48\x8d\x4c\x24", 4) != 0 ||
-            text[offset + 5] != 0xe8) {
+            text[offset + 5] != 0xe8 ||
+            memcmp(text + offset + 10, "\x84\xc0\x74", 3) != 0) {
             continue;
         }
         memcpy(&displacement, text + offset + 6, sizeof(displacement));

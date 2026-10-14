@@ -11,6 +11,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct ml_msvc2012_vector_s {
     void *first;
     void *last;
@@ -29,3 +33,7 @@ typedef struct ml_msvc2012_string_s {
 _Static_assert(offsetof(ml_msvc2012_vector_t, allocator) == 24, "MSVC 2012 vector allocator offset");
 _Static_assert(offsetof(ml_msvc2012_string_t, allocator) == 32, "MSVC 2012 string allocator offset");
 _Static_assert(offsetof(ml_msvc2012_string_t, encoding) == 40, "MSVC 2012 string encoding offset");
+
+#ifdef __cplusplus
+}
+#endif

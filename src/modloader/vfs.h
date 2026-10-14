@@ -18,6 +18,10 @@
 #include <stdint.h>
 #include <wchar.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef enum vfs_lookup_domain_e {
     VFS_LOOKUP_VIRTUAL = 0,
     VFS_LOOKUP_DISK_WIDE,
@@ -31,7 +35,6 @@ void vfs_uninit(void);
 /* Accepts a directory, a ZIP path, or ZIP:path/to/root. ZIP data is cached on first read. */
 bool vfs_add_package(const wchar_t *path);
 bool vfs_register_writable_path(const wchar_t *virtual_path, const wchar_t *physical_path);
-bool vfs_has_writable_paths(void);
 const wchar_t *vfs_lookup(const wchar_t *path);
 const wchar_t *vfs_lookup_domain(const wchar_t *path, vfs_lookup_domain_t domain);
 const wchar_t *vfs_lookup_prefixed_domain(const wchar_t *path, const wchar_t *game_root,
@@ -52,3 +55,7 @@ const wchar_t *vfs_route_writable_path(const wchar_t *path);
 void vfs_recursion_guard_enter(void);
 void vfs_recursion_guard_leave(void);
 bool vfs_recursion_guard_active(void);
+
+#ifdef __cplusplus
+}
+#endif

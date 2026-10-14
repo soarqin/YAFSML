@@ -38,6 +38,7 @@ bool ml_asset_sig_match_mount_ebl(const uint8_t *p, size_t remaining, mount_patt
         if (stack_compare) {
             match->displacement_offset = 28;
             match->instruction_end_offset = 32;
+            match->call_site = true;
             return true;
         }
     }
@@ -48,6 +49,7 @@ bool ml_asset_sig_match_mount_ebl(const uint8_t *p, size_t remaining, mount_patt
         memcmp(p + 50, "\x48\x83\xC4\x30\x5B\xC3", 6) == 0) {
         match->displacement_offset = 46;
         match->instruction_end_offset = 50;
+        match->call_site = false;
         return true;
     }
     return false;

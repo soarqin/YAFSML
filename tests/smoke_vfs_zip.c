@@ -110,6 +110,67 @@ static int test_allocation_rollback(const wchar_t *path, const wchar_t *loose) {
     return 0;
 }
 
+static bool write_text_file(const wchar_t *directory, const wchar_t *name, const char *contents) {
+    wchar_t path[MAX_PATH];
+    DWORD written;
+    HANDLE file;
+    bool success;
+    _snwprintf(path, MAX_PATH, L"%ls\\%ls", directory, name);
+    file = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    success = WriteFile(file, contents, (DWORD)strlen(contents), &written, NULL) && written == strlen(contents);
+    CloseHandle(file);
+    return success;
+}
+
+/* A directory package is indexed completely or not at all, like a ZIP. */
+static int test_directory_rollback(const wchar_t *root, const wchar_t *loose) {
+    wchar_t package[MAX_PATH];
+    wchar_t parts[MAX_PATH];
+    bool success = false;
+    _snwprintf(package, MAX_PATH, L"%ls\\directory-package", root);
+    _snwprintf(parts, MAX_PATH, L"%ls\\parts", package);
+    EXPECT_TRUE(CreateDirectoryW(package, NULL));
+    EXPECT_TRUE(CreateDirectoryW(parts, NULL));
+    EXPECT_TRUE(write_text_file(parts, L"new.bin", "dir new"));
+    EXPECT_TRUE(write_text_file(parts, L"base.bin", "dir replacement"));
+    EXPECT_TRUE(write_text_file(parts, L"last.bin", "dir last"));
+    for (size_t allocation = 1; allocation < 256; allocation++) {
+        const wchar_t *uid;
+        vfs_init();
+        EXPECT_TRUE(vfs_add_package(loose));
+        uid = vfs_virtual_to_uid(L"parts/base.bin");
+        EXPECT_NOT_NULL(uid);
+        allocation_failure_after = allocation;
+        allocation_failure_triggered = false;
+        success = vfs_add_package(package);
+        allocation_failure_after = 0;
+        if (success) {
+            EXPECT_EQ(vfs_entry_count(), 3);
+            EXPECT_TRUE(read_matches(vfs_uid_to_path(uid), "dir replacement"));
+            EXPECT_TRUE(read_matches(vfs_lookup(L"parts/new.bin"), "dir new"));
+            EXPECT_TRUE(read_matches(vfs_lookup(L"parts/last.bin"), "dir last"));
+        } else {
+            EXPECT_EQ(vfs_entry_count(), 1);
+            EXPECT_TRUE(read_matches(vfs_uid_to_path(uid), "loose"));
+            EXPECT_NULL(vfs_lookup(L"parts/new.bin"));
+            EXPECT_NULL(vfs_lookup(L"parts/last.bin"));
+        }
+        vfs_uninit();
+        if (success && !allocation_failure_triggered) break;
+    }
+    EXPECT_TRUE(success);
+    for (size_t i = 0; i < 3; i++) {
+        static const wchar_t *names[] = { L"new.bin", L"base.bin", L"last.bin" };
+        wchar_t path[MAX_PATH];
+        _snwprintf(path, MAX_PATH, L"%ls\\%ls", parts, names[i]);
+        EXPECT_TRUE(DeleteFileW(path));
+    }
+    EXPECT_TRUE(RemoveDirectoryW(parts));
+    EXPECT_TRUE(RemoveDirectoryW(package));
+    return 0;
+}
+
 static volatile LONG thread_failures;
 static const wchar_t *thread_paths[8];
 static const wchar_t *thread_uid;
@@ -364,6 +425,7 @@ int main(void) {
     EXPECT_EQ(test_nested_roots(invalid), 0);
     EXPECT_EQ(test_failed_read_retry(invalid), 0);
     EXPECT_EQ(test_allocation_rollback(invalid, loose), 0);
+    EXPECT_EQ(test_directory_rollback(root, loose), 0);
     EXPECT_TRUE(DeleteFileW(invalid));
     EXPECT_TRUE(DeleteFileW(archive_path));
     EXPECT_TRUE(DeleteFileW(loose_file));

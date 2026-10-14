@@ -27,8 +27,7 @@ static bool find_efficiency_classes(const process_cpu_set_info_t *sets,
         }
         found = true;
     }
-    if (!found) return false;
-    return true;
+    return found;
 }
 
 static bool is_lower_logical_cpu(const process_cpu_set_info_t *lhs,
@@ -67,7 +66,6 @@ static bool should_select_cpu_set(const int strategy,
         case 1:
             return true;
         case 2:
-            return set->efficiency_class == selected_class;
         case 3:
         case 4:
             return set->efficiency_class == selected_class;

@@ -11,6 +11,7 @@ EXPORTS
     WinHttpCloseHandle=winhttp_FakeWinHttpCloseHandle
     WinHttpConnect=winhttp_FakeWinHttpConnect
     WinHttpConnectionDeletePolicyEntries=winhttp_FakeWinHttpConnectionDeletePolicyEntries
+    WinHttpConnectionDeletePolicyEntriesByAppSid=winhttp_FakeWinHttpConnectionDeletePolicyEntriesByAppSid
     WinHttpConnectionDeleteProxyInfo=winhttp_FakeWinHttpConnectionDeleteProxyInfo
     WinHttpConnectionFreeNameList=winhttp_FakeWinHttpConnectionFreeNameList
     WinHttpConnectionFreeProxyInfo=winhttp_FakeWinHttpConnectionFreeProxyInfo
@@ -25,7 +26,11 @@ EXPORTS
     WinHttpConnectionSetProxyInfo=winhttp_FakeWinHttpConnectionSetProxyInfo
     WinHttpConnectionUpdateIfIndexTable=winhttp_FakeWinHttpConnectionUpdateIfIndexTable
     WinHttpCrackUrl=winhttp_FakeWinHttpCrackUrl
+    WinHttpCreateProxyList=winhttp_FakeWinHttpCreateProxyList
+    WinHttpCreateProxyManager=winhttp_FakeWinHttpCreateProxyManager
     WinHttpCreateProxyResolver=winhttp_FakeWinHttpCreateProxyResolver
+    WinHttpCreateProxyResult=winhttp_FakeWinHttpCreateProxyResult
+    WinHttpCreateUiCompatibleProxyString=winhttp_FakeWinHttpCreateUiCompatibleProxyString
     WinHttpCreateUrl=winhttp_FakeWinHttpCreateUrl
     WinHttpDetectAutoProxyConfigUrl=winhttp_FakeWinHttpDetectAutoProxyConfigUrl
     WinHttpFreeProxyResult=winhttp_FakeWinHttpFreeProxyResult
@@ -49,6 +54,9 @@ EXPORTS
     WinHttpOpenRequest=winhttp_FakeWinHttpOpenRequest
     WinHttpPacJsWorkerMain=winhttp_FakeWinHttpPacJsWorkerMain
     WinHttpProbeConnectivity=winhttp_FakeWinHttpProbeConnectivity
+    WinHttpProtocolCompleteUpgrade=winhttp_FakeWinHttpProtocolCompleteUpgrade
+    WinHttpProtocolReceive=winhttp_FakeWinHttpProtocolReceive
+    WinHttpProtocolSend=winhttp_FakeWinHttpProtocolSend
     WinHttpQueryAuthSchemes=winhttp_FakeWinHttpQueryAuthSchemes
     WinHttpQueryConnectionGroup=winhttp_FakeWinHttpQueryConnectionGroup
     WinHttpQueryDataAvailable=winhttp_FakeWinHttpQueryDataAvailable
@@ -60,8 +68,10 @@ EXPORTS
     WinHttpReadProxySettings=winhttp_FakeWinHttpReadProxySettings
     WinHttpReadProxySettingsHvsi=winhttp_FakeWinHttpReadProxySettingsHvsi
     WinHttpReceiveResponse=winhttp_FakeWinHttpReceiveResponse
+    WinHttpRefreshProxySettings=winhttp_FakeWinHttpRefreshProxySettings
     WinHttpRegisterProxyChangeNotification=winhttp_FakeWinHttpRegisterProxyChangeNotification
     WinHttpResetAutoProxy=winhttp_FakeWinHttpResetAutoProxy
+    WinHttpResolverGetProxyForUrl=winhttp_FakeWinHttpResolverGetProxyForUrl
     WinHttpSaveProxyCredentials=winhttp_FakeWinHttpSaveProxyCredentials
     WinHttpSendRequest=winhttp_FakeWinHttpSendRequest
     WinHttpSetCredentials=winhttp_FakeWinHttpSetCredentials

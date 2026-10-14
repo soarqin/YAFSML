@@ -8,11 +8,13 @@
 
 #include "rip_scan.h"
 
-#include <limits.h>
 #include <string.h>
 
 const uint8_t *ml_find_utf16_string(const void *data, size_t size, const wchar_t *value) {
     size_t value_size;
+    const uint8_t *cursor;
+    const uint8_t *last;
+    uint8_t first;
 
     if (data == NULL || value == NULL) return NULL;
     {
@@ -21,10 +23,15 @@ const uint8_t *ml_find_utf16_string(const void *data, size_t size, const wchar_t
         value_size = (value_length + 1) * sizeof(wchar_t);
     }
     if (value_size > size) return NULL;
-    for (size_t i = 0; i <= size - value_size; i++) {
-        if (memcmp((const uint8_t *)data + i, value, value_size) == 0) {
-            return (const uint8_t *)data + i;
-        }
+    /* Only offsets holding the first byte can match; memchr finds them. */
+    cursor = (const uint8_t *)data;
+    last = cursor + (size - value_size);
+    memcpy(&first, value, sizeof(first));
+    while (cursor <= last) {
+        cursor = memchr(cursor, first, (size_t)(last - cursor) + 1);
+        if (cursor == NULL) return NULL;
+        if (memcmp(cursor, value, value_size) == 0) return cursor;
+        cursor++;
     }
     return NULL;
 }

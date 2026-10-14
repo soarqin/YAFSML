@@ -1,5 +1,5 @@
 add_project(dearxan STATIC
-    dearxan.c dearxan.h
+    dearxan.h
     image.c image.h
     encryption.c encryption.h
     analysis.c analysis.h
@@ -7,6 +7,7 @@ add_project(dearxan STATIC
     patch.c patch.h
     entry_point.c entry_point.h
     steamstub.c steamstub.h
+    util.c util.h
     disabler.c
     FOLDER libs
 )

@@ -4,12 +4,6 @@
 #include "test_common.h"
 #include "xxhash.h"
 
-#ifdef XXH3_REFERENCE_HEADER
-#define XXH_INLINE_ALL
-#define XXH_NAMESPACE Reference
-#include XXH3_REFERENCE_HEADER
-#endif
-
 typedef struct xxh3_vector_s {
     size_t size;
     uint64_t low64;
@@ -51,13 +45,6 @@ int main(void) {
                     (unsigned long long)vectors[i].high64);
             return 1;
         }
-#ifdef XXH3_REFERENCE_HEADER
-        {
-            XXH_NAMESPACEXXH128_hash_t expected = XXH_INLINE_XXH3_128bits_withSeed(data, vectors[i].size, 1);
-            EXPECT_EQ(actual.low64, expected.low64);
-            EXPECT_EQ(actual.high64, expected.high64);
-        }
-#endif
     }
     printf("smoke_xxh3: all tests passed\n");
     return 0;

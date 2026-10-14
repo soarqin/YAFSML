@@ -20,15 +20,14 @@
 extern "C" {
 #endif
 
-extern void mods_init();
-extern void mods_uninit();
+extern void mods_init(void);
+extern void mods_uninit(void);
 extern void mods_add(const char *name, const wchar_t *path);
-extern int mods_count();
+extern int mods_count(void);
 extern const wchar_t *mods_file_search(const wchar_t *path);
 extern const wchar_t *mods_file_search_prefixed_domain(const wchar_t *path, int domain);
 extern const wchar_t *mods_file_virtual_to_uid_prefixed(const wchar_t *path);
 extern const wchar_t *mods_file_route_read(const wchar_t *path, DWORD desired_access, DWORD creation_disposition);
-extern const wchar_t *mods_file_route_read_a(const char *path, DWORD desired_access, DWORD creation_disposition);
 
 #ifdef __cplusplus
 }

@@ -8,19 +8,14 @@
 
 #include "gamehook.h"
 
-#include "steam/api.h"
 #include "config.h"
+#include "patches/adapter.h"
 #include "patches/common.h"
 #include "patches/allocator.h"
-#include "patches/armoredcore6.h"
-#include "patches/darksouls3.h"
 #include "patches/data_ready.h"
-#include "patches/eldenring.h"
 #include "patches/logo.h"
-#include "patches/nightreign.h"
 #include "patches/properties.h"
 #include "patches/regulation.h"
-#include "patches/sekiro.h"
 #include "mimalloc_allocator.h"
 #include "lifecycle.h"
 #include "log.h"
@@ -84,7 +79,7 @@ static void install_allocator_before_main(ml_lifecycle_phase_t phase, void *user
     (void)phase;
     applied = ml_allocator_install_before_main(game);
     if (!applied && game != NULL && game->id == ML_GAME_DARK_SOULS_3) {
-        ML_LOG_WARN(L"darksouls3", L"heap allocator capability HOOK_FAILED stage=system_allocator");
+        ML_LOG_WARN(game->log_scope, L"heap allocator capability HOOK_FAILED stage=system_allocator");
     }
     if (applied && !ml_lifecycle_on_phase(ML_LIFECYCLE_PHASE_AFTER_RUNTIME_INIT,
                                           install_allocator_after_runtime, userp)) {
@@ -92,7 +87,7 @@ static void install_allocator_before_main(ml_lifecycle_phase_t phase, void *user
     }
 }
 
-bool gamehook_install() {
+bool gamehook_install(void) {
     bool schedule_heap_allocator = false;
     bool regulation_requested;
     if (!ml_game_context_init()) {
@@ -105,7 +100,7 @@ bool gamehook_install() {
     bool file_routing_applied;
     bool ime_applied;
     bool wwise_applied;
-    regulation_requested = ml_regulation_requested();
+    regulation_requested = ml_regulation_requested(game);
     if (config.patch_mem && game->allocator_strategy != ML_ALLOCATOR_STRATEGY_UNSUPPORTED) {
         if (config.patch_mem_dedicated_heap &&
             !mimalloc_dl_allocator_prepare(config.patch_mem_heap_size)) {
@@ -116,13 +111,6 @@ bool gamehook_install() {
         ML_LOG_INFO(L"allocator", L"heap allocators SKIPPED_DISABLED for %ls", game->title);
     } else {
         ML_LOG_INFO(L"allocator", L"heap allocators SKIPPED_UNSUPPORTED for %ls", game->title);
-    }
-    if (game->id != ML_GAME_ELDEN_RING && game->id != ML_GAME_NIGHTREIGN &&
-        game->id != ML_GAME_ARMORED_CORE_6 &&
-        game->id != ML_GAME_SEKIRO &&
-        game->id != ML_GAME_DARK_SOULS_3) {
-        ML_LOG_WARN(L"gamehook", L"%ls adapter is not implemented; game hooks are disabled", game->title);
-        return false;
     }
     /* me3 schedules the logo redirect before other after-runtime host work. */
     if (config.skip_intro &&
@@ -156,35 +144,16 @@ bool gamehook_install() {
     } else if (!regulation_requested) {
         ML_LOG_INFO(L"regulation", L"protection SKIPPED_NO_OVERRIDE for %ls", game->title);
     }
-    steamapi_init();
     file_routing_applied = common_install_file_routing(game);
     ime_applied = common_install_ime(game);
-    wwise_applied = game->id == ML_GAME_NIGHTREIGN ||
-                    game->id == ML_GAME_ARMORED_CORE_6 || common_install_wwise();
+    wwise_applied = game->wwise_strategy != ML_WWISE_AT_INSTALL || common_install_wwise();
     common_applied = file_routing_applied && ime_applied && wwise_applied;
-    adapter_applied = game->id == ML_GAME_ELDEN_RING
-        ? eldenring_install()
-        : game->id == ML_GAME_NIGHTREIGN
-            ? nightreign_install()
-            : game->id == ML_GAME_ARMORED_CORE_6
-                ? armoredcore6_install()
-                : game->id == ML_GAME_SEKIRO ? sekiro_install() : darksouls3_install();
+    adapter_applied = ml_adapter_install(game);
     return common_applied && adapter_applied;
 }
 
-void gamehook_uninstall() {
-    const ml_game_descriptor_t *game = ml_game_context_get();
-    if (game != NULL && game->id == ML_GAME_ELDEN_RING) {
-        eldenring_uninstall();
-    } else if (game != NULL && game->id == ML_GAME_NIGHTREIGN) {
-        nightreign_uninstall();
-    } else if (game != NULL && game->id == ML_GAME_ARMORED_CORE_6) {
-        armoredcore6_uninstall();
-    } else if (game != NULL && game->id == ML_GAME_SEKIRO) {
-        sekiro_uninstall();
-    } else if (game != NULL && game->id == ML_GAME_DARK_SOULS_3) {
-        darksouls3_uninstall();
-    }
+void gamehook_uninstall(void) {
+    ml_adapter_uninstall();
     if (!ml_data_ready_uninstall()) {
         ML_LOG_WARN(L"data-ready", L"data ready trigger could not be removed");
     }
@@ -192,5 +161,4 @@ void gamehook_uninstall() {
     common_uninstall_file_routing();
 
     MH_Uninitialize();
-    steamapi_uninit();
 }

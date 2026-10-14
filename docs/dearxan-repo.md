@@ -21,3 +21,30 @@ This file records the upstream baseline used by the C11 implementation in
   mismatches, invalid later instructions, and truncated images.
 - `8dbfada` and `a14847b` update the upstream changelog and Rust release metadata;
   the C11 port records the tag and commit without adopting Cargo files.
+
+## Code review (2026-10-14)
+
+A review of the C11 port against `v0.5.7` aligned these behaviors with upstream:
+
+- SYSCALL and SYSENTER are analyzed as calls to target 0, like upstream's
+  `FlowControl::Call`: the stub walker steps over them and clears the volatile
+  registers.
+- The RMX ciphertext probe accepts both forms of `imul edx, r/m32`
+  (`Code::Imul_r32_rm32`), and a failed RMX decryption consumes its region list
+  like `regions.take()`, so a later `movzx` can supply a new one.
+- Interrupts, UD0 to UD2, XBEGIN, XABORT, XEND and IRET end the current
+  execution path, matching upstream's `rip = None`.
+- PUSHF, PUSHFQ, POPF and POPFQ move RSP and invalidate the pushed slot, as the
+  iced-x86 stack-pointer increment does upstream. The stale slot used to
+  multiply execution paths; Elden Ring analysis dropped from about 3.8 s to
+  0.2 s with identical results on all five games.
+
+YAFSML-specific behavior:
+
+- When the `.text` scan finds no security cookie, as under SteamStub before
+  `.text` is decrypted, the cookie address is read from
+  `IMAGE_LOAD_CONFIG_DIRECTORY64::SecurityCookie`. A failed lookup is not
+  cached, so a later call can retry.
+- While other threads are suspended, stub analysis runs on the calling thread
+  only, so no worker can wait on a loader or heap lock held by a suspended
+  thread.

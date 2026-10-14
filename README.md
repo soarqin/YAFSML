@@ -31,9 +31,14 @@ it starts Elden Ring. An explicit `--launch-target` always takes precedence.
 2. Edit `YAFSML.ini` and enable the required external DLLs or mods.
 3. Run `YAFSML.exe`.
 
-The launcher finds the game in its current directory, from an explicit path,
-or through the Steam library. It starts the game suspended, injects the loader
-DLL, and resumes the game unless `--suspend` is used.
+The launcher uses the game given by `--game-path`, or else finds it in its own
+directory or through the Steam library. It starts the game suspended, injects
+the loader DLL, and resumes the game unless `--suspend` is used.
+
+Errors appear in a message box and on standard error, or in the console of the
+command prompt that started the launcher. The launcher refuses to start a game
+whose folder also contains a YAFSML proxy DLL; remove the proxy, or start the
+game directly instead.
 
 ### Proxy DLL
 
@@ -70,13 +75,13 @@ Dark Souls III forces Arxan neutralization on.
 | Option | Default | Description |
 | --- | --- | --- |
 | `skip_intro` | `1` | Skip the intro logo. |
-| `prevent_regulation_save_write` | `1` | Prevent a mod-provided `regulation.bin` from being written to saves. The vanilla file keeps the game's normal save behavior. |
+| `prevent_regulation_save_write` | `1` | Prevent a mod-provided regulation file (`regulation.bin`, or `Data0.bdt` in Dark Souls III) from being written to saves. The vanilla file keeps the game's normal save behavior. |
 | `patch_mem` | `1` | Replace the Dantelion allocator with mimalloc. Armored Core VI and Nightreign do not support this patch, matching me3. |
 | `patch_mem_dedicated_heap` | `1` | Reserve a dedicated high-address mimalloc arena instead of using the regular mimalloc heap. |
 | `patch_mem_heap_size` | `0` | Dedicated mimalloc heap size in MB; `0` uses the current game's default when `patch_mem` is supported. |
 | `boot_boost` | `1` | Cache decrypted BHD headers to reduce archive startup time. |
 | `disable_arxan` | `0` | Neutralize Arxan after its entry stub completes. Dark Souls III forces this setting on. |
-| `replace_save_filename` | Empty | Replace a save filename; a leading dot replaces only its extension. |
+| `replace_save_filename` | Empty | Replace a save filename; a leading dot replaces only its extension. While a save name is replaced, a save reached through a symbolic link or junction inside the game's save folder is denied rather than redirected. |
 | `replace_seamless_coop_save_filename` | Empty | Replace the additional Seamless Co-op save filename. |
 | `enable_ime` | `0` | Keep IME enabled in supported games. Elden Ring, Armored Core VI, Nightreign, and Dark Souls III also allow non-Latin software-keyboard text; Sekiro only preserves IME. Restart after changing it. |
 
@@ -142,8 +147,10 @@ Dependencies reorder entries only when necessary and preserve the configured
 order otherwise. If an `early` DLL depends on a normal entry, that prerequisite
 is promoted to early loading. A normal DLL that depends on a `data_ready` or
 `delay` entry moves onto that same background thread. Cyclic dependencies are
-reported and leave the configured order unchanged. Project-owned extension DLLs
-are no longer shipped with this repository.
+reported and leave the configured order unchanged; promotion to early loading
+and moves onto the background thread still apply. A ModEngine extension whose
+`modengine_ext_init` returns false is reported, and the DLLs after it still
+load. Project-owned extension DLLs are no longer shipped with this repository.
 
 The `[mod]` section lists directories or ZIP files containing game-file overrides. Paths
 can be relative to the configuration file or absolute. An existing directory is scanned
@@ -176,7 +183,10 @@ in a double-quoted string.
 If `YAFSML.ini` is absent, the loader looks for the game-specific
 ModEngine2 file: `config_eldenring.toml`, `config_armoredcore6.toml`, `config_nightreign.toml`,
 `config_sekiro.toml`, or `config_darksouls3.toml`. The `-c` launcher option or `YAFSML_CONFIG`
-environment variable can select another configuration path.
+environment variable can select another configuration file or directory; a
+directory uses its `YAFSML.ini`, or the ModEngine2 file when that is absent. A
+relative `-c` or `YAFSML_CONFIG` is resolved against the directory of `YAFSML.dll`. As
+in ModEngine2, a `mods` entry only needs `path`; `enabled` defaults to true.
 
 ## Launcher options
 
@@ -190,6 +200,20 @@ environment variable can select another configuration path.
 ```
 
 `--launch-target` overrides the top-level `game=...` setting in `YAFSML.ini`.
+Without it, a `--game-path` that names a known game executable selects that
+game; with it, the executable of another game is an error.
+
+A relative `--modloader-dll` is relative to the launcher, and the DLL must
+exist. The launcher reads `game=...` from the same configuration as the DLL: a
+relative `--config`, or an inherited `YAFSML_CONFIG`, is relative to the DLL's
+directory, and without either it is the `YAFSML.ini` next to the DLL. A
+configuration given either way reaches the DLL as an absolute path.
+
+A relative `--game-path` is tried against the current directory, then the
+launcher directory; if neither contains the game, the launcher reports an error
+and does not search the Steam library. Without `--game-path`, the launcher looks
+in its own directory and then in the Steam libraries, whose
+`libraryfolders.vdf` and app manifests it reads as the Steam client does.
 
 ## Changelog
 
@@ -204,7 +228,8 @@ See [CHANGELOG.md](CHANGELOG.md).
 - [toml-c](https://github.com/arp242/toml-c): ModEngine2 TOML compatibility.
 - [wingetopt](https://github.com/alex85k/wingetopt): command-line parsing.
 - [mimalloc](https://github.com/microsoft/mimalloc): loader allocator.
+- [miniz](https://github.com/richgel999/miniz): ZIP packages and BootBoost cache compression.
+- [xxHash](https://github.com/Cyan4973/xxHash): BootBoost cache keys.
 - [dearxan](https://github.com/tremwil/dearxan): Arxan analysis and neutralization behavior ported to C11.
 - [Zydis](https://github.com/zyantific/zydis): x86/x86-64 disassembly used by the dearxan port.
-- [libofdf](https://github.com/Jan200101/libofdf): Steam library discovery.
-- [LZMA SDK](https://7-zip.org/sdk.html): public-domain compression SDK.
+- [libofdf](https://github.com/Jan200101/libofdf): interface of the Steam VDF reader.

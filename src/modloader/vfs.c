@@ -62,13 +62,26 @@ static vfs_writable_entry_t *writable_entries;
 static size_t writable_count;
 static size_t writable_capacity;
 
+/* Same result as CompareStringOrdinal(&a, 1, &b, 1, TRUE): ASCII letters are the
+ * only ASCII characters that fold, and any other pair keeps using the OS table.
+ * This runs once per character of the game folder on every CreateFile. */
+static bool vfs_char_equal_ignore_case(wchar_t a, wchar_t b) {
+    if (a == b) return true;
+    if (a < 0x80 && b < 0x80) {
+        if (a >= L'A' && a <= L'Z') a = (wchar_t)(a - L'A' + L'a');
+        if (b >= L'A' && b <= L'Z') b = (wchar_t)(b - L'A' + L'a');
+        return a == b;
+    }
+    return CompareStringOrdinal(&a, 1, &b, 1, TRUE) == CSTR_EQUAL;
+}
+
 static const wchar_t *vfs_strip_path_prefix(const wchar_t *path, const wchar_t *prefix) {
     if (path == NULL || prefix == NULL) return NULL;
     while (*prefix != L'\0') {
         bool path_separator = *path == L'\\' || *path == L'/';
         bool prefix_separator = *prefix == L'\\' || *prefix == L'/';
         if (*path == L'\0' || (path_separator != prefix_separator) ||
-            (!path_separator && CompareStringOrdinal(path, 1, prefix, 1, TRUE) != CSTR_EQUAL)) return NULL;
+            (!path_separator && !vfs_char_equal_ignore_case(*path, *prefix))) return NULL;
         path++;
         prefix++;
     }
@@ -138,16 +151,16 @@ bool vfs_normalize_path(const wchar_t *path, wchar_t **normalized) {
     return true;
 }
 
-static bool vfs_insert(const wchar_t *relative, const wchar_t *physical, zip_package_t *zip, size_t zip_file,
-                       vfs_entry_t *previous) {
+/* Takes ownership of `path`. `*previous` receives the entry being replaced (all
+ * zero for a new entry) and `*touched` its index, so the caller can undo. */
+static bool vfs_insert(const wchar_t *relative, wchar_t *path, zip_package_t *zip, size_t zip_file,
+                       vfs_entry_t *previous, size_t *touched) {
     wchar_t *key;
-    wchar_t *path;
     khiter_t slot;
     int ret;
-    if (!vfs_normalize_path(relative, &key)) return false;
-    path = ml_mem_strdup_w(physical);
-    if (path == NULL) {
-        ml_mem_free(key);
+    if (path == NULL) return false;
+    if (!vfs_normalize_path(relative, &key)) {
+        ml_mem_free(path);
         return false;
     }
     slot = kh_put(vfs_index, index, key, &ret);
@@ -158,8 +171,8 @@ static bool vfs_insert(const wchar_t *relative, const wchar_t *physical, zip_pac
     }
     if (ret == 0) {
         vfs_entry_t *entry = &entries[kh_value(index, slot)];
-        if (previous != NULL) *previous = *entry;
-        else ml_mem_free(entry->path);
+        *previous = *entry;
+        *touched = kh_value(index, slot);
         entry->path = path;
         entry->zip = zip;
         entry->zip_file = zip_file;
@@ -192,15 +205,45 @@ static bool vfs_insert(const wchar_t *relative, const wchar_t *physical, zip_pac
     }
     _snwprintf(uid, (size_t)uid_length + 1, L"\\\\me3??%zx", entry_count);
     entries[entry_count] = (vfs_entry_t){ key, path, uid, zip, zip_file };
+    *previous = (vfs_entry_t){ 0 };
+    *touched = entry_count;
     entry_count++;
     return true;
 }
 
-static bool vfs_scan(const wchar_t *root, const wchar_t *relative) {
+typedef struct vfs_path_list_s {
+    wchar_t **items;
+    size_t count;
+    size_t capacity;
+} vfs_path_list_t;
+
+static bool vfs_path_list_append(vfs_path_list_t *list, wchar_t *item) {
+    if (list->count == list->capacity) {
+        size_t capacity = list->capacity == 0 ? 256 : list->capacity * 2;
+        wchar_t **items = capacity > SIZE_MAX / sizeof(*items) ? NULL
+            : list->items == NULL ? ml_mem_alloc(0, capacity * sizeof(*items))
+            : ml_mem_realloc(list->items, capacity * sizeof(*items), LMEM_MOVEABLE);
+        if (items == NULL) return false;
+        list->items = items;
+        list->capacity = capacity;
+    }
+    list->items[list->count++] = item;
+    return true;
+}
+
+static void vfs_path_list_free(vfs_path_list_t *list) {
+    for (size_t i = 0; i < list->count; i++) ml_mem_free(list->items[i]);
+    ml_mem_free(list->items);
+}
+
+/* Collects the relative path of every file below `root`. Any enumeration error
+ * fails the scan, so a directory package is never indexed partially. */
+static bool vfs_scan(const wchar_t *root, const wchar_t *relative, vfs_path_list_t *files) {
     wchar_t *directory = relative[0] == L'\0' ? ml_mem_strdup_w(root) : vfs_join(root, relative);
     wchar_t *pattern;
     WIN32_FIND_DATAW find;
     HANDLE handle;
+    bool result;
     if (directory == NULL) return false;
     pattern = vfs_join(directory, L"*");
     ml_mem_free(directory);
@@ -209,35 +252,78 @@ static bool vfs_scan(const wchar_t *root, const wchar_t *relative) {
     ml_mem_free(pattern);
     if (handle == INVALID_HANDLE_VALUE) return false;
     do {
+        wchar_t *child_relative;
         if (lstrcmpW(find.cFileName, L".") == 0 || lstrcmpW(find.cFileName, L"..") == 0) continue;
-        wchar_t *child_relative = relative[0] == L'\0' ? ml_mem_strdup_w(find.cFileName) : vfs_join(relative, find.cFileName);
-        wchar_t *child_path = child_relative == NULL ? NULL : vfs_join(root, child_relative);
-        if (child_relative == NULL || child_path == NULL) {
-            ml_mem_free(child_relative);
-            ml_mem_free(child_path);
+        child_relative = relative[0] == L'\0' ? ml_mem_strdup_w(find.cFileName) : vfs_join(relative, find.cFileName);
+        if (child_relative == NULL) {
             FindClose(handle);
             return false;
         }
         if ((find.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-            if ((find.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0 && !vfs_scan(root, child_relative)) {
-                ml_mem_free(child_relative);
-                ml_mem_free(child_path);
+            bool scanned = (find.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+                           vfs_scan(root, child_relative, files);
+            ml_mem_free(child_relative);
+            if (!scanned) {
                 FindClose(handle);
                 return false;
             }
-        } else {
-            if (!vfs_insert(child_relative, child_path, NULL, 0, NULL)) {
-                ml_mem_free(child_relative);
-                ml_mem_free(child_path);
-                FindClose(handle);
-                return false;
+        } else if (!vfs_path_list_append(files, child_relative)) {
+            ml_mem_free(child_relative);
+            FindClose(handle);
+            return false;
+        }
+    } while (FindNextFileW(handle, &find));
+    result = GetLastError() == ERROR_NO_MORE_FILES;
+    FindClose(handle);
+    return result;
+}
+
+/* Indexes every file of a package or none of them: on failure each entry this
+ * call touched is restored in reverse order, which also unwinds names that occur
+ * twice within the package. Directory packages pass their scanned files, ZIP
+ * packages the archive. */
+static bool vfs_insert_package(const wchar_t *root, const vfs_path_list_t *files, zip_package_t *zip) {
+    size_t count = zip != NULL ? zip_package_count(zip) : files->count;
+    size_t applied = 0;
+    vfs_entry_t *previous;
+    size_t *touched;
+    if (count == 0) return true;
+    if (count > SIZE_MAX / sizeof(*previous)) return false;
+    previous = ml_mem_alloc(0, count * sizeof(*previous));
+    touched = ml_mem_alloc(0, count * sizeof(*touched));
+    if (previous == NULL || touched == NULL) {
+        ml_mem_free(previous);
+        ml_mem_free(touched);
+        return false;
+    }
+    for (; applied < count; applied++) {
+        const wchar_t *relative = zip != NULL ? zip_package_relative_path(zip, applied) : files->items[applied];
+        wchar_t *path = zip != NULL ? ml_mem_strdup_w(zip_package_cache_path(zip, applied))
+                                    : vfs_join(root, relative);
+        if (!vfs_insert(relative, path, zip, applied, &previous[applied], &touched[applied])) break;
+    }
+    if (applied == count) {
+        for (size_t i = 0; i < count; i++) ml_mem_free(previous[i].path);
+    } else {
+        while (applied != 0) {
+            vfs_entry_t *entry;
+            applied--;
+            entry = &entries[touched[applied]];
+            ml_mem_free(entry->path);
+            if (previous[applied].path != NULL) {
+                *entry = previous[applied];
+            } else {
+                kh_del(vfs_index, index, kh_get(vfs_index, index, entry->key));
+                ml_mem_free(entry->key);
+                ml_mem_free(entry->uid);
+                *entry = (vfs_entry_t){ 0 };
+                entry_count--;
             }
         }
-        ml_mem_free(child_relative);
-        ml_mem_free(child_path);
-    } while (FindNextFileW(handle, &find));
-    FindClose(handle);
-    return true;
+    }
+    ml_mem_free(previous);
+    ml_mem_free(touched);
+    return applied == count;
 }
 
 void vfs_init(void) {
@@ -259,6 +345,9 @@ void vfs_init(void) {
     writable_capacity = 0;
 }
 
+static void clear_lookup_cache_locked(void);
+static void clear_writable_cache_locked(void);
+
 void vfs_uninit(void) {
     while (zip_packages != NULL) {
         vfs_zip_t *next = zip_packages->next;
@@ -274,30 +363,16 @@ void vfs_uninit(void) {
         }
         ml_mem_free(entries);
     }
+    clear_lookup_cache_locked();
+    clear_writable_cache_locked();
     for (size_t i = 0; i < VFS_LOOKUP_DOMAIN_COUNT; i++) {
-        khash_t(vfs_lookup_cache) *cache = lookup_caches[i];
-        if (cache != NULL) {
-            for (khiter_t slot = kh_begin(cache); slot != kh_end(cache); slot++) {
-                if (kh_exist(cache, slot)) ml_mem_free((void *)kh_key(cache, slot));
-            }
-            kh_destroy(vfs_lookup_cache, cache);
-        }
+        if (lookup_caches[i] != NULL) kh_destroy(vfs_lookup_cache, lookup_caches[i]);
         lookup_caches[i] = NULL;
     }
-    if (uid_cache != NULL) {
-        for (khiter_t slot = kh_begin(uid_cache); slot != kh_end(uid_cache); slot++) {
-            if (kh_exist(uid_cache, slot)) ml_mem_free((void *)kh_key(uid_cache, slot));
-        }
-        kh_destroy(vfs_lookup_cache, uid_cache);
-        uid_cache = NULL;
-    }
-    if (writable_cache != NULL) {
-        for (khiter_t slot = kh_begin(writable_cache); slot != kh_end(writable_cache); slot++) {
-            if (kh_exist(writable_cache, slot)) ml_mem_free((void *)kh_key(writable_cache, slot));
-        }
-        kh_destroy(vfs_lookup_cache, writable_cache);
-        writable_cache = NULL;
-    }
+    if (uid_cache != NULL) kh_destroy(vfs_lookup_cache, uid_cache);
+    uid_cache = NULL;
+    if (writable_cache != NULL) kh_destroy(vfs_lookup_cache, writable_cache);
+    writable_cache = NULL;
     if (index != NULL) kh_destroy(vfs_index, index);
     for (size_t i = 0; i < writable_count; i++) {
         ml_mem_free(writable_entries[i].key);
@@ -328,13 +403,15 @@ bool vfs_add_package(const wchar_t *path) {
     const wchar_t *separator;
     wchar_t *disk_path;
     size_t length;
-    size_t count;
-    size_t applied = 0;
-    vfs_entry_t *previous;
     vfs_zip_t *zip;
     if (index == NULL || InterlockedCompareExchange(&frozen, FALSE, FALSE) || path == NULL || path[0] == L'\0') return false;
     /* A directory named *.zip is still a loose-file package. */
-    if (PathIsDirectoryW(path)) return vfs_scan(path, L"");
+    if (PathIsDirectoryW(path)) {
+        vfs_path_list_t files = { 0 };
+        bool result = vfs_scan(path, L"", &files) && vfs_insert_package(path, &files, NULL);
+        vfs_path_list_free(&files);
+        return result;
+    }
     separator = zip_package_root_separator(path);
     length = separator == NULL ? wcslen(path) : (size_t)(separator - path);
     disk_path = ml_mem_alloc(0, (length + 1) * sizeof(*disk_path));
@@ -353,47 +430,11 @@ bool vfs_add_package(const wchar_t *path) {
     }
     zip->package = zip_package_open(disk_path, separator == NULL ? L"" : separator + 1);
     ml_mem_free(disk_path);
-    if (zip->package == NULL) {
-        ml_mem_free(zip);
-        return false;
-    }
-    count = zip_package_count(zip->package);
-    previous = count == 0 || count > SIZE_MAX / sizeof(*previous) ? NULL
-        : ml_mem_alloc(LPTR, count * sizeof(*previous));
-    if (count != 0 && previous == NULL) {
+    if (zip->package == NULL || !vfs_insert_package(NULL, NULL, zip->package)) {
         zip_package_close(zip->package);
         ml_mem_free(zip);
         return false;
     }
-    for (; applied < count; applied++) {
-        if (!vfs_insert(zip_package_relative_path(zip->package, applied),
-                        zip_package_cache_path(zip->package, applied), zip->package, applied,
-                        &previous[applied])) break;
-    }
-    if (applied != count) {
-        /* Undo in reverse order, including duplicate names within this ZIP. */
-        while (applied != 0) {
-            applied--;
-            khiter_t slot = kh_get(vfs_index, index, zip_package_relative_path(zip->package, applied));
-            vfs_entry_t *entry = &entries[kh_value(index, slot)];
-            ml_mem_free(entry->path);
-            if (previous[applied].path != NULL) {
-                *entry = previous[applied];
-            } else {
-                kh_del(vfs_index, index, slot);
-                ml_mem_free(entry->key);
-                ml_mem_free(entry->uid);
-                *entry = (vfs_entry_t){ 0 };
-                entry_count--;
-            }
-        }
-        ml_mem_free(previous);
-        zip_package_close(zip->package);
-        ml_mem_free(zip);
-        return false;
-    }
-    for (size_t i = 0; i < count; i++) ml_mem_free(previous[i].path);
-    ml_mem_free(previous);
     zip->next = zip_packages;
     zip_packages = zip;
     return true;
@@ -445,14 +486,6 @@ bool vfs_register_writable_path(const wchar_t *virtual_path, const wchar_t *phys
     clear_writable_cache_locked();
     ReleaseSRWLockExclusive(&writable_lock);
     return true;
-}
-
-bool vfs_has_writable_paths(void) {
-    bool result;
-    AcquireSRWLockShared(&writable_lock);
-    result = writable_count != 0;
-    ReleaseSRWLockShared(&writable_lock);
-    return result;
 }
 
 const wchar_t *vfs_lookup(const wchar_t *path) {
@@ -518,7 +551,7 @@ const wchar_t *vfs_lookup_domain(const wchar_t *path, vfs_lookup_domain_t domain
 }
 
 uint64_t vfs_generation(void) {
-    return (uint64_t)InterlockedCompareExchange64(&generation, 0, 0);
+    return (uint64_t)ReadAcquire64(&generation);
 }
 
 static void clear_lookup_cache_locked(void) {
@@ -617,21 +650,14 @@ const wchar_t *vfs_uid_to_path(const wchar_t *uid) {
     static const wchar_t prefix[] = L"\\\\me3??";
     wchar_t *end;
     unsigned long long index_value;
+    /* No lock: entries are only written while the configuration adds packages,
+     * before any hook is installed, and are immutable once UIDs are handed out. */
     if (uid == NULL || wcsncmp(uid, prefix, (sizeof(prefix) / sizeof(prefix[0])) - 1) != 0) return NULL;
-    AcquireSRWLockShared(&lookup_cache_lock);
     uid += (sizeof(prefix) / sizeof(prefix[0])) - 1;
-    if (!iswxdigit(*uid)) {
-        ReleaseSRWLockShared(&lookup_cache_lock);
-        return NULL;
-    }
+    if (!iswxdigit(*uid)) return NULL;
     index_value = wcstoull(uid, &end, 16);
-    if (end == uid || *end != L'\0' || index_value >= entry_count) {
-        ReleaseSRWLockShared(&lookup_cache_lock);
-        return NULL;
-    }
-    vfs_entry_t *entry = &entries[index_value];
-    ReleaseSRWLockShared(&lookup_cache_lock);
-    return vfs_entry_read_path(entry);
+    if (end == uid || *end != L'\0' || index_value >= entry_count) return NULL;
+    return vfs_entry_read_path(&entries[index_value]);
 }
 
 const wchar_t *vfs_lookup_prefixed_domain(const wchar_t *path, const wchar_t *game_root,
@@ -782,8 +808,6 @@ const wchar_t *vfs_route_writable_path(const wchar_t *path) {
  * mods_file_route_read. */
 const wchar_t *vfs_route_read_path(const wchar_t *path, DWORD desired_access, DWORD creation_disposition) {
     if (path == NULL || vfs_recursion_depth != 0) return NULL;
-    const wchar_t *writable = vfs_route_writable_path(path);
-    if (writable != NULL) return writable;
     if ((desired_access & (GENERIC_WRITE | DELETE)) != 0 ||
         creation_disposition == CREATE_NEW || creation_disposition == CREATE_ALWAYS ||
         creation_disposition == TRUNCATE_EXISTING) return NULL;

@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-extern bool load_dinput8_proxy();
+extern bool load_dinput8_proxy(void);
 extern HRESULT dinput8_DllCanUnloadNow(void);
 extern HRESULT dinput8_DllGetClassObject(REFCLSID class_id, REFIID interface_id, void **object);
 

@@ -51,6 +51,19 @@ int main(void) {
     EXPECT_EQ(((unsigned char *)grown)[32], 0x5a);
     allocator->vtable->free(allocator, grown);
 
+    /* A block larger than the whole dedicated arena only fits in the global
+       heap, so growing into it has to fall back there and keep the contents. */
+    ptr = allocator->vtable->allocate(allocator, 64);
+    EXPECT_NOT_NULL(ptr);
+    memset(ptr, 0x3c, 64);
+    grown = allocator->vtable->reallocate(allocator, ptr, arena_size * 2);
+    EXPECT_NOT_NULL(grown);
+    EXPECT_TRUE((uintptr_t)grown < (uintptr_t)arena_base ||
+                (uintptr_t)grown >= (uintptr_t)arena_base + arena_size);
+    EXPECT_EQ(((unsigned char *)grown)[0], 0x3c);
+    EXPECT_EQ(((unsigned char *)grown)[63], 0x3c);
+    allocator->vtable->free(allocator, grown);
+
     ptr = allocator->vtable->back_allocate_aligned(allocator, 33, 32);
     EXPECT_NOT_NULL(ptr);
     EXPECT_EQ((uintptr_t)ptr % 32, 0);

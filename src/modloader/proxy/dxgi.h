@@ -6,7 +6,7 @@
 extern "C" {
 #endif
 
-extern bool load_dxgi_proxy();
+extern bool load_dxgi_proxy(void);
 
 #if defined(__cplusplus)
 }

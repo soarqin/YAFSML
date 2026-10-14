@@ -20,13 +20,14 @@ extern void *rtti_find_vtable(const char *class_name);
 extern size_t rtti_vtable_count(const char *class_name);
 extern void *rtti_find_vtable_at(const char *class_name, size_t index);
 
-typedef struct rtti_vtable_list_s {
-    void **items;
-    size_t count;
-    size_t capacity;
-} rtti_vtable_list_t;
-
-void rtti_vtable_list_insert(rtti_vtable_list_t *list, void *vtable, uint32_t offset, uint32_t *offsets);
+#ifdef ML_RTTI_TEST
+/* Test hooks: the production ordered insert and lookups on a private map. */
+extern void *rtti_test_map_create(void);
+extern void rtti_test_map_destroy(void *map);
+extern void rtti_test_insert(void *map, const char *class_name, void *vtable, uint32_t offset);
+extern size_t rtti_test_vtable_count(void *map, const char *class_name);
+extern void *rtti_test_find_vtable_at(void *map, const char *class_name, size_t index);
+#endif
 
 #ifdef __cplusplus
 }

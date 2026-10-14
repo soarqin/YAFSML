@@ -6,6 +6,7 @@
  */
 
 #include "steamstub.h"
+#include "util.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -139,9 +140,13 @@ dearxan_steamstub_probe_result_t dearxan_steamstub_probe(
     context->drmp_size = context->header.drmp_dll_size;
     if (context->strings_size == SIZE_MAX) goto fail;
     if (context->header.bind_section_ep_offset > image->entrypoint_rva) goto fail;
-    strings_rva = image->entrypoint_rva - context->header.bind_section_ep_offset +
+    /* Compute in 64-bit: adding the bind offset to a 32-bit RVA base can exceed
+     * UINT32_MAX, and a 32-bit intermediate would wrap and defeat the check. */
+    strings_rva = (uint64_t)image->entrypoint_rva -
+                   context->header.bind_section_ep_offset +
                    context->header.strings_bind_offset;
-    drmp_rva = image->entrypoint_rva - context->header.bind_section_ep_offset +
+    drmp_rva = (uint64_t)image->entrypoint_rva -
+                context->header.bind_section_ep_offset +
                 context->header.drmp_dll_bind_offset;
     if (strings_rva > UINT32_MAX || drmp_rva > UINT32_MAX) goto fail;
     context->encrypted_strings = read_rva(image, strings_rva, context->strings_size);
@@ -162,20 +167,6 @@ dearxan_steamstub_probe_result_t dearxan_steamstub_probe(
 fail:
     dearxan_steamstub_uninit(context);
     return DEARXAN_STEAMSTUB_ERROR;
-}
-
-bool dearxan_steamstub_detect(const dearxan_image_t *image,
-                              dearxan_steamstub_context_t *context) {
-    return dearxan_steamstub_probe(image, context) == DEARXAN_STEAMSTUB_PRESENT;
-}
-
-static bool protected_write(void *target, const void *source, size_t size) {
-    DWORD old_protection;
-    if (!VirtualProtect(target, size, PAGE_EXECUTE_READWRITE, &old_protection)) return false;
-    memcpy(target, source, size);
-    VirtualProtect(target, size, old_protection, &old_protection);
-    FlushInstructionCache(GetCurrentProcess(), target, size);
-    return true;
 }
 
 bool dearxan_steamstub_patch(const dearxan_image_t *image,
@@ -210,9 +201,9 @@ bool dearxan_steamstub_patch(const dearxan_image_t *image,
     if (context->strings_size != 0 && strings == NULL) return false;
     memcpy(strings, context->decrypted_strings, context->strings_size);
     steamstub_encrypt_strings(strings, context->strings_size, &key);
-    if (!protected_write(context->encrypted_header, &encrypted, sizeof(encrypted)) ||
+    if (!dearxan_write_protected(context->encrypted_header, &encrypted, sizeof(encrypted)) ||
         (context->strings_size != 0 &&
-         !protected_write(context->encrypted_strings, strings,
+         !dearxan_write_protected(context->encrypted_strings, strings,
                           context->strings_size))) {
         free(strings);
         return false;

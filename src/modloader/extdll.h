@@ -18,21 +18,20 @@ extern "C" {
 
 extern void extdlls_add(const char *name, const wchar_t *path);
 extern void extdlls_add_spec(const char *name, const char *value);
-extern int extdlls_count();
-extern void extdlls_prepare();
-extern bool extdlls_load_early();
-extern void extdlls_load_all();
-extern void extdlls_load_data_ready();
-extern void extdlls_unload_all();
+extern int extdlls_count(void);
+extern void extdlls_prepare(void);
+extern bool extdlls_load_early(void);
+extern void extdlls_load_all(void);
+extern void extdlls_load_data_ready(void);
+extern void extdlls_unload_all(void);
 
 #ifdef ML_EXTDLL_TEST
 extern const char *extdlls_test_name_at(int index);
 extern int extdlls_test_stage_at(int index);
 extern bool extdlls_test_is_early_at(int index);
-extern bool extdlls_test_is_effective_early_at(int index);
 extern bool extdlls_test_is_data_ready_at(int index);
 extern bool extdlls_test_is_deferred_at(int index);
-extern bool extdlls_test_has_delayed_at(bool early);
+extern bool extdlls_test_has_delayed(void);
 extern uint32_t extdlls_test_delay_at(int index);
 extern int extdlls_test_after_count(int index);
 extern const char *extdlls_test_after_at(int index, int dependency);

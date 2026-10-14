@@ -34,6 +34,11 @@ bool dearxan_image_set_preferred_base_from_file(dearxan_image_t *image,
 const unsigned char *dearxan_image_read(const dearxan_image_t *image,
                                         uint64_t va, size_t min_size,
                                         size_t *available);
+/* Fetch data directory `index` (an IMAGE_DIRECTORY_ENTRY_* value). Returns
+ * false when the index is out of range or the directory is absent/empty. */
+bool dearxan_image_data_directory(const dearxan_image_t *image,
+                                  unsigned int index, uint32_t *rva,
+                                  uint32_t *size);
 bool dearxan_image_for_each_section(const dearxan_image_t *image,
                                     dearxan_section_callback_t callback,
                                     void *opaque);

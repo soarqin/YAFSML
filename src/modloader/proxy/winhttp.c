@@ -1,4 +1,5 @@
 #include "winhttp.h"
+#include "common.h"
 #include "log.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -22,6 +23,7 @@ void *winhttp_orig_WinHttpCheckPlatform;
 void *winhttp_orig_WinHttpCloseHandle;
 void *winhttp_orig_WinHttpConnect;
 void *winhttp_orig_WinHttpConnectionDeletePolicyEntries;
+void *winhttp_orig_WinHttpConnectionDeletePolicyEntriesByAppSid;
 void *winhttp_orig_WinHttpConnectionDeleteProxyInfo;
 void *winhttp_orig_WinHttpConnectionFreeNameList;
 void *winhttp_orig_WinHttpConnectionFreeProxyInfo;
@@ -36,7 +38,11 @@ void *winhttp_orig_WinHttpConnectionSetPolicyEntries;
 void *winhttp_orig_WinHttpConnectionSetProxyInfo;
 void *winhttp_orig_WinHttpConnectionUpdateIfIndexTable;
 void *winhttp_orig_WinHttpCrackUrl;
+void *winhttp_orig_WinHttpCreateProxyList;
+void *winhttp_orig_WinHttpCreateProxyManager;
 void *winhttp_orig_WinHttpCreateProxyResolver;
+void *winhttp_orig_WinHttpCreateProxyResult;
+void *winhttp_orig_WinHttpCreateUiCompatibleProxyString;
 void *winhttp_orig_WinHttpCreateUrl;
 void *winhttp_orig_WinHttpDetectAutoProxyConfigUrl;
 void *winhttp_orig_WinHttpFreeProxyResult;
@@ -60,6 +66,9 @@ void *winhttp_orig_WinHttpOpen;
 void *winhttp_orig_WinHttpOpenRequest;
 void *winhttp_orig_WinHttpPacJsWorkerMain;
 void *winhttp_orig_WinHttpProbeConnectivity;
+void *winhttp_orig_WinHttpProtocolCompleteUpgrade;
+void *winhttp_orig_WinHttpProtocolReceive;
+void *winhttp_orig_WinHttpProtocolSend;
 void *winhttp_orig_WinHttpQueryAuthSchemes;
 void *winhttp_orig_WinHttpQueryConnectionGroup;
 void *winhttp_orig_WinHttpQueryDataAvailable;
@@ -71,8 +80,10 @@ void *winhttp_orig_WinHttpReadDataEx;
 void *winhttp_orig_WinHttpReadProxySettings;
 void *winhttp_orig_WinHttpReadProxySettingsHvsi;
 void *winhttp_orig_WinHttpReceiveResponse;
+void *winhttp_orig_WinHttpRefreshProxySettings;
 void *winhttp_orig_WinHttpRegisterProxyChangeNotification;
 void *winhttp_orig_WinHttpResetAutoProxy;
+void *winhttp_orig_WinHttpResolverGetProxyForUrl;
 void *winhttp_orig_WinHttpSaveProxyCredentials;
 void *winhttp_orig_WinHttpSendRequest;
 void *winhttp_orig_WinHttpSetCredentials;
@@ -94,10 +105,6 @@ void *winhttp_orig_WinHttpWebSocketShutdown;
 void *winhttp_orig_WinHttpWriteData;
 void *winhttp_orig_WinHttpWriteProxySettings;
 
-#if defined(__cplusplus)
-extern "C" {
-#endif
-
 HRESULT winhttp_DllCanUnloadNow(void) {
     typedef HRESULT (STDAPICALLTYPE *function_t)(void);
     return winhttp_orig_DllCanUnloadNow == NULL ? E_NOINTERFACE : ((function_t)winhttp_orig_DllCanUnloadNow)();
@@ -110,19 +117,9 @@ HRESULT winhttp_DllGetClassObject(REFCLSID class_id, REFIID interface_id, void *
         : ((function_t)winhttp_orig_DllGetClassObject)(class_id, interface_id, object);
 }
 
-bool load_winhttp_proxy() {
-    wchar_t path[MAX_PATH], syspath[MAX_PATH];
-    if (GetSystemDirectoryW(syspath, MAX_PATH) == 0) {
-        ML_LOG_ERROR(L"proxy", L"cannot resolve system directory for winhttp.dll");
-        return false;
-    }
-    _snwprintf(path, MAX_PATH, L"%ls\\winhttp.dll", syspath);
-    path[MAX_PATH - 1] = L'\0';
-    winhttp_dll = LoadLibraryW(path);
-    if (!winhttp_dll) {
-        ML_LOG_ERROR(L"proxy", L"cannot load original winhttp.dll library");
-        return false;
-    }
+bool load_winhttp_proxy(void) {
+    winhttp_dll = proxy_load_system_dll(L"winhttp.dll");
+    if (winhttp_dll == NULL) return false;
     winhttp_orig_DllCanUnloadNow = (void *)GetProcAddress(winhttp_dll, "DllCanUnloadNow");
     winhttp_orig_DllGetClassObject = (void *)GetProcAddress(winhttp_dll, "DllGetClassObject");
     winhttp_orig_Private1 = (void *)GetProcAddress(winhttp_dll, "Private1");
@@ -134,6 +131,7 @@ bool load_winhttp_proxy() {
     winhttp_orig_WinHttpCloseHandle = (void *)GetProcAddress(winhttp_dll, "WinHttpCloseHandle");
     winhttp_orig_WinHttpConnect = (void *)GetProcAddress(winhttp_dll, "WinHttpConnect");
     winhttp_orig_WinHttpConnectionDeletePolicyEntries = (void *)GetProcAddress(winhttp_dll, "WinHttpConnectionDeletePolicyEntries");
+    winhttp_orig_WinHttpConnectionDeletePolicyEntriesByAppSid = (void *)GetProcAddress(winhttp_dll, "WinHttpConnectionDeletePolicyEntriesByAppSid");
     winhttp_orig_WinHttpConnectionDeleteProxyInfo = (void *)GetProcAddress(winhttp_dll, "WinHttpConnectionDeleteProxyInfo");
     winhttp_orig_WinHttpConnectionFreeNameList = (void *)GetProcAddress(winhttp_dll, "WinHttpConnectionFreeNameList");
     winhttp_orig_WinHttpConnectionFreeProxyInfo = (void *)GetProcAddress(winhttp_dll, "WinHttpConnectionFreeProxyInfo");
@@ -148,7 +146,11 @@ bool load_winhttp_proxy() {
     winhttp_orig_WinHttpConnectionSetProxyInfo = (void *)GetProcAddress(winhttp_dll, "WinHttpConnectionSetProxyInfo");
     winhttp_orig_WinHttpConnectionUpdateIfIndexTable = (void *)GetProcAddress(winhttp_dll, "WinHttpConnectionUpdateIfIndexTable");
     winhttp_orig_WinHttpCrackUrl = (void *)GetProcAddress(winhttp_dll, "WinHttpCrackUrl");
+    winhttp_orig_WinHttpCreateProxyList = (void *)GetProcAddress(winhttp_dll, "WinHttpCreateProxyList");
+    winhttp_orig_WinHttpCreateProxyManager = (void *)GetProcAddress(winhttp_dll, "WinHttpCreateProxyManager");
     winhttp_orig_WinHttpCreateProxyResolver = (void *)GetProcAddress(winhttp_dll, "WinHttpCreateProxyResolver");
+    winhttp_orig_WinHttpCreateProxyResult = (void *)GetProcAddress(winhttp_dll, "WinHttpCreateProxyResult");
+    winhttp_orig_WinHttpCreateUiCompatibleProxyString = (void *)GetProcAddress(winhttp_dll, "WinHttpCreateUiCompatibleProxyString");
     winhttp_orig_WinHttpCreateUrl = (void *)GetProcAddress(winhttp_dll, "WinHttpCreateUrl");
     winhttp_orig_WinHttpDetectAutoProxyConfigUrl = (void *)GetProcAddress(winhttp_dll, "WinHttpDetectAutoProxyConfigUrl");
     winhttp_orig_WinHttpFreeProxyResult = (void *)GetProcAddress(winhttp_dll, "WinHttpFreeProxyResult");
@@ -172,6 +174,9 @@ bool load_winhttp_proxy() {
     winhttp_orig_WinHttpOpenRequest = (void *)GetProcAddress(winhttp_dll, "WinHttpOpenRequest");
     winhttp_orig_WinHttpPacJsWorkerMain = (void *)GetProcAddress(winhttp_dll, "WinHttpPacJsWorkerMain");
     winhttp_orig_WinHttpProbeConnectivity = (void *)GetProcAddress(winhttp_dll, "WinHttpProbeConnectivity");
+    winhttp_orig_WinHttpProtocolCompleteUpgrade = (void *)GetProcAddress(winhttp_dll, "WinHttpProtocolCompleteUpgrade");
+    winhttp_orig_WinHttpProtocolReceive = (void *)GetProcAddress(winhttp_dll, "WinHttpProtocolReceive");
+    winhttp_orig_WinHttpProtocolSend = (void *)GetProcAddress(winhttp_dll, "WinHttpProtocolSend");
     winhttp_orig_WinHttpQueryAuthSchemes = (void *)GetProcAddress(winhttp_dll, "WinHttpQueryAuthSchemes");
     winhttp_orig_WinHttpQueryConnectionGroup = (void *)GetProcAddress(winhttp_dll, "WinHttpQueryConnectionGroup");
     winhttp_orig_WinHttpQueryDataAvailable = (void *)GetProcAddress(winhttp_dll, "WinHttpQueryDataAvailable");
@@ -183,8 +188,10 @@ bool load_winhttp_proxy() {
     winhttp_orig_WinHttpReadProxySettings = (void *)GetProcAddress(winhttp_dll, "WinHttpReadProxySettings");
     winhttp_orig_WinHttpReadProxySettingsHvsi = (void *)GetProcAddress(winhttp_dll, "WinHttpReadProxySettingsHvsi");
     winhttp_orig_WinHttpReceiveResponse = (void *)GetProcAddress(winhttp_dll, "WinHttpReceiveResponse");
+    winhttp_orig_WinHttpRefreshProxySettings = (void *)GetProcAddress(winhttp_dll, "WinHttpRefreshProxySettings");
     winhttp_orig_WinHttpRegisterProxyChangeNotification = (void *)GetProcAddress(winhttp_dll, "WinHttpRegisterProxyChangeNotification");
     winhttp_orig_WinHttpResetAutoProxy = (void *)GetProcAddress(winhttp_dll, "WinHttpResetAutoProxy");
+    winhttp_orig_WinHttpResolverGetProxyForUrl = (void *)GetProcAddress(winhttp_dll, "WinHttpResolverGetProxyForUrl");
     winhttp_orig_WinHttpSaveProxyCredentials = (void *)GetProcAddress(winhttp_dll, "WinHttpSaveProxyCredentials");
     winhttp_orig_WinHttpSendRequest = (void *)GetProcAddress(winhttp_dll, "WinHttpSendRequest");
     winhttp_orig_WinHttpSetCredentials = (void *)GetProcAddress(winhttp_dll, "WinHttpSetCredentials");
@@ -207,7 +214,3 @@ bool load_winhttp_proxy() {
     winhttp_orig_WinHttpWriteProxySettings = (void *)GetProcAddress(winhttp_dll, "WinHttpWriteProxySettings");
     return true;
 }
-
-#if defined(__cplusplus)
-}
-#endif

@@ -6,6 +6,7 @@
  */
 
 #include "patch.h"
+#include "util.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -21,50 +22,18 @@
 static unsigned char *code_buffer;
 static volatile LONG64 code_buffer_offset;
 
+/* A process-wide 16 MB arena placed within rel32 range of the whole image, so
+ * every stub's `jmp rel32` can reach the generated patch code. The arena is
+ * allocated once (the ±2 GB search is shared with the disabler) and then
+ * bump-allocated from atomically. */
 static void *allocate_near_code(const dearxan_image_t *image, size_t size) {
-    SYSTEM_INFO system_info;
-    uintptr_t min_address;
-    uintptr_t max_address;
-    uintptr_t address;
     LONG64 old_offset;
     LONG64 next_offset;
     if (code_buffer == NULL) {
-        GetSystemInfo(&system_info);
-        min_address = image->base_va + image->size > (uint64_t)INT32_MAX
-            ? (uintptr_t)(image->base_va + image->size - INT32_MAX)
-            : (uintptr_t)system_info.lpMinimumApplicationAddress;
-        if (min_address < (uintptr_t)system_info.lpMinimumApplicationAddress) {
-            min_address = (uintptr_t)system_info.lpMinimumApplicationAddress;
-        }
-        max_address = image->base_va > UINTPTR_MAX - INT32_MAX
-            ? (uintptr_t)system_info.lpMaximumApplicationAddress
-            : (uintptr_t)image->base_va + INT32_MAX;
-        if (max_address > (uintptr_t)system_info.lpMaximumApplicationAddress) {
-            max_address = (uintptr_t)system_info.lpMaximumApplicationAddress;
-        }
-        address = (min_address + system_info.dwAllocationGranularity - 1) -
-                  ((min_address + system_info.dwAllocationGranularity - 1) %
-                   system_info.dwAllocationGranularity);
-        while (max_address >= DEARXAN_CODE_BUFFER_SIZE &&
-               address <= max_address - DEARXAN_CODE_BUFFER_SIZE) {
-            MEMORY_BASIC_INFORMATION information;
-            if (VirtualQuery((void *)address, &information, sizeof(information)) == 0) break;
-            if (information.State == MEM_FREE &&
-                information.RegionSize >= DEARXAN_CODE_BUFFER_SIZE) {
-                unsigned char *allocated = VirtualAlloc((void *)address,
-                    DEARXAN_CODE_BUFFER_SIZE, MEM_COMMIT | MEM_RESERVE,
-                    PAGE_EXECUTE_READWRITE);
-                if (allocated != NULL) {
-                    code_buffer = allocated;
-                    break;
-                }
-            }
-            if ((uintptr_t)information.BaseAddress > UINTPTR_MAX - information.RegionSize) break;
-            address = (uintptr_t)information.BaseAddress + information.RegionSize;
-            address = (address + system_info.dwAllocationGranularity - 1) -
-                      ((address + system_info.dwAllocationGranularity - 1) %
-                       system_info.dwAllocationGranularity);
-        }
+        code_buffer = dearxan_allocate_near(
+            (uintptr_t)image->base_va,
+            (uintptr_t)(image->base_va + image->size),
+            DEARXAN_CODE_BUFFER_SIZE);
     }
     if (code_buffer == NULL || size > DEARXAN_CODE_BUFFER_SIZE) return NULL;
     do {
@@ -74,15 +43,6 @@ static void *allocate_near_code(const dearxan_image_t *image, size_t size) {
     } while (InterlockedCompareExchange64(&code_buffer_offset, next_offset,
                                           old_offset) != old_offset);
     return code_buffer + old_offset;
-}
-
-static bool write_memory(void *target, const void *source, size_t size) {
-    DWORD old_protection;
-    if (!VirtualProtect(target, size, PAGE_EXECUTE_READWRITE, &old_protection)) return false;
-    memcpy(target, source, size);
-    VirtualProtect(target, size, old_protection, &old_protection);
-    FlushInstructionCache(GetCurrentProcess(), target, size);
-    return true;
 }
 
 static bool emit_stub_patch(const dearxan_stub_info_t *stub,
@@ -178,7 +138,7 @@ bool dearxan_apply_stub_patches(const dearxan_image_t *image,
                 region->size > list->decrypted_size - region->stream_offset ||
                 dearxan_image_read(image, image->base_va + region->rva,
                                    region->size, NULL) == NULL ||
-                !write_memory((void *)(uintptr_t)(image->base_va + region->rva),
+                !dearxan_write_protected((void *)(uintptr_t)(image->base_va + region->rva),
                                list->decrypted_stream + region->stream_offset,
                                region->size)) {
                 dearxan_free_encrypted_region_lists(resolved, resolved_count);
@@ -215,7 +175,7 @@ bool dearxan_apply_stub_patches(const dearxan_image_t *image,
             int32_t displacement32 = (int32_t)displacement;
             memcpy(jump + 1, &displacement32, sizeof(displacement32));
         }
-        if (!write_memory((void *)(uintptr_t)stubs->items[i].test_rsp_va,
+        if (!dearxan_write_protected((void *)(uintptr_t)stubs->items[i].test_rsp_va,
                           jump, sizeof(jump))) {
             if (error_message != NULL) *error_message = "failed to install stub jump";
             return false;

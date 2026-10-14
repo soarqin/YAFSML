@@ -14,8 +14,8 @@
 extern "C" {
 #endif
 
-extern bool gamehook_install();
-extern void gamehook_uninstall();
+extern bool gamehook_install(void);
+extern void gamehook_uninstall(void);
 
 #ifdef __cplusplus
 }
