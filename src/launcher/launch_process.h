@@ -35,6 +35,8 @@ bool ml_launcher_inject_dll(HANDLE process, const wchar_t *dll_path);
 /* Finds a dinput8.dll, dxgi.dll or winhttp.dll in `game_folder` that exports
  * YAFSMLInit, i.e. a YAFSML proxy copy. */
 bool ml_launcher_find_proxy_copy(const wchar_t *game_folder, wchar_t path[MAX_PATH]);
+/* Long-path variant. Returns an owned CRT string, or NULL when none is found. */
+wchar_t *ml_launcher_find_proxy_copy_alloc(const wchar_t *game_folder);
 
 #ifdef __cplusplus
 }

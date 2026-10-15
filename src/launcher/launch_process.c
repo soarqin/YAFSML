@@ -6,6 +6,9 @@
 #include "launch_process.h"
 #include "log.h"
 
+#define ML_PATH_USE_CRT_ALLOCATOR
+#include "common/path.h"
+
 #include <psapi.h>
 #include <shlwapi.h>
 #include <stdint.h>
@@ -145,14 +148,18 @@ HMODULE ml_launcher_find_remote_module(HANDLE process, const wchar_t *module_pat
     DWORD needed = 0;
     HMODULE *modules = NULL;
     HMODULE found = NULL;
+    wchar_t *requested;
     if (module_path == NULL) {
         SetLastError(ERROR_INVALID_PARAMETER);
         return NULL;
     }
+    requested = ml_path_resolve_alloc(NULL, module_path);
+    if (requested == NULL) return NULL;
     for (;;) {
         HMODULE *grown = realloc(modules, capacity);
         if (grown == NULL) {
             free(modules);
+            free(requested);
             SetLastError(ERROR_NOT_ENOUGH_MEMORY);
             return NULL;
         }
@@ -160,6 +167,7 @@ HMODULE ml_launcher_find_remote_module(HANDLE process, const wchar_t *module_pat
         if (!EnumProcessModules(process, modules, capacity, &needed)) {
             const DWORD error = GetLastError();
             free(modules);
+            free(requested);
             SetLastError(error);
             return NULL;
         }
@@ -168,15 +176,30 @@ HMODULE ml_launcher_find_remote_module(HANDLE process, const wchar_t *module_pat
         capacity = needed;
     }
     for (DWORD i = 0; i < needed / sizeof(HMODULE) && found == NULL; i++) {
-        wchar_t name[MAX_PATH + 1];
-        const DWORD length = GetModuleFileNameExW(process, modules[i], name, MAX_PATH + 1);
+        wchar_t *name = NULL;
+        DWORD name_capacity = 256;
+        while (name_capacity <= ML_PATH_MAX_CCH) {
+            DWORD length;
+            name = ml_path_buffer(name_capacity);
+            if (name == NULL) break;
+            length = GetModuleFileNameExW(process, modules[i], name, name_capacity);
+            if (length != 0 && length < name_capacity) break;
+            free(name);
+            name = NULL;
+            if (length == 0) break;
+            name_capacity *= 2;
+        }
         /* A base name is ambiguous: `-d ...\dxgi.dll` would match System32's dxgi.dll. */
-        if (length != 0 && length <= MAX_PATH &&
-            CompareStringOrdinal(name, (int)length, module_path, -1, TRUE) == CSTR_EQUAL) {
-            found = modules[i];
+        if (name != NULL) {
+            wchar_t *normalized = ml_path_resolve_alloc(NULL, name);
+            if (normalized != NULL && CompareStringOrdinal(normalized, -1, requested, -1, TRUE) == CSTR_EQUAL)
+                found = modules[i];
+            free(normalized);
+            free(name);
         }
     }
     free(modules);
+    free(requested);
     if (found == NULL) SetLastError(ERROR_MOD_NOT_FOUND);
     return found;
 }
@@ -255,20 +278,34 @@ bool ml_launcher_inject_dll(HANDLE process, const wchar_t *dll_path) {
     return true;
 }
 
-bool ml_launcher_find_proxy_copy(const wchar_t *game_folder, wchar_t path[MAX_PATH]) {
+wchar_t *ml_launcher_find_proxy_copy_alloc(const wchar_t *game_folder) {
     static const wchar_t *const proxy_names[] = { L"dinput8.dll", L"dxgi.dll", L"winhttp.dll" };
     for (size_t i = 0; i < sizeof(proxy_names) / sizeof(proxy_names[0]); i++) {
         HMODULE module;
         bool exports_init;
-        if (PathCombineW(path, game_folder, proxy_names[i]) == NULL) continue;
+        wchar_t *path = ml_path_resolve_alloc(game_folder, proxy_names[i]);
+        if (path == NULL) continue;
         /* Map the image without running its entry point, as for injection;
          * other DLLs with these names, such as graphics wrappers, pass. */
         module = LoadLibraryExW(path, NULL, DONT_RESOLVE_DLL_REFERENCES);
-        if (module == NULL) continue;
+        if (module == NULL) {
+            free(path);
+            continue;
+        }
         exports_init = GetProcAddress(module, "YAFSMLInit") != NULL;
         FreeLibrary(module);
-        if (exports_init) return true;
+        if (exports_init) return path;
+        free(path);
     }
+    return NULL;
+}
+
+bool ml_launcher_find_proxy_copy(const wchar_t *game_folder, wchar_t path[MAX_PATH]) {
+    wchar_t *found = ml_launcher_find_proxy_copy_alloc(game_folder);
     path[0] = L'\0';
-    return false;
+    if (found == NULL) return false;
+    bool fits = wcslen(found) < MAX_PATH;
+    if (fits) wcscpy(path, found);
+    free(found);
+    return fits;
 }

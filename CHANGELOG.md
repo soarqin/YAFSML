@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Configuration, external DLL, and mod disk paths now resolve relative to the
+  loader DLL directory, including ModEngine2 TOML paths. Moving a configuration
+  no longer changes the DLL/mod, log, or BootBoost cache base directory.
 - Updated the dearxan C11 implementation to v0.5.7 and reviewed me3 through
   `5f4fa47`, retaining the documented performance fork's cache behavior.
 - All five games now share one descriptor-driven adapter. After
@@ -89,6 +92,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Support disk paths longer than `MAX_PATH` for configuration files, external
+  DLLs, loose-file mods, ZIP packages, and loader DLL selection/injection.
+  Normalize mixed separators before resolving `.` and `..`, use the same root
+  for DLL and mod paths, and report resolved DLL paths and Windows error codes.
 - MSVC entry-point detection now accepts debugger traps such as INT3 and UD2
   at the first instruction while still validating the remaining CRT prologue.
 - The launcher now temporarily clears Wine's Unix `LC_ALL` when spawning the

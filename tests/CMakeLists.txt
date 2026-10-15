@@ -62,10 +62,18 @@ set(SMOKE_smoke_mod_zip_config_SOURCES
     ${CMAKE_SOURCE_DIR}/src/modloader/vfs.c
     ${CMAKE_SOURCE_DIR}/src/modloader/zip_package.c)
 set(SMOKE_smoke_mod_zip_config_LIBRARIES shlwapi inih miniz)
+set(SMOKE_smoke_loading_paths_SOURCES ${SMOKE_smoke_mod_zip_config_SOURCES}
+    ${CMAKE_SOURCE_DIR}/src/modloader/extdll.c
+    ${CMAKE_SOURCE_DIR}/src/launcher/launch_config.c
+    ${CMAKE_SOURCE_DIR}/src/launcher/launch_process.c)
+set(SMOKE_smoke_loading_paths_LIBRARIES shlwapi inih miniz psapi)
+set(SMOKE_smoke_loading_paths_DEFINITIONS ML_EXTDLL_TEST)
 if(ML_STRIP_MODENGINE_CONFIG_SUPPORT)
     set(SMOKE_smoke_mod_zip_config_DEFINITIONS ML_STRIP_MODENGINE_CONFIG)
+    list(APPEND SMOKE_smoke_loading_paths_DEFINITIONS ML_STRIP_MODENGINE_CONFIG)
 else()
     list(APPEND SMOKE_smoke_mod_zip_config_LIBRARIES toml-c)
+    list(APPEND SMOKE_smoke_loading_paths_LIBRARIES toml-c)
 endif()
 set(SMOKE_smoke_launcher_game_SOURCES ${CMAKE_SOURCE_DIR}/src/launcher/launch_config.c)
 set(SMOKE_smoke_launcher_game_LIBRARIES inih shlwapi)
@@ -150,6 +158,8 @@ target_include_directories(smoke_ini_allocation PRIVATE ${CMAKE_SOURCE_DIR}/deps
 set_tests_properties(smoke_launcher_process PROPERTIES TIMEOUT 20)
 
 add_dependencies(smoke_extdll_config extdll_fixture)
+add_dependencies(smoke_mod_zip_config extdll_fixture)
+add_dependencies(smoke_loading_paths extdll_fixture)
 
 add_executable(benchmark_dearxan_analysis EXCLUDE_FROM_ALL
     benchmark_dearxan_analysis.c)

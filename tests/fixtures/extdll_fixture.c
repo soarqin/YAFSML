@@ -6,6 +6,12 @@
 static volatile LONG init_count;
 static volatile LONG connector_count;
 
+/* Also serves as a loader fixture for the launcher's long-path injection test. */
+__declspec(dllexport) DWORD WINAPI YAFSMLInit(LPVOID parameter) {
+    (void)parameter;
+    return 1;
+}
+
 __declspec(dllexport) bool modengine_ext_init(const void *connector, void **extension) {
     InterlockedIncrement(&init_count);
     if (connector != NULL) InterlockedIncrement(&connector_count);

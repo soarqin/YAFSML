@@ -10,7 +10,7 @@
 #include "modloader/vfs.h"
 #include "modloader/zip_package.h"
 
-extern wchar_t env_config_path[MAX_PATH];
+static HMODULE config_module;
 void config_load_ini(FILE *file);
 #ifndef ML_STRIP_MODENGINE_CONFIG
 bool config_load_toml(FILE *file);
@@ -115,20 +115,18 @@ static int test_config_resolution(const wchar_t *root, const wchar_t *config_pat
     for (wchar_t *p = forward; *p != L'\0'; p++) {
         if (*p == L'\\') *p = L'/';
     }
-    config_init(NULL);
-    lstrcpyW(env_config_path, forward);
+    SetEnvironmentVariableW(L"YAFSML_CONFIG", forward);
+    config_init(config_module);
     mods_init();
     config_load();
-    EXPECT_STREQ_W(env_config_path, config_path);
     EXPECT_EQ(mods_count(), 2);
     EXPECT_TRUE(read_matches(mods_file_search(L"parts/test.bin"), "selected"));
     mods_uninit();
     lstrcatW(forward, L"/YAFSML.ini");
-    config_init(NULL);
-    lstrcpyW(env_config_path, forward);
+    SetEnvironmentVariableW(L"YAFSML_CONFIG", forward);
+    config_init(config_module);
     mods_init();
     config_load();
-    EXPECT_STREQ_W(env_config_path, config_path);
     EXPECT_EQ(mods_count(), 2);
     mods_uninit();
 #ifndef ML_STRIP_MODENGINE_CONFIG
@@ -136,12 +134,11 @@ static int test_config_resolution(const wchar_t *root, const wchar_t *config_pat
     _snwprintf(toml_path, MAX_PATH, L"%ls\\config_eldenring.toml", me2);
     EXPECT_TRUE(CreateDirectoryW(me2, NULL));
     EXPECT_TRUE(write_bytes(toml_path, "[extension.mod_loader]\nenabled = true\n"
-                                       "mods = [ { path = '..\\模组.zip:def' } ]\n"));
-    config_init(NULL);
-    lstrcpyW(env_config_path, me2);
+                                       "mods = [ { path = '模组.zip:def' } ]\n"));
+    SetEnvironmentVariableW(L"YAFSML_CONFIG", me2);
+    config_init(config_module);
     mods_init();
     config_load();
-    EXPECT_STREQ_W(env_config_path, toml_path);
     EXPECT_EQ(mods_count(), 1);
     EXPECT_TRUE(read_matches(mods_file_search(L"parts/test.bin"), "selected"));
     mods_uninit();
@@ -149,8 +146,8 @@ static int test_config_resolution(const wchar_t *root, const wchar_t *config_pat
     /* A malformed TOML yields an empty configuration instead of parsing the
      * exhausted stream as INI. */
     EXPECT_TRUE(write_bytes(toml_path, "[extension.mod_loader\nenabled = true\n"));
-    config_init(NULL);
-    lstrcpyW(env_config_path, me2);
+    SetEnvironmentVariableW(L"YAFSML_CONFIG", me2);
+    config_init(config_module);
     mods_init();
     config_load();
     EXPECT_EQ(mods_count(), 0);
@@ -170,12 +167,17 @@ int main(void) {
     wchar_t zip_path[MAX_PATH];
     wchar_t absolute[MAX_PATH + 16];
     wchar_t config_path[MAX_PATH];
+    wchar_t loader_path[MAX_PATH];
+    wchar_t source_path[MAX_PATH];
     FILE *file;
     mz_zip_archive archive = { 0 };
     static const char ini[] = "[mod]\nbase=模组.zip\nselected=模组.zip:/def\n";
 
     EXPECT_NULL(zip_package_root_separator(L""));
     EXPECT_NULL(zip_package_root_separator(L"C:\\mods\\abc.zip"));
+    EXPECT_NULL(zip_package_root_separator(L"\\\\?\\C:\\mods\\abc.zip"));
+    EXPECT_NULL(zip_package_root_separator(L"//?/C:/mods/abc.zip"));
+    EXPECT_STREQ_W(zip_package_root_separator(L"//?/C:/mods/abc.zip:/def"), L":/def");
     EXPECT_STREQ_W(zip_package_root_separator(L"C:\\mods\\abc.zip:/def"), L":/def");
     EXPECT_STREQ_W(zip_package_root_separator(L"abc.zip:def"), L":def");
     EXPECT_STREQ_W(zip_package_root_separator(L"\\\\server\\share\\abc.zip:def"), L":def");
@@ -184,6 +186,13 @@ int main(void) {
     EXPECT_TRUE(GetTempFileNameW(temp, L"mod", 0, root) != 0);
     EXPECT_TRUE(DeleteFileW(root));
     EXPECT_TRUE(CreateDirectoryW(root, NULL));
+    EXPECT_TRUE(GetModuleFileNameW(NULL, source_path, MAX_PATH) != 0);
+    PathRemoveFileSpecW(source_path);
+    EXPECT_TRUE(PathAppendW(source_path, L"extdll_fixture.dll"));
+    _snwprintf(loader_path, MAX_PATH, L"%ls\\loader.dll", root);
+    EXPECT_TRUE(CopyFileW(source_path, loader_path, TRUE));
+    config_module = LoadLibraryExW(loader_path, NULL, DONT_RESOLVE_DLL_REFERENCES);
+    EXPECT_NOT_NULL(config_module);
     _snwprintf(zip_path, MAX_PATH, L"%ls\\模组.zip", root);
     file = _wfopen(zip_path, L"wb");
     EXPECT_NOT_NULL(file);
@@ -200,8 +209,8 @@ int main(void) {
     EXPECT_EQ(fwrite(ini, 1, sizeof(ini) - 1, file), sizeof(ini) - 1);
     EXPECT_EQ(fclose(file), 0);
 
-    config_init(NULL);
-    lstrcpyW(env_config_path, config_path);
+    SetEnvironmentVariableW(L"YAFSML_CONFIG", config_path);
+    config_init(config_module);
     mods_init();
     file = _wfopen(config_path, L"rb");
     EXPECT_NOT_NULL(file);
@@ -239,6 +248,10 @@ int main(void) {
     EXPECT_EQ(test_nested_config_paths(), 0);
     EXPECT_EQ(test_config_resolution(root, config_path), 0);
 
+    config_uninit();
+    SetEnvironmentVariableW(L"YAFSML_CONFIG", NULL);
+    EXPECT_TRUE(FreeLibrary(config_module));
+    EXPECT_TRUE(DeleteFileW(loader_path));
     EXPECT_TRUE(DeleteFileW(config_path));
     EXPECT_TRUE(DeleteFileW(zip_path));
     EXPECT_TRUE(RemoveDirectoryW(root));

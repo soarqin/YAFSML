@@ -10,12 +10,11 @@
 
 static wchar_t fixture_path[MAX_PATH];
 
-void config_full_path(wchar_t *path, const wchar_t *filename) {
+wchar_t *config_full_path_alloc(const wchar_t *filename) {
     if (filename != NULL && lstrcmpW(filename, L"extdll_fixture.dll") == 0) {
-        lstrcpyW(path, fixture_path);
-    } else {
-        lstrcpyW(path, L".");
+        return ml_mem_strdup_w(fixture_path);
     }
+    return ml_mem_strdup_w(L".");
 }
 
 static int expect_order(const char *first, const char *second, const char *third) {

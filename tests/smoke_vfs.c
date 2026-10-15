@@ -151,6 +151,14 @@ int main(void) {
         const wchar_t *uid;
         EXPECT_NOT_NULL(override);
         EXPECT_STREQ_W(vfs_lookup_prefixed_domain(request, game_root, VFS_LOOKUP_DISK_WIDE), override);
+        EXPECT_STREQ_W(vfs_lookup_prefixed_domain(
+            L"\\\\?\\D:\\Steam\\steamapps\\common\\ELDEN RING\\Game\\action\\script\\modules\\convergence\\Update.hks",
+            game_root, VFS_LOOKUP_DISK_WIDE), override);
+        EXPECT_STREQ_W(vfs_lookup_prefixed_domain(request,
+            L"\\\\?\\D:\\Steam\\steamapps\\common\\ELDEN RING\\Game", VFS_LOOKUP_DISK_WIDE), override);
+        EXPECT_STREQ_W(vfs_lookup_prefixed_domain(
+            L"\\\\?\\UNC\\server\\share\\Game\\action\\script\\modules\\convergence\\Update.hks",
+            L"\\\\server\\share\\Game", VFS_LOOKUP_DISK_WIDE), override);
         uid = vfs_virtual_to_uid_prefixed(request, game_root);
         EXPECT_NOT_NULL(uid);
         EXPECT_STREQ_W(vfs_uid_to_path(uid), override);

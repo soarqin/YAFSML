@@ -14,6 +14,9 @@
 #include <windows.h>
 #include <shlwapi.h>
 
+#define ML_PATH_USE_CRT_ALLOCATOR
+#include "../common/path.h"
+
 static const wchar_t *const eldenring_exes[] = { L"Game\\eldenring.exe", L"eldenring.exe" };
 static const wchar_t *const nightreign_exes[] = { L"Game\\nightreign.exe", L"nightreign.exe" };
 static const wchar_t *const sekiro_exes[] = { L"sekiro.exe" };
@@ -64,17 +67,18 @@ const ml_game_descriptor_t *ml_game_by_key(const wchar_t *key) {
 const ml_game_descriptor_t *ml_game_by_exe_path(const wchar_t *path) {
     const wchar_t *filename;
     if (path == NULL) return NULL;
-    filename = PathFindFileNameW(path);
+    filename = ml_path_filename(path);
     for (size_t i = 0; i < sizeof(games) / sizeof(games[0]); i++) {
         for (size_t j = 0; j < games[i].exe_relpath_count; j++) {
-            if (lstrcmpiW(filename, PathFindFileNameW(games[i].exe_relpaths[j])) == 0) return &games[i];
+            if (lstrcmpiW(filename, ml_path_filename(games[i].exe_relpaths[j])) == 0) return &games[i];
         }
     }
     return NULL;
 }
 
 const ml_game_descriptor_t *ml_game_detect_current_process(void) {
-    wchar_t path[MAX_PATH];
-    if (GetModuleFileNameW(NULL, path, MAX_PATH) == 0) return NULL;
-    return ml_game_by_exe_path(path);
+    wchar_t *path = ml_path_module_filename_alloc(NULL);
+    const ml_game_descriptor_t *game = path == NULL ? NULL : ml_game_by_exe_path(path);
+    free(path);
+    return game;
 }

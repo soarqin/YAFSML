@@ -9,6 +9,7 @@
 #include "zip_package.h"
 
 #include "allocator.h"
+#include "common/path.h"
 #include "log.h"
 #include "vfs.h"
 
@@ -227,13 +228,10 @@ static wchar_t *zip_cache_directory(void) {
     for (size_t attempt = 0; attempt < 64; attempt++) {
         unsigned long long stamp = (unsigned long long)GetTickCount64();
         LONG sequence = InterlockedIncrement(&cache_sequence);
-        int count = _scwprintf(L"%lsYAFSML-%lu-%llu-%ld", temp, GetCurrentProcessId(),
-                              stamp, sequence);
-        if (count < 0) break;
-        directory = ml_mem_alloc(0, ((size_t)count + 1) * sizeof(*directory));
+        wchar_t name[96];
+        _snwprintf_s(name, 96, _TRUNCATE, L"YAFSML-%lu-%llu-%ld", GetCurrentProcessId(), stamp, sequence);
+        directory = ml_path_resolve_alloc(temp, name);
         if (directory == NULL) break;
-        _snwprintf(directory, (size_t)count + 1, L"%lsYAFSML-%lu-%llu-%ld", temp, GetCurrentProcessId(),
-                   stamp, sequence);
         if (CreateDirectoryW(directory, NULL)) break;
         DWORD error = GetLastError();
         ml_mem_free(directory);
@@ -278,16 +276,15 @@ zip_package_t *zip_package_open(const wchar_t *path, const wchar_t *root) {
             goto failed;
         }
         for (size_t i = 0; i < package->count; i++) {
-            const wchar_t *extension = PathFindExtensionW(package->files[i].relative);
+            const wchar_t *extension = ml_path_extension(package->files[i].relative);
             if (wcslen(extension) > 32) extension = L".bin";
-            int count = _scwprintf(L"%ls\\%08x%ls", package->cache_directory, package->files[i].archive_index, extension);
-            wchar_t *cache_path = count < 0 ? NULL : ml_mem_alloc(0, ((size_t)count + 1) * sizeof(*cache_path));
+            wchar_t name[48];
+            _snwprintf_s(name, 48, _TRUNCATE, L"%08x%ls", package->files[i].archive_index, extension);
+            wchar_t *cache_path = ml_path_resolve_alloc(package->cache_directory, name);
             if (cache_path == NULL) {
                 mz_zip_set_last_error(&package->archive, MZ_ZIP_ALLOC_FAILED);
                 goto failed;
             }
-            _snwprintf(cache_path, (size_t)count + 1, L"%ls\\%08x%ls", package->cache_directory,
-                       package->files[i].archive_index, extension);
             package->files[i].cache_path = cache_path;
         }
     }

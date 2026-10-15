@@ -20,7 +20,10 @@ typedef struct zip_package_s zip_package_t;
 /* The drive colon belongs to the disk path; the next colon starts the ZIP root. */
 static inline const wchar_t *zip_package_root_separator(const wchar_t *path) {
     if (path == NULL || path[0] == L'\0') return NULL;
-    return wcschr(path + (path[1] == L':' ? 2 : 0), L':');
+    if ((path[0] == L'\\' || path[0] == L'/') &&
+        (path[1] == L'\\' || path[1] == L'/') && path[2] == L'?' &&
+        (path[3] == L'\\' || path[3] == L'/')) path += 4;
+    return wcschr(path + (path[0] != L'\0' && path[1] == L':' ? 2 : 0), L':');
 }
 
 zip_package_t *zip_package_open(const wchar_t *path, const wchar_t *root);

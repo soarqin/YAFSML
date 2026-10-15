@@ -3,6 +3,7 @@
 #include "dinput8.h"
 #include "winhttp.h"
 #include "log.h"
+#include "common/path.h"
 
 #include <shlwapi.h>
 
@@ -17,10 +18,14 @@ static HMODULE own_module(void) {
 
 bool proxy_is_named(const wchar_t *name) {
     HMODULE module = own_module();
-    wchar_t path[MAX_PATH];
+    wchar_t *path;
+    bool matches;
     if (module == NULL) return false;
-    if (GetModuleFileNameW(module, path, MAX_PATH) == 0) return false;
-    return lstrcmpiW(PathFindFileNameW(path), name) == 0;
+    path = ml_path_module_filename_alloc(module);
+    if (path == NULL) return false;
+    matches = lstrcmpiW(ml_path_filename(path), name) == 0;
+    ml_mem_free(path);
+    return matches;
 }
 
 HMODULE proxy_load_system_dll(const wchar_t *name) {

@@ -134,7 +134,8 @@ void extdlls_add_spec(const char *name, const char *value) {
     char *spec;
     char *condition;
     char *next;
-    wchar_t path[MAX_PATH];
+    wchar_t *path;
+    int path_length;
     extdll_t *extdll;
 
     if (name == NULL || value == NULL) return;
@@ -144,18 +145,20 @@ void extdlls_add_spec(const char *name, const char *value) {
     if (spec == NULL) return;
     condition = strchr(spec, '|');
     if (condition != NULL) *condition++ = '\0';
-    if (spec[0] == '\0' || MultiByteToWideChar(CP_UTF8, 0, spec, -1, path, MAX_PATH) == 0) {
+    path_length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, spec, -1, NULL, 0);
+    path = path_length > 1 ? ml_mem_alloc(0, (size_t)path_length * sizeof(*path)) : NULL;
+    if (path == NULL || MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, spec, -1, path, path_length) == 0) {
         ML_LOG_ERROR(L"extdll", L"invalid external DLL path for %hs", name);
+        ml_mem_free(path);
         ml_mem_free(spec);
         return;
     }
-    path[MAX_PATH - 1] = L'\0';
 
     extdll = &extdlls[extdll_count++];
     memset(extdll, 0, sizeof(*extdll));
     extdll->stage = EXTDLL_STAGE_NORMAL;
     extdll->name = ml_mem_strdup_a(name);
-    extdll->base_path = ml_mem_strdup_w(path);
+    extdll->base_path = path;
     if (extdll->name == NULL || extdll->base_path == NULL) {
         ML_LOG_ERROR(L"extdll", L"cannot allocate external DLL configuration for %hs", name);
         if (extdll->name != NULL) ml_mem_free(extdll->name);
@@ -330,27 +333,27 @@ void extdlls_prepare(void) {
     ml_mem_free(order);
 }
 
-static HMODULE load_extdll_module(const extdll_t *extdll) {
-    const wchar_t *path = extdll->base_path;
-    if (StrChrW(path, L':') == NULL && path[0] != L'\\' && path[0] != L'/') {
-        wchar_t full_path[MAX_PATH];
-        config_full_path(full_path, path);
-        return LoadLibraryW(full_path);
-    }
-    return LoadLibraryW(path);
-}
-
 static bool preload_extdll_one(int index) {
     extdll_t *extdll = &extdlls[index];
+    wchar_t *full_path;
     if (extdll->module_load_attempted) return extdll->dll_module != NULL;
     extdll->module_load_attempted = true;
-    extdll->dll_module = load_extdll_module(extdll);
+    full_path = config_full_path_alloc(extdll->base_path);
+    if (full_path == NULL) {
+        ML_LOG_ERROR(L"extdll", L"cannot resolve external DLL %hs from `%ls` (error %lu)",
+                     extdll->name, extdll->base_path, GetLastError());
+        return false;
+    }
+    extdll->dll_module = LoadLibraryW(full_path);
     if (extdll->dll_module == NULL) {
-        ML_LOG_ERROR(L"extdll", L"cannot load external DLL %hs from `%ls`", extdll->name, extdll->base_path);
+        ML_LOG_ERROR(L"extdll", L"cannot load external DLL %hs from `%ls` (configured `%ls`, error %lu)",
+                     extdll->name, full_path, extdll->base_path, GetLastError());
+        ml_mem_free(full_path);
         return false;
     }
     extdll->load_order = (uint32_t)InterlockedIncrement(&load_counter);
-    ML_LOG_INFO(L"extdll", L"loaded external DLL %hs from `%ls`", extdll->name, extdll->base_path);
+    ML_LOG_INFO(L"extdll", L"loaded external DLL %hs from `%ls`", extdll->name, full_path);
+    ml_mem_free(full_path);
     return true;
 }
 

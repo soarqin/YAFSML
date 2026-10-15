@@ -339,7 +339,7 @@ VFS core 使用 UTF-16 动态字符串，不使用 `MAX_PATH` 固定数组。所
 3. 扫描完成后冻结条目存储；缓存只保存稳定条目的指针或索引。
 4. 记录覆盖来源，便于日志和未来冲突诊断。
 
-需要保留现有相对路径语义：相对路径以配置文件目录为根；以 `\\` 开头的路径按配置所在盘根解释。迁移期间旧 `mods_file_search()` 与 `mods_file_search_prefixed()` 先实现为 VFS wrapper，待 Elden Ring parity 测试通过后再删除旧目录遍历。
+DLL 和 mod 的相对路径统一以加载器 DLL（通常为 `YAFSML.dll`）所在目录为根，配置文件位置不改变基准。以单个分隔符开头的路径按加载器 DLL 所在盘符或 UNC 共享的根目录解释；磁盘路径支持长路径和混合分隔符。迁移期间旧 `mods_file_search()` 与 `mods_file_search_prefixed()` 先实现为 VFS wrapper，待 Elden Ring parity 测试通过后再删除旧目录遍历。
 
 ### 6.3 分域缓存与 generation
 

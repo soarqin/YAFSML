@@ -12,6 +12,7 @@
 #include "log.h"
 
 #include "allocator.h"
+#include "common/path.h"
 
 #include "vfs.h"
 #include "zip_package.h"
@@ -19,14 +20,13 @@
 #include <shlwapi.h>
 #include <stdint.h>
 
-static wchar_t game_folder[MAX_PATH];
+static wchar_t *game_folder;
 
 static int mod_count = 0;
 
 void mods_init(void) {
-    GetModuleFileNameW(NULL, game_folder, MAX_PATH);
-    PathRemoveFileSpecW(game_folder);
-    PathRemoveBackslashW(game_folder);
+    game_folder = ml_path_module_filename_alloc(NULL);
+    if (game_folder != NULL) ml_path_remove_filename(game_folder);
 
     vfs_init();
 }
@@ -34,50 +34,58 @@ void mods_init(void) {
 void mods_uninit(void) {
     mod_count = 0;
     vfs_uninit();
+    ml_mem_free(game_folder);
+    game_folder = NULL;
 }
 
 void mods_add(const char *name, const wchar_t *path) {
-    wchar_t base_path[MAX_PATH];
-    wchar_t disk_path[MAX_PATH];
+    wchar_t *base_path;
+    wchar_t *disk_path;
     wchar_t *package_path;
     const wchar_t *separator;
     size_t length;
     size_t suffix_length;
+    DWORD error;
     if (path == NULL || path[0] == L'\0') {
         ML_LOG_ERROR(L"mod", L"empty mod path for %hs", name);
         return;
     }
     separator = zip_package_root_separator(path);
     length = separator == NULL ? wcslen(path) : (size_t)(separator - path);
-    if (length == 0 || length >= MAX_PATH) {
-        ML_LOG_ERROR(L"mod", L"mod path is too long for %hs", name);
+    if (length == 0 || length >= ML_PATH_MAX_CCH) {
+        ML_LOG_ERROR(L"mod", L"invalid mod disk path for %hs", name);
         return;
     }
+    disk_path = ml_path_buffer(length + 1);
+    if (disk_path == NULL) return;
     memcpy(disk_path, path, length * sizeof(*disk_path));
     disk_path[length] = L'\0';
-    /* Classify and resolve with one separator; the ZIP subpath keeps its own. */
-    for (size_t i = 0; i < length; i++) {
-        if (disk_path[i] == L'/') disk_path[i] = L'\\';
+    base_path = config_full_path_alloc(disk_path);
+    error = GetLastError();
+    ml_mem_free(disk_path);
+    if (base_path == NULL) {
+        ML_LOG_ERROR(L"mod", L"cannot resolve mod %hs from `%ls` (error %lu)", name, path, error);
+        return;
     }
-    if (disk_path[0] == L'\\' && disk_path[1] != L'\\') {
-        config_full_path(base_path, NULL);
-        PathStripToRootW(base_path);
-        PathAppendW(base_path, disk_path + 1);
-    } else if (disk_path[1] == L':' || (disk_path[0] == L'\\' && disk_path[1] == L'\\')) {
-        if (!PathCanonicalizeW(base_path, disk_path)) return;
-    } else {
-        config_full_path(base_path, disk_path);
-    }
-    if (!PathFileExistsW(base_path)) {
-        ML_LOG_ERROR(L"mod", L"cannot find mod %hs at `%ls`", name, base_path);
+    if (GetFileAttributesW(base_path) == INVALID_FILE_ATTRIBUTES) {
+        ML_LOG_ERROR(L"mod", L"cannot find mod %hs at `%ls` (error %lu)", name, base_path, GetLastError());
+        ml_mem_free(base_path);
         return;
     }
     /* Canonicalize only the disk path; / and .. in the suffix belong to the ZIP. */
     length = wcslen(base_path);
     suffix_length = separator == NULL ? 0 : wcslen(separator);
+    if (suffix_length > SIZE_MAX / sizeof(*package_path) - length - 1) {
+        ml_mem_free(base_path);
+        return;
+    }
     package_path = ml_mem_alloc(0, (length + suffix_length + 1) * sizeof(*package_path));
-    if (package_path == NULL) return;
+    if (package_path == NULL) {
+        ml_mem_free(base_path);
+        return;
+    }
     memcpy(package_path, base_path, length * sizeof(*package_path));
+    ml_mem_free(base_path);
     if (suffix_length != 0) memcpy(package_path + length, separator, suffix_length * sizeof(*package_path));
     package_path[length + suffix_length] = L'\0';
     if (!vfs_add_package(package_path)) {

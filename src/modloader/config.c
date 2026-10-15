@@ -12,6 +12,7 @@
 #include "log.h"
 #include "extdll.h"
 #include "mod.h"
+#include "common/path.h"
 
 #include "game/game.h"
 
@@ -21,6 +22,7 @@
 #endif
 
 #include <shlwapi.h>
+#include <errno.h>
 
 config_t config = {
     .skip_intro = true,
@@ -35,8 +37,8 @@ config_t config = {
     .cpu_affinity_strategy = 0,
 };
 
-static wchar_t modloader_module_path[MAX_PATH];
-wchar_t env_config_path[MAX_PATH];
+static wchar_t *modloader_module_path;
+static wchar_t *env_config_path;
 
 static bool value_to_bool(const char *value) {
     return lstrcmpA(value, "true") == 0 || lstrcmpA(value, "yes") == 0 || lstrcmpA(value, "on") == 0 || lstrcmpA(value, "1") == 0;
@@ -108,7 +110,7 @@ static int ini_read_cb(void *user, const char *section,
                 wchar_t *file = config_full_path_alloc(L"log\\YAFSML.log");
                 wchar_t *path = file == NULL ? NULL : ml_mem_strdup_w(file);
                 if (path != NULL) {
-                    PathRemoveFileSpecW(path);
+                    ml_path_remove_filename(path);
                     CreateDirectoryW(path, NULL);
                     ml_mem_free(path);
                 }
@@ -234,61 +236,75 @@ bool config_load_toml(FILE *f) {
 #endif
 
 void config_init(void *module) {
-    GetEnvironmentVariableW(L"YAFSML_CONFIG", env_config_path, MAX_PATH);
-    GetModuleFileNameW(module, modloader_module_path, MAX_PATH);
-    PathRemoveFileSpecW(modloader_module_path);
-    PathRemoveBackslashW(modloader_module_path);
+    wchar_t *filename;
+    DWORD error;
+    config_uninit();
+    filename = ml_path_module_filename_alloc(module);
+    if (filename != NULL) {
+        modloader_module_path = ml_path_resolve_alloc(NULL, filename);
+        error = GetLastError();
+        ml_mem_free(filename);
+        if (modloader_module_path == NULL) SetLastError(error);
+    }
+    if (modloader_module_path == NULL) {
+        ML_LOG_ERROR(L"config", L"cannot determine the loader DLL directory (error %lu)", GetLastError());
+        return;
+    }
+    ml_path_remove_filename(modloader_module_path);
+    env_config_path = ml_path_environment_alloc(L"YAFSML_CONFIG");
+}
+
+void config_uninit(void) {
+    ml_mem_free(modloader_module_path);
+    ml_mem_free(env_config_path);
+    modloader_module_path = NULL;
+    env_config_path = NULL;
 }
 
 /* Resolves YAFSML_CONFIG like the launcher's -c: relative to the DLL directory,
  * normalized, and a directory selects its YAFSML.ini (or the game's ModEngine2
  * TOML when there is none). */
-static bool resolve_config_path(wchar_t config_path[MAX_PATH], const wchar_t *modengine_config_name) {
-    wchar_t joined[MAX_PATH];
-    if (env_config_path[0] == L'\0') {
-        lstrcpyW(joined, modloader_module_path);
-    } else if (StrChrW(env_config_path, L':') == NULL && env_config_path[0] != L'\\' && env_config_path[0] != L'/') {
-        lstrcpyW(joined, modloader_module_path);
-        if (!PathAppendW(joined, env_config_path)) return false;
-    } else {
-        lstrcpyW(joined, env_config_path);
-    }
-    {
-        DWORD length = GetFullPathNameW(joined, MAX_PATH, config_path, NULL);
-        if (length == 0 || length >= MAX_PATH) return false;
-    }
-    if (PathIsDirectoryW(config_path)) {
-        wchar_t directory[MAX_PATH];
-        lstrcpyW(directory, config_path);
-        if (!PathAppendW(config_path, L"YAFSML.ini")) return false;
+static wchar_t *resolve_config_path(const wchar_t *modengine_config_name) {
+    wchar_t *path = config_full_path_alloc(env_config_path);
+    if (path == NULL) return NULL;
+    if (ml_path_is_directory(path)) {
+        wchar_t *file = ml_path_resolve_alloc(path, L"YAFSML.ini");
 #if !defined(ML_STRIP_MODENGINE_CONFIG)
-        if (!PathFileExistsW(config_path) || PathIsDirectoryW(config_path)) {
-            lstrcpyW(config_path, directory);
-            if (!PathAppendW(config_path, modengine_config_name)) return false;
+        if (file != NULL && (GetFileAttributesW(file) == INVALID_FILE_ATTRIBUTES || ml_path_is_directory(file))) {
+            ml_mem_free(file);
+            file = ml_path_resolve_alloc(path, modengine_config_name);
         }
 #else
         (void)modengine_config_name;
 #endif
+        ml_mem_free(path);
+        path = file;
     }
-    return true;
+    return path;
 }
 
 void config_load(void) {
-    wchar_t config_path[MAX_PATH] = L"";
+    wchar_t *config_path;
     FILE *config_file = NULL;
     const ml_game_descriptor_t *game = ml_game_detect_current_process();
     const wchar_t *modengine_config_name = game != NULL
         ? game->modengine_config_name : L"config_eldenring.toml";
-    if (!resolve_config_path(config_path, modengine_config_name)) {
-        env_config_path[0] = L'\0';
+    if (modloader_module_path == NULL) return;
+    config_path = resolve_config_path(modengine_config_name);
+    if (config_path == NULL) {
+        ML_LOG_ERROR(L"config", L"cannot resolve configuration path `%ls` (error %lu)",
+                     env_config_path == NULL ? L"" : env_config_path, GetLastError());
         return;
     }
-    /* config_full_path* resolve relative paths against this file's directory. */
-    if (env_config_path[0] != L'\0') lstrcpyW(env_config_path, config_path);
     config_file = _wfopen(config_path, L"r");
-    if (config_file == NULL) return;
+    if (config_file == NULL) {
+        if (env_config_path != NULL)
+            ML_LOG_WARN(L"config", L"cannot open configuration `%ls` (errno %d)", config_path, errno);
+        ml_mem_free(config_path);
+        return;
+    }
 #if !defined(ML_STRIP_MODENGINE_CONFIG)
-    if (lstrcmpiW(PathFindExtensionW(config_path), L".toml") == 0) {
+    if (lstrcmpiW(ml_path_extension(config_path), L".toml") == 0) {
         (void)config_load_toml(config_file);
     } else
 #endif
@@ -296,38 +312,14 @@ void config_load(void) {
         config_load_ini(config_file);
     }
     fclose(config_file);
+    ml_mem_free(config_path);
     ML_LOG_INFO(NULL, L"Log enabled; log level=%ls", ml_log_level_name(ml_log_get_level()));
 }
 
-/* Directory of the loaded configuration file, or of the DLL without one. After
- * config_load, a non-empty env_config_path always names a file. */
-static void config_directory(wchar_t directory[MAX_PATH]) {
-    lstrcpyW(directory, env_config_path[0] == L'\0' ? modloader_module_path : env_config_path);
-    if (env_config_path[0] != L'\0') PathRemoveFileSpecW(directory);
-}
-
 wchar_t *config_full_path_alloc(const wchar_t *filename) {
-    wchar_t base[MAX_PATH];
-    size_t base_length;
-    size_t filename_length = filename == NULL ? 0 : wcslen(filename);
-    bool separator;
-    wchar_t *result;
-    config_directory(base);
-    base_length = wcslen(base);
-    separator = filename_length != 0 && base_length != 0 &&
-                base[base_length - 1] != L'\\' && base[base_length - 1] != L'/';
-    if (filename_length > SIZE_MAX / sizeof(*result) - base_length - 2) return NULL;
-    result = ml_mem_alloc(0, (base_length + filename_length + 2) * sizeof(*result));
-    if (result == NULL) return NULL;
-    memcpy(result, base, base_length * sizeof(*result));
-    if (separator) result[base_length++] = L'\\';
-    if (filename_length != 0) memcpy(result + base_length, filename, filename_length * sizeof(*result));
-    result[base_length + filename_length] = L'\0';
-    return result;
-}
-
-void config_full_path(wchar_t *path, const wchar_t *filename) {
-    config_directory(path);
-    if (filename && filename[0] != 0)
-        PathAppendW(path, filename);
+    if (modloader_module_path == NULL) {
+        SetLastError(ERROR_PATH_NOT_FOUND);
+        return NULL;
+    }
+    return ml_path_resolve_alloc(modloader_module_path, filename);
 }

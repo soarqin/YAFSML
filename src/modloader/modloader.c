@@ -193,6 +193,7 @@ BOOL APIENTRY DllMain(const HMODULE module, const DWORD ul_reason_for_call, LPVO
             extdlls_unload_all();
             gamehook_uninstall();
             mods_uninit();
+            config_uninit();
             ml_lifecycle_uninit();
             break;
         default:

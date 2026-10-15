@@ -8,6 +8,9 @@
 
 #include "launch_config.h"
 
+#define ML_PATH_USE_CRT_ALLOCATOR
+#include "common/path.h"
+
 #include <ini.h>
 
 #define WIN32_LEAN_AND_MEAN
@@ -101,29 +104,45 @@ bool ml_launcher_path_is_relative(const wchar_t *path) {
 
 bool ml_launcher_resolve_path(wchar_t path[MAX_PATH], const wchar_t *base_dir,
                               const wchar_t *requested) {
-    wchar_t joined[MAX_PATH];
-    const wchar_t *source = requested;
-    DWORD length;
-
+    wchar_t *resolved;
     if (path == NULL) return false;
     path[0] = L'\0';
-    if (requested == NULL || requested[0] == L'\0') return false;
-    if (base_dir != NULL && ml_launcher_path_is_relative(requested)) {
-        const size_t base_length = wcslen(base_dir);
-        const bool separator = base_length != 0 && base_dir[base_length - 1] != L'\\' &&
-                               base_dir[base_length - 1] != L'/';
-        const int count = _snwprintf(joined, MAX_PATH, separator ? L"%ls\\%ls" : L"%ls%ls",
-                                     base_dir, requested);
-        if (count < 0 || count >= MAX_PATH) return false;
-        source = joined;
-    }
-    /* Also normalizes `.`, `..` and forward slashes. */
-    length = GetFullPathNameW(source, MAX_PATH, path, NULL);
-    if (length == 0 || length >= MAX_PATH) {
-        path[0] = L'\0';
+    resolved = ml_launcher_resolve_path_alloc(base_dir, requested);
+    if (resolved == NULL) return false;
+    if (wcslen(resolved) >= MAX_PATH) {
+        free(resolved);
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
         return false;
     }
+    wcscpy(path, resolved);
+    free(resolved);
     return true;
+}
+
+wchar_t *ml_launcher_resolve_path_alloc(const wchar_t *base_dir, const wchar_t *requested) {
+    if (requested == NULL || requested[0] == L'\0') {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return NULL;
+    }
+    return ml_path_resolve_alloc(base_dir, requested);
+}
+
+wchar_t *ml_launcher_resolve_config_path_alloc(const wchar_t *module_dir, const wchar_t *requested_path) {
+    if (module_dir == NULL || module_dir[0] == L'\0') return NULL;
+    return ml_launcher_resolve_path_alloc(module_dir,
+        requested_path != NULL && requested_path[0] != L'\0' ? requested_path : L"YAFSML.ini");
+}
+
+wchar_t *ml_launcher_config_ini_path_alloc(const wchar_t *config_path) {
+    wchar_t *path;
+    if (config_path == NULL || config_path[0] == L'\0') return NULL;
+    path = ml_path_resolve_alloc(NULL, config_path);
+    if (path != NULL && ml_path_is_directory(path)) {
+        wchar_t *file = ml_path_resolve_alloc(path, L"YAFSML.ini");
+        free(path);
+        return file;
+    }
+    return path;
 }
 
 bool ml_launcher_resolve_config_path(wchar_t path[MAX_PATH],
@@ -138,15 +157,16 @@ bool ml_launcher_resolve_config_path(wchar_t path[MAX_PATH],
 }
 
 bool ml_launcher_config_ini_path(wchar_t path[MAX_PATH], const wchar_t *config_path) {
+    wchar_t *resolved;
     if (path == NULL) return false;
     path[0] = L'\0';
-    if (config_path == NULL || config_path[0] == L'\0' || wcslen(config_path) >= MAX_PATH)
+    resolved = ml_launcher_config_ini_path_alloc(config_path);
+    if (resolved == NULL) return false;
+    if (wcslen(resolved) >= MAX_PATH) {
+        free(resolved);
         return false;
-    if (!PathIsDirectoryW(config_path)) {
-        lstrcpynW(path, config_path, MAX_PATH);
-        return true;
     }
-    if (PathCombineW(path, config_path, L"YAFSML.ini") != NULL) return true;
-    path[0] = L'\0';
-    return false;
+    wcscpy(path, resolved);
+    free(resolved);
+    return true;
 }

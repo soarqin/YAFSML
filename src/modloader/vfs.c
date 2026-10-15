@@ -9,6 +9,7 @@
 #include "vfs.h"
 
 #include "allocator.h"
+#include "common/path.h"
 #include "zip_package.h"
 
 #include <shlwapi.h>
@@ -77,6 +78,17 @@ static bool vfs_char_equal_ignore_case(wchar_t a, wchar_t b) {
 
 static const wchar_t *vfs_strip_path_prefix(const wchar_t *path, const wchar_t *prefix) {
     if (path == NULL || prefix == NULL) return NULL;
+    /* A game's Win32 calls and GetModuleFileName may spell the same disk path
+     * with or without an extended prefix. Compare their DOS/UNC portions. */
+    bool path_extended = wcsncmp(path, L"\\\\?\\", 4) == 0;
+    bool prefix_extended = wcsncmp(prefix, L"\\\\?\\", 4) == 0;
+    bool path_unc = path_extended ? _wcsnicmp(path + 4, L"UNC\\", 4) == 0
+                                 : path[0] == L'\\' && path[1] == L'\\';
+    bool prefix_unc = prefix_extended ? _wcsnicmp(prefix + 4, L"UNC\\", 4) == 0
+                                     : prefix[0] == L'\\' && prefix[1] == L'\\';
+    if (path_unc != prefix_unc) return NULL;
+    path += path_unc ? (path_extended ? 8 : 2) : (path_extended ? 4 : 0);
+    prefix += prefix_unc ? (prefix_extended ? 8 : 2) : (prefix_extended ? 4 : 0);
     while (*prefix != L'\0') {
         bool path_separator = *path == L'\\' || *path == L'/';
         bool prefix_separator = *prefix == L'\\' || *prefix == L'/';
@@ -91,11 +103,19 @@ static const wchar_t *vfs_strip_path_prefix(const wchar_t *path, const wchar_t *
 static wchar_t *vfs_join(const wchar_t *left, const wchar_t *right) {
     size_t left_len = wcslen(left);
     size_t right_len = wcslen(right);
+    if (left_len > SIZE_MAX / sizeof(wchar_t) - 2 ||
+        right_len > SIZE_MAX / sizeof(wchar_t) - left_len - 2) return NULL;
     wchar_t *result = ml_mem_alloc(0, (left_len + right_len + 2) * sizeof(*result));
     if (result == NULL) return NULL;
     memcpy(result, left, left_len * sizeof(*result));
     if (left_len != 0 && left[left_len - 1] != L'\\') result[left_len++] = L'\\';
     memcpy(result + left_len, right, (right_len + 1) * sizeof(*result));
+    if (left_len + right_len >= MAX_PATH - 12 && ml_path_is_absolute(result) &&
+        wcsncmp(result, L"\\\\?\\", 4) != 0) {
+        wchar_t *extended = ml_path_extended_alloc(result);
+        ml_mem_free(result);
+        return extended;
+    }
     return result;
 }
 
@@ -406,7 +426,7 @@ bool vfs_add_package(const wchar_t *path) {
     vfs_zip_t *zip;
     if (index == NULL || InterlockedCompareExchange(&frozen, FALSE, FALSE) || path == NULL || path[0] == L'\0') return false;
     /* A directory named *.zip is still a loose-file package. */
-    if (PathIsDirectoryW(path)) {
+    if (ml_path_is_directory(path)) {
         vfs_path_list_t files = { 0 };
         bool result = vfs_scan(path, L"", &files) && vfs_insert_package(path, &files, NULL);
         vfs_path_list_free(&files);
@@ -418,8 +438,8 @@ bool vfs_add_package(const wchar_t *path) {
     if (disk_path == NULL) return false;
     memcpy(disk_path, path, length * sizeof(*disk_path));
     disk_path[length] = L'\0';
-    if (!PathFileExistsW(disk_path) || PathIsDirectoryW(disk_path) ||
-        lstrcmpiW(PathFindExtensionW(disk_path), L".zip") != 0) {
+    if (GetFileAttributesW(disk_path) == INVALID_FILE_ATTRIBUTES || ml_path_is_directory(disk_path) ||
+        lstrcmpiW(ml_path_extension(disk_path), L".zip") != 0) {
         ml_mem_free(disk_path);
         return false;
     }

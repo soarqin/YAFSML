@@ -34,9 +34,11 @@ typedef struct {
 } config_t;
 
 extern void config_init(void *module);
+extern void config_uninit(void);
 extern void config_load(void);
 
-extern void config_full_path(wchar_t *path, const wchar_t *filename);
+/* Allocates an absolute disk path relative to the loader DLL, independent of
+ * the selected configuration and the process working directory. */
 extern wchar_t *config_full_path_alloc(const wchar_t *filename);
 
 extern config_t config;

@@ -120,13 +120,14 @@ for.
 | Option | Default | Description |
 | --- | --- | --- |
 | `console` | `0` | Open a debug console for logging. |
-| `log_file` | `0` | When present, write logs to `log/YAFSML.log` beside the configuration file. |
+| `log_file` | `0` | When enabled, write logs to `log/YAFSML.log` beside the loader DLL. |
 | `log_level` | `warn` | Minimum log level: `trace`, `debug`, `info`, `warn`, `error`, or `off`. |
 
 ### DLLs and mods
 
 The `[dll]` section loads external DLLs at game startup. Paths can be relative
-to the configuration file or absolute. Without conditions, DLLs keep the
+to the loader DLL (usually `YAFSML.dll`) or absolute. Moving the configuration
+file does not change this base directory. Without conditions, DLLs keep the
 backward-compatible behavior and load after `SteamAPI_Init`. A value can append
 pipe-separated conditions using `name=path_to_file.dll|conditions...`:
 
@@ -153,9 +154,17 @@ and moves onto the background thread still apply. A ModEngine extension whose
 load. Project-owned extension DLLs are no longer shipped with this repository.
 
 The `[mod]` section lists directories or ZIP files containing game-file overrides. Paths
-can be relative to the configuration file or absolute. An existing directory is scanned
+can be relative to the loader DLL or absolute. An existing directory is scanned
 as loose files; a `.zip` file is read as an archive. When multiple mods contain the same
 file, the later declaration overrides the earlier one, including mixed directory and ZIP entries.
+
+The same base directory applies to ModEngine2 TOML DLL/mod paths, logs, and the
+BootBoost `cache` directory. Disk paths accept `/`, `\`, `.`, and `..`, including
+mixed separators, and support paths longer than 260 characters within the file
+system's limits. A single leading separator uses the loader DLL's drive or UNC
+share root. Drive-relative paths such as `C:mod` are rejected; use `mod` or
+`C:\mod` instead. Configurations that previously relied on their own directory
+must update their relative paths.
 
 ```ini
 [mod]

@@ -41,6 +41,11 @@ const ml_game_descriptor_t *ml_launcher_select_game(
     const ml_game_descriptor_t *config_game);
 /* True unless the path names a drive or starts with a separator. */
 bool ml_launcher_path_is_relative(const wchar_t *path);
+/* Owned CRT strings; release with free(). Long disk paths use an extended DOS
+ * or UNC prefix, so game process manifests do not control their availability. */
+wchar_t *ml_launcher_resolve_path_alloc(const wchar_t *base_dir, const wchar_t *requested);
+wchar_t *ml_launcher_resolve_config_path_alloc(const wchar_t *module_dir, const wchar_t *requested_path);
+wchar_t *ml_launcher_config_ini_path_alloc(const wchar_t *config_path);
 /* Resolves `requested` to an absolute, normalized path. A relative path is
  * joined with `base_dir`, or resolved against the working directory when
  * `base_dir` is NULL. Paths that do not fit in MAX_PATH fail. */

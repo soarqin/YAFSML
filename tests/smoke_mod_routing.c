@@ -6,9 +6,9 @@
 
 static LONG query_count;
 
-void config_full_path(wchar_t *path, const wchar_t *filename) {
+wchar_t *config_full_path_alloc(const wchar_t *filename) {
     (void)filename;
-    if (path != NULL) path[0] = L'\0';
+    return NULL;
 }
 
 void vfs_init(void) {}
