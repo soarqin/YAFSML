@@ -176,9 +176,13 @@ selected=abc.zip:def
 `abc.zip` uses the archive root. `abc.zip:def` and `abc.zip:/def` both use `/def`
 inside the archive as the mod root: `def/parts/example.bin` overrides `parts/example.bin`.
 The same path syntax works in ModEngine2 TOML `mods` entries. ZIP files support stored
-and Deflate-compressed data, including ZIP64, and must not be encrypted. Files are
-decompressed on first access into a temporary cache, reused for later reads, and
-removed when the mod loader shuts down normally. Archive files remain read-only.
+and Deflate-compressed data, including ZIP64, and must not be encrypted. The VFS
+reads entries directly through miniz's zlib-compatible streams without extracting
+files to disk. Each open has its own position and bounded decoding buffers;
+backward seeks restart decoding from the beginning of the entry. ZIP mods remain
+read-only; save writes continue to use the existing save-file mappings. ZIP entries
+do not support memory mapping (`CreateFileMapping`). Overlapped reads decode on the
+calling thread, then deliver their event, IOCP, or APC completion notification.
 
 ZIP subpaths support `/`, `\`, nested directories, and mixed separators.
 `abc.zip:def\subdir\mod`, `abc.zip:\def\subdir\mod`, `abc.zip:/def/subdir/mod`,

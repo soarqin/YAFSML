@@ -16,6 +16,7 @@
 
 #include <wctype.h>
 #include <stdlib.h>
+#include <limits.h>
 
 #define kcalloc(N,Z) ml_mem_alloc(LPTR, (N) * (Z))
 #define kmalloc(Z) ml_mem_alloc(0, (Z))
@@ -178,7 +179,7 @@ static bool vfs_insert(const wchar_t *relative, wchar_t *path, zip_package_t *zi
     wchar_t *key;
     khiter_t slot;
     int ret;
-    if (path == NULL) return false;
+    if (path == NULL && zip == NULL) return false;
     if (!vfs_normalize_path(relative, &key)) {
         ml_mem_free(path);
         return false;
@@ -318,8 +319,7 @@ static bool vfs_insert_package(const wchar_t *root, const vfs_path_list_t *files
     }
     for (; applied < count; applied++) {
         const wchar_t *relative = zip != NULL ? zip_package_relative_path(zip, applied) : files->items[applied];
-        wchar_t *path = zip != NULL ? ml_mem_strdup_w(zip_package_cache_path(zip, applied))
-                                    : vfs_join(root, relative);
+        wchar_t *path = zip != NULL ? NULL : vfs_join(root, relative);
         if (!vfs_insert(relative, path, zip, applied, &previous[applied], &touched[applied])) break;
     }
     if (applied == count) {
@@ -330,7 +330,7 @@ static bool vfs_insert_package(const wchar_t *root, const vfs_path_list_t *files
             applied--;
             entry = &entries[touched[applied]];
             ml_mem_free(entry->path);
-            if (previous[applied].path != NULL) {
+            if (previous[applied].key != NULL) {
                 *entry = previous[applied];
             } else {
                 kh_del(vfs_index, index, kh_get(vfs_index, index, entry->key));
@@ -461,8 +461,7 @@ bool vfs_add_package(const wchar_t *path) {
 }
 
 static const wchar_t *vfs_entry_read_path(vfs_entry_t *entry) {
-    if (entry->zip != NULL && zip_package_materialize(entry->zip, entry->zip_file) == NULL) return NULL;
-    return entry->path;
+    return entry->zip != NULL ? entry->uid : entry->path;
 }
 
 bool vfs_register_writable_path(const wchar_t *virtual_path, const wchar_t *physical_path) {
@@ -541,9 +540,6 @@ const wchar_t *vfs_lookup_domain(const wchar_t *path, vfs_lookup_domain_t domain
     slot = kh_get(vfs_index, index, key);
     ml_mem_free(key);
     result = slot == kh_end(index) ? NULL : vfs_entry_read_path(&entries[kh_value(index, slot)]);
-    /* An I/O failure is retryable; only absent virtual paths are negative-cached. */
-    if (slot != kh_end(index) && result == NULL) return NULL;
-
     if (lookup_generation == 0) return result;
     wchar_t *cache_key = ml_mem_strdup_w(path);
     if (cache_key == NULL) return result;
@@ -666,7 +662,7 @@ const wchar_t *vfs_virtual_to_uid_prefixed(const wchar_t *path, const wchar_t *g
     return relative == NULL ? NULL : vfs_virtual_to_uid(relative);
 }
 
-const wchar_t *vfs_uid_to_path(const wchar_t *uid) {
+static vfs_entry_t *vfs_uid_entry(const wchar_t *uid) {
     static const wchar_t prefix[] = L"\\\\me3??";
     wchar_t *end;
     unsigned long long index_value;
@@ -677,7 +673,98 @@ const wchar_t *vfs_uid_to_path(const wchar_t *uid) {
     if (!iswxdigit(*uid)) return NULL;
     index_value = wcstoull(uid, &end, 16);
     if (end == uid || *end != L'\0' || index_value >= entry_count) return NULL;
-    return vfs_entry_read_path(&entries[index_value]);
+    return &entries[index_value];
+}
+
+const wchar_t *vfs_uid_to_path(const wchar_t *uid) {
+    vfs_entry_t *entry = vfs_uid_entry(uid);
+    return entry == NULL ? NULL : vfs_entry_read_path(entry);
+}
+
+bool vfs_is_zip_path(const wchar_t *path) {
+    vfs_entry_t *entry = vfs_uid_entry(path);
+    return entry != NULL && entry->zip != NULL;
+}
+
+bool vfs_has_zip_entries(void) {
+    for (size_t i = 0; i < entry_count; i++) if (entries[i].zip != NULL) return true;
+    return false;
+}
+
+struct vfs_stream_s {
+    zip_stream_t *zip;
+    uint64_t position;
+    uint64_t identity;
+};
+
+vfs_stream_t *vfs_stream_open(const wchar_t *path) {
+    vfs_stream_t *stream;
+    vfs_entry_t *entry;
+    const wchar_t *routed;
+    if (path == NULL) { SetLastError(ERROR_INVALID_PARAMETER); return NULL; }
+    routed = ml_path_is_absolute(path) ? NULL : vfs_lookup(path);
+    if (routed != NULL) path = routed;
+    entry = vfs_uid_entry(path);
+    if (entry == NULL || entry->zip == NULL) { SetLastError(ERROR_NOT_SUPPORTED); return NULL; }
+    stream = ml_mem_alloc(LPTR, sizeof(*stream));
+    if (stream == NULL) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
+    stream->zip = zip_stream_open(entry->zip, entry->zip_file);
+    if (stream->zip == NULL) {
+        DWORD error = GetLastError();
+        ml_mem_free(stream);
+        SetLastError(error);
+        return NULL;
+    }
+    stream->identity = (uint64_t)(entry - entries) + 1;
+    return stream;
+}
+
+void vfs_stream_close(vfs_stream_t *stream) {
+    if (stream == NULL) return;
+    zip_stream_close(stream->zip);
+    ml_mem_free(stream);
+}
+
+uint64_t vfs_stream_size(const vfs_stream_t *stream) {
+    return zip_stream_size(stream->zip);
+}
+
+uint64_t vfs_stream_identity(const vfs_stream_t *stream) {
+    return stream->identity;
+}
+
+bool vfs_stream_read(vfs_stream_t *stream, void *buffer, size_t size, size_t *read) {
+    size_t received;
+    bool result = zip_stream_read_at(stream->zip, stream->position, buffer, size, &received);
+    stream->position += received;
+    if (read != NULL) *read = received;
+    return result;
+}
+
+bool vfs_stream_read_at(vfs_stream_t *stream, uint64_t offset, void *buffer, size_t size, size_t *read) {
+    size_t received;
+    bool result = zip_stream_read_at(stream->zip, offset, buffer, size, &received);
+    if (read != NULL) *read = received;
+    return result;
+}
+
+bool vfs_stream_seek(vfs_stream_t *stream, int64_t distance, DWORD origin, uint64_t *position) {
+    uint64_t base, next;
+    bool result = false;
+    base = origin == FILE_BEGIN ? 0 : origin == FILE_CURRENT ? stream->position : vfs_stream_size(stream);
+    if (origin > FILE_END) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+    } else if (distance < 0 && (uint64_t)(-(distance + 1)) + 1 > base) {
+        SetLastError(ERROR_NEGATIVE_SEEK);
+    } else if (distance > 0 && (uint64_t)distance > INT64_MAX - base) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+    } else {
+        next = distance < 0 ? base - ((uint64_t)(-(distance + 1)) + 1) : base + (uint64_t)distance;
+        stream->position = next;
+        if (position != NULL) *position = next;
+        result = true;
+    }
+    return result;
 }
 
 const wchar_t *vfs_lookup_prefixed_domain(const wchar_t *path, const wchar_t *game_root,

@@ -5,11 +5,14 @@
 #include <miniz.h>
 
 #include "test_common.h"
+#include "test_vfs.h"
 #include "modloader/vfs.h"
 #include "modloader/zip_package.h"
 
 static size_t allocation_failure_after;
 static bool allocation_failure_triggered;
+static bool track_allocations;
+static size_t allocated_bytes;
 
 static bool fail_allocation(void) {
     if (allocation_failure_after == 0 || --allocation_failure_after != 0) return false;
@@ -19,11 +22,13 @@ static bool fail_allocation(void) {
 
 void *ml_mem_alloc(UINT flags, size_t size) {
     if (fail_allocation()) return NULL;
+    if (track_allocations) allocated_bytes += size;
     return flags & LMEM_ZEROINIT ? calloc(1, size) : malloc(size);
 }
 
 void *ml_mem_realloc(void *pointer, size_t size, UINT flags) {
     if (fail_allocation()) return NULL;
+    if (track_allocations) allocated_bytes += size;
     return flags & LMEM_ZEROINIT ? _recalloc(pointer, 1, size) : realloc(pointer, size);
 }
 
@@ -60,16 +65,9 @@ static int write_zip(const wchar_t *path, const fixture_entry_t *entries, size_t
 
 static bool read_matches(const wchar_t *path, const char *contents) {
     char data[256];
-    DWORD read;
-    HANDLE file;
-    bool matches;
-    if (path == NULL) return false;
-    file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (file == INVALID_HANDLE_VALUE) return false;
-    matches = ReadFile(file, data, sizeof(data), &read, NULL) &&
-              read == strlen(contents) && memcmp(data, contents, read) == 0;
-    CloseHandle(file);
-    return matches;
+    size_t read;
+    return test_vfs_read(path, data, sizeof(data), &read) &&
+           read == strlen(contents) && memcmp(data, contents, read) == 0;
 }
 
 static int test_allocation_rollback(const wchar_t *path, const wchar_t *loose) {
@@ -190,7 +188,8 @@ static int test_failed_read_retry(const wchar_t *path) {
     mz_uint64 data_offset;
     FILE *file;
     zip_package_t *package;
-    wchar_t cached[MAX_PATH];
+    char data[16];
+    size_t read;
     EXPECT_EQ(write_zip(path, entries, 1, 0), 0);
     file = _wfopen(path, L"r+b");
     EXPECT_NOT_NULL(file);
@@ -205,21 +204,31 @@ static int test_failed_read_retry(const wchar_t *path) {
     vfs_init();
     EXPECT_TRUE(vfs_add_package(path));
     vfs_reset_lookup_caches();
-    EXPECT_NULL(vfs_lookup(L"retry.bin"));
-    EXPECT_NULL(vfs_lookup(L"retry.bin"));
-    EXPECT_NULL(vfs_uid_to_path(vfs_virtual_to_uid(L"retry.bin")));
+    for (size_t i = 0; i < 2; i++) {
+        vfs_stream_t *stream = vfs_stream_open(vfs_lookup(L"retry.bin"));
+        EXPECT_NOT_NULL(stream);
+        EXPECT_TRUE(!vfs_stream_read(stream, data, sizeof(data), &read));
+        EXPECT_EQ(GetLastError(), ERROR_CRC);
+        vfs_stream_close(stream);
+    }
+    EXPECT_NOT_NULL(vfs_uid_to_path(vfs_virtual_to_uid(L"retry.bin")));
     vfs_uninit();
     EXPECT_EQ(write_zip(path, entries, 1, 0), 0);
     package = zip_package_open(path, L"");
     EXPECT_NOT_NULL(package);
-    lstrcpyW(cached, zip_package_cache_path(package, 0));
-    /* A temporary filesystem failure can be retried without reopening the ZIP. */
-    EXPECT_TRUE(CreateDirectoryW(cached, NULL));
-    EXPECT_NULL(zip_package_materialize(package, 0));
-    EXPECT_TRUE(RemoveDirectoryW(cached));
-    EXPECT_TRUE(read_matches(zip_package_materialize(package, 0), "correct"));
-    zip_package_close(package);
-    EXPECT_TRUE(!PathFileExistsW(cached));
+    /* Allocation failure is retryable and a stream retains its source archive. */
+    allocation_failure_after = 1;
+    EXPECT_NULL(zip_stream_open(package, 0));
+    allocation_failure_after = 0;
+    {
+        zip_stream_t *stream = zip_stream_open(package, 0);
+        EXPECT_NOT_NULL(stream);
+        zip_package_close(package);
+        EXPECT_TRUE(zip_stream_read_at(stream, 0, data, sizeof(data), &read));
+        EXPECT_EQ(read, 7);
+        EXPECT_TRUE(memcmp(data, "correct", 7) == 0);
+        zip_stream_close(stream);
+    }
     return 0;
 }
 
@@ -256,6 +265,147 @@ static int test_nested_roots(const wchar_t *path) {
     return 0;
 }
 
+static int test_large_streams(const wchar_t *path) {
+    const size_t length = 3 * 1024 * 1024 + 179;
+    unsigned char *expected = malloc(length);
+    unsigned char *buffer = malloc(70001);
+    uint32_t random = 12345;
+    mz_zip_archive archive = { 0 };
+    FILE *file;
+    wchar_t old_temp[32768], old_tmp[32768];
+    DWORD temp_length = GetEnvironmentVariableW(L"TEMP", old_temp, 32768);
+    DWORD tmp_length = GetEnvironmentVariableW(L"TMP", old_tmp, 32768);
+    EXPECT_NOT_NULL(expected);
+    EXPECT_NOT_NULL(buffer);
+    for (size_t i = 0; i < length; i++) {
+        random = random * 1664525 + 1013904223;
+        expected[i] = (i / 4096) % 2 ? (unsigned char)(random >> 24) : (unsigned char)(i % 29);
+    }
+    file = _wfopen(path, L"wb");
+    EXPECT_NOT_NULL(file);
+    EXPECT_TRUE(mz_zip_writer_init_cfile(&archive, file, MZ_ZIP_FLAG_WRITE_ZIP64));
+    EXPECT_TRUE(mz_zip_writer_add_mem(&archive, "large.bin", expected, length, 6));
+    EXPECT_TRUE(mz_zip_writer_add_mem(&archive, "stored.bin", expected, length, 0));
+    EXPECT_TRUE(mz_zip_writer_add_mem(&archive, "empty.bin", "", 0, 6));
+    EXPECT_TRUE(mz_zip_writer_finalize_archive(&archive));
+    EXPECT_TRUE(mz_zip_writer_end(&archive));
+    EXPECT_EQ(fclose(file), 0);
+    /* The temp locations deliberately name a file, so no extraction can work. */
+    EXPECT_TRUE(SetEnvironmentVariableW(L"TEMP", path));
+    EXPECT_TRUE(SetEnvironmentVariableW(L"TMP", path));
+    vfs_init();
+    EXPECT_TRUE(vfs_add_package(path));
+    for (size_t variant = 0; variant < 2; variant++) {
+        const wchar_t *name = variant == 0 ? L"large.bin" : L"stored.bin";
+        vfs_stream_t *stream, *other;
+        size_t read;
+        uint64_t position;
+        allocated_bytes = 0;
+        track_allocations = true;
+        stream = vfs_stream_open(name);
+        track_allocations = false;
+        EXPECT_NOT_NULL(stream);
+        EXPECT_TRUE(allocated_bytes < (variant == 0 ? 256 * 1024 : 16 * 1024));
+        EXPECT_EQ(vfs_stream_size(stream), length);
+        EXPECT_TRUE(!vfs_stream_read(stream, NULL, 1, &read));
+        EXPECT_EQ(GetLastError(), ERROR_INVALID_PARAMETER);
+        EXPECT_EQ(read, 0);
+        other = vfs_stream_open(name);
+        EXPECT_NOT_NULL(other);
+        for (size_t offset = 0; offset < length;) {
+            size_t chunk = offset % 3 == 0 ? 1 : offset % 3 == 1 ? 70001 : 32767;
+            if (chunk > length - offset) chunk = length - offset;
+            EXPECT_TRUE(vfs_stream_read(stream, buffer, chunk, &read));
+            EXPECT_EQ(read, chunk);
+            EXPECT_TRUE(memcmp(buffer, expected + offset, read) == 0);
+            offset += read;
+        }
+        EXPECT_TRUE(vfs_stream_read(stream, buffer, 1, &read));
+        EXPECT_EQ(read, 0);
+        EXPECT_TRUE(vfs_stream_read(other, buffer, 37, &read));
+        EXPECT_TRUE(memcmp(buffer, expected, 37) == 0);
+        vfs_stream_close(other);
+        for (size_t i = 0; i < 25; i++) {
+            random = random * 1664525 + 1013904223;
+            size_t offset = random % (length - 70001);
+            EXPECT_TRUE(vfs_stream_seek(stream, (int64_t)offset, FILE_BEGIN, &position));
+            EXPECT_EQ(position, offset);
+            EXPECT_TRUE(vfs_stream_read(stream, buffer, 70001, &read));
+            EXPECT_EQ(read, 70001);
+            EXPECT_TRUE(memcmp(buffer, expected + offset, read) == 0);
+        }
+        EXPECT_TRUE(vfs_stream_seek(stream, -73, FILE_END, &position));
+        EXPECT_TRUE(vfs_stream_read_at(stream, 3, buffer, 41, &read));
+        EXPECT_TRUE(memcmp(buffer, expected + 3, 41) == 0);
+        EXPECT_TRUE(vfs_stream_read(stream, buffer, 70001, &read));
+        EXPECT_EQ(read, 73);
+        EXPECT_TRUE(memcmp(buffer, expected + length - 73, 73) == 0);
+        EXPECT_TRUE(!vfs_stream_seek(stream, -1, FILE_BEGIN, NULL));
+        EXPECT_EQ(GetLastError(), ERROR_NEGATIVE_SEEK);
+        EXPECT_TRUE(!vfs_stream_seek(stream, INT64_MIN, FILE_CURRENT, NULL));
+        EXPECT_TRUE(!vfs_stream_seek(stream, INT64_MAX, FILE_END, NULL));
+        EXPECT_TRUE(vfs_stream_seek(stream, (int64_t)length + 5, FILE_BEGIN, NULL));
+        EXPECT_TRUE(vfs_stream_read(stream, buffer, 10, &read));
+        EXPECT_EQ(read, 0);
+        vfs_stream_close(stream);
+    }
+    EXPECT_TRUE(read_matches(vfs_lookup(L"empty.bin"), ""));
+    /* Open files remain readable after the index releases its package reference. */
+    vfs_stream_t *retained = vfs_stream_open(L"large.bin");
+    EXPECT_NOT_NULL(retained);
+    vfs_uninit();
+    size_t read;
+    EXPECT_TRUE(vfs_stream_read(retained, buffer, 70001, &read));
+    EXPECT_TRUE(memcmp(buffer, expected, read) == 0);
+    vfs_stream_close(retained);
+    EXPECT_TRUE(SetEnvironmentVariableW(L"TEMP", temp_length == 0 ? NULL : old_temp));
+    EXPECT_TRUE(SetEnvironmentVariableW(L"TMP", tmp_length == 0 ? NULL : old_tmp));
+    free(buffer);
+    free(expected);
+    return 0;
+}
+
+static int test_deflate_integrity(const wchar_t *path) {
+    char contents[32768], buffer[32768];
+    fixture_entry_t entry = { "integrity.bin", contents, 6 };
+    memset(contents, 'z', sizeof(contents) - 1);
+    contents[sizeof(contents) - 1] = '\0';
+    for (size_t variant = 0; variant < 4; variant++) {
+        FILE *file;
+        mz_zip_archive archive = { 0 };
+        mz_zip_archive_file_stat stat;
+        mz_uint64 central;
+        size_t read;
+        uint32_t replacement;
+        vfs_stream_t *stream;
+        EXPECT_EQ(write_zip(path, &entry, 1, 0), 0);
+        file = _wfopen(path, L"r+b");
+        EXPECT_NOT_NULL(file);
+        EXPECT_TRUE(mz_zip_reader_init_cfile(&archive, file, 0, 0));
+        EXPECT_TRUE(mz_zip_reader_file_stat(&archive, 0, &stat));
+        EXPECT_EQ(stat.m_method, MZ_DEFLATED);
+        central = archive.m_central_directory_file_ofs + stat.m_central_dir_ofs;
+        EXPECT_TRUE(mz_zip_reader_end(&archive));
+        /* Corrupt CRC, shorten/extend the declared output, or truncate Deflate. */
+        if (variant == 0) replacement = stat.m_crc32 ^ 1;
+        else if (variant == 1) replacement = (uint32_t)stat.m_uncomp_size - 1;
+        else if (variant == 2) replacement = (uint32_t)stat.m_uncomp_size + 1;
+        else replacement = (uint32_t)stat.m_comp_size - 1;
+        EXPECT_EQ(_fseeki64(file, (mz_int64)central + (variant == 0 ? 16 : variant == 3 ? 20 : 24), SEEK_SET), 0);
+        EXPECT_EQ(fwrite(&replacement, sizeof(replacement), 1, file), 1);
+        EXPECT_EQ(fclose(file), 0);
+        vfs_init();
+        EXPECT_TRUE(vfs_add_package(path));
+        stream = vfs_stream_open(L"integrity.bin");
+        EXPECT_NOT_NULL(stream);
+        EXPECT_TRUE(!vfs_stream_read(stream, buffer, sizeof(buffer), &read));
+        EXPECT_EQ(GetLastError(), variant == 0 ? ERROR_CRC : ERROR_INVALID_DATA);
+        vfs_stream_close(stream);
+        vfs_uninit();
+    }
+    return 0;
+}
+
 int main(void) {
     static const fixture_entry_t entries[] = {
         { "./", "", 0 },
@@ -278,8 +428,6 @@ int main(void) {
     wchar_t root[MAX_PATH];
     wchar_t archive_path[MAX_PATH];
     wchar_t spec[MAX_PATH * 2];
-    wchar_t cached[MAX_PATH];
-    wchar_t cached_directory[MAX_PATH];
     wchar_t loose[MAX_PATH];
     wchar_t loose_file[MAX_PATH];
     wchar_t invalid[MAX_PATH];
@@ -298,9 +446,6 @@ int main(void) {
         zip_package_t *package = zip_package_open(archive_path, L"def");
         EXPECT_NOT_NULL(package);
         EXPECT_TRUE(zip_package_count(package) != 0);
-        for (size_t i = 0; i < zip_package_count(package); i++) {
-            EXPECT_TRUE(!PathFileExistsW(zip_package_cache_path(package, i)));
-        }
         zip_package_close(package);
     }
 
@@ -323,9 +468,8 @@ int main(void) {
         EXPECT_NOT_NULL(uid);
         physical = vfs_uid_to_path(uid);
         EXPECT_TRUE(read_matches(physical, "subroot compressed"));
-        lstrcpyW(cached, physical);
-        lstrcpyW(cached_directory, cached);
-        PathRemoveFileSpecW(cached_directory);
+        EXPECT_TRUE(physical == uid);
+        EXPECT_TRUE(vfs_is_zip_path(physical));
         EXPECT_TRUE(read_matches(vfs_lookup(L"parts/zero.bin"), ""));
         EXPECT_TRUE(read_matches(vfs_lookup(L"parts/测试.bin"), "unicode"));
         EXPECT_TRUE(read_matches(vfs_lookup(L"parts/duplicate.bin"), "last"));
@@ -341,8 +485,6 @@ int main(void) {
         EXPECT_NULL(vfs_route_read_path(L"parts/base.bin", GENERIC_WRITE, OPEN_EXISTING));
         EXPECT_NULL(vfs_route_read_path(L"parts/base.bin", GENERIC_READ, CREATE_ALWAYS));
         vfs_uninit();
-        EXPECT_TRUE(!PathFileExistsW(cached));
-        EXPECT_TRUE(!PathFileExistsW(cached_directory));
     }
 
     /* Mixed directory/ZIP packages keep the existing last-declaration priority. */
@@ -396,7 +538,7 @@ int main(void) {
     EXPECT_TRUE(vfs_add_package(spec));
     vfs_uninit();
 
-    /* Simultaneous first UID and path reads publish one complete cached file. */
+    /* Simultaneous UID/path reads use independent decompression states. */
     _snwprintf(spec, MAX_PATH * 2, L"%ls:def", archive_path);
     vfs_init();
     EXPECT_TRUE(vfs_add_package(spec));
@@ -417,15 +559,15 @@ int main(void) {
         }
         EXPECT_EQ(thread_failures, 0);
     }
-    lstrcpyW(cached, thread_paths[0]);
     vfs_uninit();
-    EXPECT_TRUE(!PathFileExistsW(cached));
 
-    /* A bad CRC never leaves a partial file or a permanent cached miss. */
+    /* Corruption is reported on read and never becomes a cached lookup miss. */
     EXPECT_EQ(test_nested_roots(invalid), 0);
     EXPECT_EQ(test_failed_read_retry(invalid), 0);
     EXPECT_EQ(test_allocation_rollback(invalid, loose), 0);
     EXPECT_EQ(test_directory_rollback(root, loose), 0);
+    EXPECT_EQ(test_large_streams(invalid), 0);
+    EXPECT_EQ(test_deflate_integrity(invalid), 0);
     EXPECT_TRUE(DeleteFileW(invalid));
     EXPECT_TRUE(DeleteFileW(archive_path));
     EXPECT_TRUE(DeleteFileW(loose_file));

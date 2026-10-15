@@ -32,7 +32,7 @@ typedef enum vfs_lookup_domain_e {
 
 void vfs_init(void);
 void vfs_uninit(void);
-/* Accepts a directory, a ZIP path, or ZIP:path/to/root. ZIP data is cached on first read. */
+/* Accepts a directory, a ZIP path, or ZIP:path/to/root. ZIP data is streamed. */
 bool vfs_add_package(const wchar_t *path);
 bool vfs_register_writable_path(const wchar_t *virtual_path, const wchar_t *physical_path);
 const wchar_t *vfs_lookup(const wchar_t *path);
@@ -48,6 +48,19 @@ uint64_t vfs_reset_lookup_caches(void);
 const wchar_t *vfs_virtual_to_uid(const wchar_t *path);
 const wchar_t *vfs_virtual_to_uid_prefixed(const wchar_t *path, const wchar_t *game_root);
 const wchar_t *vfs_uid_to_path(const wchar_t *uid);
+/* Lookups return a disk path for loose files and an opaque UID for ZIP files. */
+bool vfs_is_zip_path(const wchar_t *path);
+bool vfs_has_zip_entries(void);
+typedef struct vfs_stream_s vfs_stream_t;
+/* ZIP streams accept a virtual path or ZIP UID. The caller serializes access
+ * to each stream; Win32 handles do this in zip_hooks.c. read_at preserves position. */
+vfs_stream_t *vfs_stream_open(const wchar_t *path);
+void vfs_stream_close(vfs_stream_t *stream);
+uint64_t vfs_stream_size(const vfs_stream_t *stream);
+uint64_t vfs_stream_identity(const vfs_stream_t *stream);
+bool vfs_stream_read(vfs_stream_t *stream, void *buffer, size_t size, size_t *read);
+bool vfs_stream_read_at(vfs_stream_t *stream, uint64_t offset, void *buffer, size_t size, size_t *read);
+bool vfs_stream_seek(vfs_stream_t *stream, int64_t distance, DWORD origin, uint64_t *position);
 const wchar_t *vfs_route_read_path(const wchar_t *path, DWORD desired_access, DWORD creation_disposition);
 const wchar_t *vfs_route_read_path_prefixed(const wchar_t *path, const wchar_t *game_root,
                                             DWORD desired_access, DWORD creation_disposition);

@@ -44,6 +44,7 @@ add_project(modloader_dll SHARED
     patches/runtime_ready.c patches/runtime_ready.h
     patches/save_mapping.c patches/save_mapping.h
     patches/win32_hooks.c patches/win32_hooks.h
+    patches/zip_hooks.c patches/zip_hooks.h
     patches/window_flash.c patches/window_flash.h
     patches/wwise_path.c patches/wwise_path.h
     patches/dl_device.c patches/dl_device.h

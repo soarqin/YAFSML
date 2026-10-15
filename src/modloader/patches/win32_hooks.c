@@ -5,6 +5,7 @@
 #include <MinHook.h>
 
 #include "save_mapping.h"
+#include "zip_hooks.h"
 
 #include "modloader/hook.h"
 #include "modloader/hook_batch.h"
@@ -27,12 +28,13 @@
  * game's save backup rotation (e.g. .sl2 <-> .sl2.bak) stays consistent with
  * the redirected save.
  *
- * Every hook routes the path(s) and calls the real API exactly once. Paths that
- * do not match a mapping remain unchanged; save paths whose explicit mapping
- * cannot be produced fail closed instead of opening the primary save.
+ * ZIP opens return stream handles, whose I/O hooks are installed before path
+ * routing and removed after it. Save paths whose explicit mapping cannot be
+ * produced fail closed instead of opening the primary save.
  */
 
-#define ML_WIN32_HOOK_COUNT 15
+#define ML_PATH_HOOK_COUNT 15
+#define ML_WIN32_HOOK_COUNT (ML_PATH_HOOK_COUNT + ML_ZIP_HOOK_COUNT)
 
 typedef HANDLE (WINAPI *create_file_w_t)(LPCWSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
 typedef HANDLE (WINAPI *create_file_a_t)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
@@ -66,7 +68,9 @@ static copy_file_ex_a_t old_copy_file_ex_a;
 static move_file_ex_w_t old_move_file_ex_w;
 static replace_file_w_t old_replace_file_w;
 static bool hooks_installed;
-static void *hook_targets[ML_WIN32_HOOK_COUNT];
+static bool path_hooks_live;
+static bool zip_hooks_live;
+static void *hook_targets[ML_PATH_HOOK_COUNT];
 
 static HANDLE WINAPI create_file_w_hooked(LPCWSTR path, DWORD access, DWORD share,
                                            LPSECURITY_ATTRIBUTES security, DWORD disposition,
@@ -116,6 +120,8 @@ static void *kernelbase_proc(HMODULE kernelbase, const char *name, void *fallbac
 }
 
 static void build_hook_specs(ml_hook_spec_t specs[ML_WIN32_HOOK_COUNT], bool resolve_targets) {
+    ml_zip_file_hook_specs(specs, resolve_targets);
+    specs += ML_ZIP_HOOK_COUNT;
     if (resolve_targets) {
         HMODULE kernelbase = GetModuleHandleW(L"kernelbase.dll");
         hook_targets[0] = kernelbase_proc(kernelbase, "CreateFileW", CreateFileW);
@@ -195,6 +201,7 @@ static HANDLE WINAPI create_file_w_hooked(LPCWSTR path, DWORD access, DWORD shar
         SetLastError(ERROR_CANNOT_MAKE);
         return INVALID_HANDLE_VALUE;
     }
+    if (vfs_is_zip_path(mapped)) return ml_zip_file_open(mapped, access, share, security, disposition, flags);
     return old_create_file_w(mapped != NULL ? mapped : path, access, share, security, disposition, flags, template_file);
 }
 
@@ -214,6 +221,7 @@ static HANDLE WINAPI create_file_a_hooked(LPCSTR path, DWORD access, DWORD share
         return INVALID_HANDLE_VALUE;
     }
     if (mapped != NULL) {
+        if (vfs_is_zip_path(mapped)) return ml_zip_file_open(mapped, access, share, security, disposition, flags);
         return old_create_file_w(mapped, access, share, security, disposition, flags, template_file);
     }
     return old_create_file_a(path, access, share, security, disposition, flags, template_file);
@@ -226,6 +234,15 @@ static HANDLE WINAPI create_file_2_hooked(LPCWSTR path, DWORD access, DWORD shar
     if (route == PATH_ROUTE_DENIED) {
         SetLastError(ERROR_CANNOT_MAKE);
         return INVALID_HANDLE_VALUE;
+    }
+    if (vfs_is_zip_path(mapped)) {
+        if (parameters != NULL && parameters->dwSize != sizeof(*parameters)) {
+            SetLastError(ERROR_INVALID_PARAMETER);
+            return INVALID_HANDLE_VALUE;
+        }
+        DWORD flags = parameters == NULL ? 0 : parameters->dwFileFlags;
+        LPSECURITY_ATTRIBUTES security = parameters == NULL ? NULL : parameters->lpSecurityAttributes;
+        return ml_zip_file_open(mapped, access, share, security, disposition, flags);
     }
     return old_create_file_2(mapped != NULL ? mapped : path, access, share, disposition, parameters);
 }
@@ -423,13 +440,28 @@ static BOOL WINAPI replace_file_w_hooked(LPCWSTR replaced_path, LPCWSTR replacem
 bool ml_win32_file_hooks_install(void) {
     ml_hook_spec_t specs[ML_WIN32_HOOK_COUNT];
     bool rollback_complete;
+    bool result = false;
     if (hooks_installed) return true;
+    if (path_hooks_live || zip_hooks_live) return false;
     build_hook_specs(specs, true);
-    bool result = ml_hook_batch_install(specs, ML_WIN32_HOOK_COUNT, install_hook, remove_hook, &rollback_complete);
-    hooks_installed = result || !rollback_complete;
+    if (vfs_has_zip_entries()) {
+        if (!ml_zip_file_hooks_prepare()) goto done;
+        result = ml_hook_batch_install(specs, ML_ZIP_HOOK_COUNT, install_hook, remove_hook, &rollback_complete);
+        zip_hooks_live = result || !rollback_complete;
+        if (!result) goto done;
+    }
+    result = ml_hook_batch_install(specs + ML_ZIP_HOOK_COUNT, ML_PATH_HOOK_COUNT,
+                                   install_hook, remove_hook, &rollback_complete);
+    path_hooks_live = result || !rollback_complete;
+    if (!result && !path_hooks_live && zip_hooks_live) {
+        ml_zip_file_close_all();
+        zip_hooks_live = !ml_hook_batch_remove(specs, ML_ZIP_HOOK_COUNT, remove_hook);
+    }
+done:
+    hooks_installed = result;
     ml_log_write(result ? ML_LOG_LEVEL_INFO : ML_LOG_LEVEL_WARN,
                  L"win32-vfs", result ? L"file hooks APPLIED" : L"file hooks HOOK_FAILED");
-    if (!rollback_complete) {
+    if (!result && (path_hooks_live || zip_hooks_live)) {
         ML_LOG_WARN(L"win32-vfs", L"hook rollback incomplete; uninstall will retry cleanup");
     }
     return result;
@@ -437,17 +469,26 @@ bool ml_win32_file_hooks_install(void) {
 
 void ml_win32_file_hooks_uninstall(void) {
     ml_hook_spec_t specs[ML_WIN32_HOOK_COUNT];
-    if (!hooks_installed) return;
+    if (!path_hooks_live && !zip_hooks_live) return;
     build_hook_specs(specs, false);
-    if (ml_hook_batch_remove(specs, ML_WIN32_HOOK_COUNT, remove_hook)) {
-        hooks_installed = false;
-    } else {
+    hooks_installed = false;
+    if (path_hooks_live && !ml_hook_batch_remove(specs + ML_ZIP_HOOK_COUNT, ML_PATH_HOOK_COUNT, remove_hook)) {
+        ML_LOG_WARN(L"win32-vfs", L"path hooks could not be removed; retaining ZIP I/O hooks");
+        return;
+    }
+    path_hooks_live = false;
+    if (zip_hooks_live) {
+        ml_zip_file_close_all();
+        zip_hooks_live = !ml_hook_batch_remove(specs, ML_ZIP_HOOK_COUNT, remove_hook);
+    }
+    if (zip_hooks_live) {
         ML_LOG_WARN(L"win32-vfs", L"one or more file hooks could not be removed");
     }
 }
 
 #ifdef ML_WIN32_HOOKS_TEST
 void ml_win32_file_hooks_test_init(void) {
+    ml_zip_file_hooks_test_init();
     old_create_file_w = CreateFileW;
     old_create_file_a = CreateFileA;
     old_create_file_2 = CreateFile2;

@@ -146,7 +146,9 @@ archive=abc.zip
 selected=abc.zip:def
 ```
 
-`abc.zip` 使用 ZIP 根目录。`abc.zip:def` 和 `abc.zip:/def` 均使用 ZIP 内的 `/def` 作为模组根目录：`def/parts/example.bin` 会覆盖游戏的 `parts/example.bin`。ModEngine2 TOML 的 `mods` 条目也支持这种路径写法。ZIP 支持未压缩存储和 Deflate 压缩，包括 ZIP64，不支持加密条目。文件在首次读取时解压到临时缓存，后续读取复用缓存；加载器正常退出时清理缓存。ZIP 中的文件仅用于读取。
+`abc.zip` 使用 ZIP 根目录。`abc.zip:def` 和 `abc.zip:/def` 均使用 ZIP 内的 `/def` 作为模组根目录：`def/parts/example.bin` 会覆盖游戏的 `parts/example.bin`。ModEngine2 TOML 的 `mods` 条目也支持这种路径写法。ZIP 支持未压缩存储和 Deflate 压缩，包括 ZIP64，不支持加密条目。
+
+VFS 通过 miniz 的 zlib 兼容数据流按需读取 ZIP 条目，不创建临时解压文件。每次打开拥有独立的文件位置和固定大小的解码缓冲；向后定位时从条目起点重新解码。ZIP 模组保持只读，存档写入仍使用已有的替换存档映射。ZIP 条目不支持内存映射（`CreateFileMapping`）。重叠读取在调用线程完成解码，然后通过事件、IOCP 或 APC 发送完成通知。
 
 ZIP 子路径支持正斜杠 `/`、反斜杠 `\` 和多层目录，也可混用两种分隔符。`abc.zip:def\subdir\mod`、`abc.zip:\def\subdir\mod`、`abc.zip:/def/subdir/mod` 和 `abc.zip:/def\subdir\mod` 均将 ZIP 内的 `/def/subdir/mod` 作为模组根目录。INI 中的反斜杠无需转义；TOML 可使用单引号字符串 `path = 'abc.zip:\def\subdir\mod'`，使用双引号字符串时须将反斜杠写成 `\\`。
 

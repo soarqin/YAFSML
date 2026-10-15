@@ -11,8 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `[mod]` entries and ModEngine2 TOML `mods` paths can name ZIP files.
   `abc.zip:def` uses `def` inside the archive as the mod root. Stored and
-  Deflate entries, including ZIP64, are extracted to a temporary cache on first
-  read.
+  Deflate entries, including ZIP64, are read directly through bounded,
+  zlib-compatible VFS streams without temporary extraction files. Each open has
+  an independent position; backward seeks replay the entry's Deflate stream.
+  Win32 reads, seeks, size queries, duplicate handles, and overlapped completion
+  notifications use these streams. ZIP mods remain read-only; memory mapping is
+  unsupported.
 
 ### Changed
 
@@ -120,8 +124,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     braces inside quoted values correctly.
 - Fixed possible hangs when the game exits. Process exit no longer runs the
   loader's teardown, which could wait on locks held by threads the system had
-  already ended; it only removes the ZIP extraction cache. Unloading the DLL
-  while the game runs still tears everything down.
+  already ended. The system reclaims streams and other resources at process
+  exit. Unloading the DLL while the game runs still tears everything down.
 - Save mapping (`replace_save_filename` and
   `replace_seamless_coop_save_filename`):
   - A save reached through a symbolic link or junction inside the save folder

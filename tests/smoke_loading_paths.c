@@ -3,10 +3,12 @@
 #include <miniz.h>
 
 #include "test_common.h"
+#include "test_vfs.h"
 #include "common/path.h"
 #include "modloader/config.h"
 #include "modloader/extdll.h"
 #include "modloader/mod.h"
+#include "modloader/vfs.h"
 #include "launcher/launch_config.h"
 #include "launcher/launch_process.h"
 
@@ -42,11 +44,8 @@ static int write_file(const wchar_t *path, const char *contents) {
 static bool read_matches(const wchar_t *path, const char *expected) {
     char data[16];
     size_t length;
-    FILE *file = path == NULL ? NULL : _wfopen(path, L"rb");
-    if (file == NULL) return false;
-    length = fread(data, 1, sizeof(data), file);
-    fclose(file);
-    return length == strlen(expected) && memcmp(data, expected, length) == 0;
+    return test_vfs_read(path, data, sizeof(data), &length) &&
+           length == strlen(expected) && memcmp(data, expected, length) == 0;
 }
 
 static wchar_t *relative_to(const wchar_t *base, const wchar_t *path) {

@@ -5,6 +5,7 @@
 #include <miniz.h>
 
 #include "test_common.h"
+#include "test_vfs.h"
 #include "modloader/config.h"
 #include "modloader/mod.h"
 #include "modloader/vfs.h"
@@ -21,16 +22,9 @@ void extdlls_add_spec(const char *name, const char *value) { (void)name; (void)v
 
 static bool read_matches(const wchar_t *path, const char *contents) {
     char buffer[32];
-    DWORD read;
-    HANDLE file;
-    bool matches;
-    if (path == NULL) return false;
-    file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-    if (file == INVALID_HANDLE_VALUE) return false;
-    matches = ReadFile(file, buffer, sizeof(buffer), &read, NULL) &&
-              read == strlen(contents) && memcmp(buffer, contents, read) == 0;
-    CloseHandle(file);
-    return matches;
+    size_t read;
+    return test_vfs_read(path, buffer, sizeof(buffer), &read) &&
+           read == strlen(contents) && memcmp(buffer, contents, read) == 0;
 }
 
 static int test_nested_config_paths(void) {

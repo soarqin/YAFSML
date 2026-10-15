@@ -446,8 +446,7 @@ static bool make_override_path(const ml_dl_string_t *path, ml_dl_string_t *repla
     if (!expanded_ok) return false;
     uid = mods_file_virtual_to_uid_prefixed(expanded);
     if (uid == NULL) uid = vfs_virtual_to_uid(expanded);
-    /* A ZIP entry that cannot be extracted keeps the game's own file, as
-     * vfs_lookup does, instead of handing the game an unreadable UID. */
+    /* ZIP UIDs are opened by the Win32 hooks as independent VFS streams. */
     physical = uid == NULL ? NULL : vfs_uid_to_path(uid);
     if (physical != NULL) {
         result = ml_dl_string_clone_replace(path, game_stl_abi, uid, replacement);

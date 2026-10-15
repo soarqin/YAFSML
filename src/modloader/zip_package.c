@@ -9,7 +9,6 @@
 #include "zip_package.h"
 
 #include "allocator.h"
-#include "common/path.h"
 #include "log.h"
 #include "vfs.h"
 
@@ -20,9 +19,7 @@
 
 typedef struct zip_file_s {
     wchar_t *relative;
-    wchar_t *cache_path;
     mz_uint archive_index;
-    bool materialized;
 } zip_file_t;
 
 struct zip_package_s {
@@ -30,14 +27,28 @@ struct zip_package_s {
     HANDLE file;
     wchar_t *path;
     wchar_t *root;
-    wchar_t *cache_directory;
     zip_file_t *files;
     size_t count;
     size_t capacity;
     SRWLOCK lock;
+    volatile LONG references;
 };
 
-static volatile LONG cache_sequence;
+#define ZIP_STREAM_BUFFER_SIZE 65536
+
+struct zip_stream_s {
+    zip_package_t *package;
+    mz_zip_archive_file_stat stat;
+    mz_stream inflater;
+    uint64_t data_offset;
+    uint64_t compressed_loaded;
+    uint64_t position;
+    mz_ulong crc;
+    DWORD error;
+    bool ended;
+    bool check_crc;
+    unsigned char input[];
+};
 
 static void *zip_alloc(void *opaque, size_t items, size_t size) {
     (void)opaque;
@@ -70,22 +81,6 @@ static size_t zip_read(void *opaque, mz_uint64 offset, void *buffer, size_t size
         DWORD chunk = size - total > MAXDWORD ? MAXDWORD : (DWORD)(size - total);
         if (!ReadFile(file, (char *)buffer + total, chunk, &read, NULL) || read == 0) break;
         total += read;
-    }
-    return total;
-}
-
-static size_t zip_write(void *opaque, mz_uint64 offset, const void *buffer, size_t size) {
-    HANDLE file = opaque;
-    LARGE_INTEGER position;
-    size_t total = 0;
-    if (offset > INT64_MAX) return 0;
-    position.QuadPart = (LONGLONG)offset;
-    if (!SetFilePointerEx(file, position, NULL, FILE_BEGIN)) return 0;
-    while (total < size) {
-        DWORD written;
-        DWORD chunk = size - total > MAXDWORD ? MAXDWORD : (DWORD)(size - total);
-        if (!WriteFile(file, (const char *)buffer + total, chunk, &written, NULL) || written == 0) break;
-        total += written;
     }
     return total;
 }
@@ -204,7 +199,7 @@ static bool zip_index(zip_package_t *package, const wchar_t *root) {
             package->capacity = capacity;
         }
         if (relative != key) memmove(key, relative, (wcslen(relative) + 1) * sizeof(*key));
-        package->files[package->count++] = (zip_file_t){ key, NULL, file, false };
+        package->files[package->count++] = (zip_file_t){ key, file };
     }
     if (!found_root) {
         mz_zip_set_last_error(&package->archive, MZ_ZIP_FILE_NOT_FOUND);
@@ -215,34 +210,6 @@ failed:
     return false;
 }
 
-static wchar_t *zip_cache_directory(void) {
-    DWORD capacity = GetTempPathW(0, NULL);
-    wchar_t *temp;
-    wchar_t *directory = NULL;
-    DWORD length;
-    if (capacity == 0) return NULL;
-    temp = ml_mem_alloc(0, (size_t)capacity * sizeof(*temp));
-    if (temp == NULL) return NULL;
-    length = GetTempPathW(capacity, temp);
-    if (length == 0 || length >= capacity) goto done;
-    for (size_t attempt = 0; attempt < 64; attempt++) {
-        unsigned long long stamp = (unsigned long long)GetTickCount64();
-        LONG sequence = InterlockedIncrement(&cache_sequence);
-        wchar_t name[96];
-        _snwprintf_s(name, 96, _TRUNCATE, L"YAFSML-%lu-%llu-%ld", GetCurrentProcessId(), stamp, sequence);
-        directory = ml_path_resolve_alloc(temp, name);
-        if (directory == NULL) break;
-        if (CreateDirectoryW(directory, NULL)) break;
-        DWORD error = GetLastError();
-        ml_mem_free(directory);
-        directory = NULL;
-        if (error != ERROR_ALREADY_EXISTS) break;
-    }
-done:
-    ml_mem_free(temp);
-    return directory;
-}
-
 zip_package_t *zip_package_open(const wchar_t *path, const wchar_t *root) {
     zip_package_t *package;
     LARGE_INTEGER size;
@@ -250,6 +217,7 @@ zip_package_t *zip_package_open(const wchar_t *path, const wchar_t *root) {
     package = ml_mem_alloc(LPTR, sizeof(*package));
     if (package == NULL) return NULL;
     package->file = INVALID_HANDLE_VALUE;
+    package->references = 1;
     InitializeSRWLock(&package->lock);
     package->path = ml_mem_strdup_w(path);
     package->archive.m_pAlloc = zip_alloc;
@@ -269,25 +237,6 @@ zip_package_t *zip_package_open(const wchar_t *path, const wchar_t *root) {
     package->archive.m_pIO_opaque = package->file;
     if (!mz_zip_reader_init(&package->archive, (mz_uint64)size.QuadPart, MZ_ZIP_FLAG_DO_NOT_SORT_CENTRAL_DIRECTORY) ||
         !zip_index(package, root == NULL ? L"" : root)) goto failed;
-    if (package->count != 0) {
-        package->cache_directory = zip_cache_directory();
-        if (package->cache_directory == NULL) {
-            mz_zip_set_last_error(&package->archive, MZ_ZIP_FILE_CREATE_FAILED);
-            goto failed;
-        }
-        for (size_t i = 0; i < package->count; i++) {
-            const wchar_t *extension = ml_path_extension(package->files[i].relative);
-            if (wcslen(extension) > 32) extension = L".bin";
-            wchar_t name[48];
-            _snwprintf_s(name, 48, _TRUNCATE, L"%08x%ls", package->files[i].archive_index, extension);
-            wchar_t *cache_path = ml_path_resolve_alloc(package->cache_directory, name);
-            if (cache_path == NULL) {
-                mz_zip_set_last_error(&package->archive, MZ_ZIP_ALLOC_FAILED);
-                goto failed;
-            }
-            package->files[i].cache_path = cache_path;
-        }
-    }
     vfs_recursion_guard_leave();
     return package;
 failed:
@@ -299,19 +248,15 @@ failed:
 }
 
 void zip_package_close(zip_package_t *package) {
-    if (package == NULL) return;
+    if (package == NULL || InterlockedDecrement(&package->references) != 0) return;
     vfs_recursion_guard_enter();
     if (package->archive.m_pState != NULL) mz_zip_reader_end(&package->archive);
     if (package->file != INVALID_HANDLE_VALUE) CloseHandle(package->file);
     for (size_t i = 0; i < package->count; i++) {
-        if (package->files[i].materialized) DeleteFileW(package->files[i].cache_path);
         ml_mem_free(package->files[i].relative);
-        ml_mem_free(package->files[i].cache_path);
     }
-    if (package->cache_directory != NULL) RemoveDirectoryW(package->cache_directory);
     vfs_recursion_guard_leave();
     ml_mem_free(package->files);
-    ml_mem_free(package->cache_directory);
     ml_mem_free(package->path);
     ml_mem_free(package->root);
     ml_mem_free(package);
@@ -325,49 +270,162 @@ const wchar_t *zip_package_relative_path(const zip_package_t *package, size_t fi
     return package->files[file].relative;
 }
 
-const wchar_t *zip_package_cache_path(const zip_package_t *package, size_t file) {
-    return package->files[file].cache_path;
+static unsigned int zip_u16(const unsigned char *p) {
+    return (unsigned int)p[0] | ((unsigned int)p[1] << 8);
 }
 
-const wchar_t *zip_package_materialize(zip_package_t *package, size_t file) {
-    zip_file_t *entry = &package->files[file];
-    const wchar_t *result = NULL;
-    HANDLE output;
-    bool success;
-    AcquireSRWLockShared(&package->lock);
-    if (entry->materialized) {
-        ReleaseSRWLockShared(&package->lock);
-        return entry->cache_path;
+zip_stream_t *zip_stream_open(zip_package_t *package, size_t file) {
+    unsigned char header[30];
+    zip_stream_t *stream = NULL;
+    mz_zip_archive_file_stat stat;
+    DWORD error = ERROR_INVALID_DATA;
+    if (package == NULL || file >= package->count) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return NULL;
     }
-    ReleaseSRWLockShared(&package->lock);
     AcquireSRWLockExclusive(&package->lock);
-    if (entry->materialized) {
-        result = entry->cache_path;
-        goto done;
-    }
     vfs_recursion_guard_enter();
-    output = CreateFileW(entry->cache_path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY, NULL);
-    if (output == INVALID_HANDLE_VALUE) {
-        ML_LOG_ERROR(L"zip", L"cannot create cache for `%ls` (root `%ls`, file `%ls`): error=%lu",
-                     package->path, package->root, entry->relative, GetLastError());
-        vfs_recursion_guard_leave();
-        goto done;
+    if (!mz_zip_reader_file_stat(&package->archive, package->files[file].archive_index, &stat) ||
+        stat.m_uncomp_size > INT64_MAX ||
+        zip_read(package->file, stat.m_local_header_ofs, header, sizeof(header)) != sizeof(header) ||
+        memcmp(header, "PK\x03\x04", 4) != 0 || zip_u16(header + 8) != stat.m_method ||
+        (zip_u16(header + 6) & (1 | 32 | 64)) != 0) goto failed;
+    stream = ml_mem_alloc(LPTR, sizeof(*stream) + (stat.m_method == MZ_DEFLATED ? ZIP_STREAM_BUFFER_SIZE : 0));
+    if (stream == NULL) { error = ERROR_NOT_ENOUGH_MEMORY; goto failed; }
+    stream->stat = stat;
+    stream->package = package;
+    stream->check_crc = true;
+    stream->data_offset = stream->stat.m_local_header_ofs + sizeof(header) +
+                          zip_u16(header + 26) + zip_u16(header + 28);
+    if (stream->data_offset > package->archive.m_archive_size ||
+        stream->stat.m_comp_size > package->archive.m_archive_size - stream->data_offset ||
+        (stream->stat.m_method == 0 && stream->stat.m_comp_size != stream->stat.m_uncomp_size)) goto failed;
+    stream->inflater.zalloc = zip_alloc;
+    stream->inflater.zfree = zip_free;
+    if (stream->stat.m_method == MZ_DEFLATED &&
+        mz_inflateInit2(&stream->inflater, -MZ_DEFAULT_WINDOW_BITS) != MZ_OK) {
+        error = ERROR_NOT_ENOUGH_MEMORY;
+        goto failed;
     }
-    success = mz_zip_reader_extract_to_callback(&package->archive, entry->archive_index, zip_write, output, 0) != MZ_FALSE;
-    if (!CloseHandle(output)) {
-        mz_zip_set_last_error(&package->archive, MZ_ZIP_FILE_CLOSE_FAILED);
-        success = false;
-    }
-    if (success) {
-        entry->materialized = true;
-        result = entry->cache_path;
-    } else {
-        DeleteFileW(entry->cache_path);
-        ML_LOG_ERROR(L"zip", L"cannot read `%ls` (root `%ls`, file `%ls`): %hs", package->path, package->root, entry->relative,
-                     mz_zip_get_error_string(mz_zip_peek_last_error(&package->archive)));
-    }
+    InterlockedIncrement(&package->references);
     vfs_recursion_guard_leave();
-done:
     ReleaseSRWLockExclusive(&package->lock);
-    return result;
+    return stream;
+failed:
+    vfs_recursion_guard_leave();
+    ReleaseSRWLockExclusive(&package->lock);
+    ml_mem_free(stream);
+    SetLastError(error);
+    return NULL;
+}
+
+void zip_stream_close(zip_stream_t *stream) {
+    if (stream == NULL) return;
+    if (stream->inflater.state != NULL) mz_inflateEnd(&stream->inflater);
+    zip_package_close(stream->package);
+    ml_mem_free(stream);
+}
+
+uint64_t zip_stream_size(const zip_stream_t *stream) {
+    return stream->stat.m_uncomp_size;
+}
+
+static bool zip_stream_error(zip_stream_t *stream, DWORD error) {
+    if (stream->error == ERROR_SUCCESS) {
+        ML_LOG_ERROR(L"zip", L"cannot stream `%ls` (root `%ls`, file `%hs`): error=%lu",
+                     stream->package->path, stream->package->root, stream->stat.m_filename, error);
+    }
+    stream->error = error;
+    SetLastError(error);
+    return false;
+}
+
+static bool zip_stream_input(zip_stream_t *stream, uint64_t offset, void *buffer, size_t size) {
+    size_t read;
+    AcquireSRWLockExclusive(&stream->package->lock);
+    vfs_recursion_guard_enter();
+    read = zip_read(stream->package->file, stream->data_offset + offset, buffer, size);
+    vfs_recursion_guard_leave();
+    ReleaseSRWLockExclusive(&stream->package->lock);
+    return read == size || zip_stream_error(stream, ERROR_READ_FAULT);
+}
+
+/* Always consume the end marker, even when the caller requested exactly the
+ * declared size. This catches truncated streams, extra output and bad CRCs. */
+static bool zip_stream_decode(zip_stream_t *stream, void *buffer, size_t size, size_t *read) {
+    unsigned char extra;
+    *read = 0;
+    if (stream->stat.m_method == 0) {
+        if (!zip_stream_input(stream, stream->position, buffer, size)) return false;
+        stream->crc = mz_crc32(stream->crc, buffer, size);
+        stream->position += size;
+        *read = size;
+        if (stream->position == stream->stat.m_uncomp_size && stream->check_crc &&
+            stream->crc != stream->stat.m_crc32) return zip_stream_error(stream, ERROR_CRC);
+        return true;
+    }
+    while (!stream->ended && (*read < size || stream->position == stream->stat.m_uncomp_size)) {
+        mz_uint before_in, before_out;
+        size_t produced;
+        int status;
+        bool at_end = stream->position == stream->stat.m_uncomp_size;
+        if (stream->inflater.avail_in == 0 && stream->compressed_loaded < stream->stat.m_comp_size) {
+            uint64_t remaining = stream->stat.m_comp_size - stream->compressed_loaded;
+            size_t chunk = remaining < ZIP_STREAM_BUFFER_SIZE ? (size_t)remaining : ZIP_STREAM_BUFFER_SIZE;
+            if (!zip_stream_input(stream, stream->compressed_loaded, stream->input, chunk)) return false;
+            stream->compressed_loaded += chunk;
+            stream->inflater.next_in = stream->input;
+            stream->inflater.avail_in = (mz_uint)chunk;
+        }
+        stream->inflater.next_out = at_end ? &extra : (unsigned char *)buffer + *read;
+        stream->inflater.avail_out = at_end ? 1 : size - *read > UINT_MAX ? UINT_MAX : (mz_uint)(size - *read);
+        before_in = stream->inflater.avail_in;
+        before_out = stream->inflater.avail_out;
+        status = mz_inflate(&stream->inflater, MZ_NO_FLUSH);
+        produced = before_out - stream->inflater.avail_out;
+        if (at_end && produced != 0) return zip_stream_error(stream, ERROR_INVALID_DATA);
+        if (produced != 0) stream->crc = mz_crc32(stream->crc, (unsigned char *)buffer + *read, produced);
+        stream->position += produced;
+        *read += produced;
+        if (status == MZ_STREAM_END) {
+            stream->ended = true;
+            if (stream->position != stream->stat.m_uncomp_size ||
+                stream->compressed_loaded - stream->inflater.avail_in != stream->stat.m_comp_size)
+                return zip_stream_error(stream, ERROR_INVALID_DATA);
+            if (stream->crc != stream->stat.m_crc32) return zip_stream_error(stream, ERROR_CRC);
+        } else if ((status != MZ_OK && status != MZ_BUF_ERROR) ||
+                   (produced == 0 && before_in == stream->inflater.avail_in)) {
+            return zip_stream_error(stream, ERROR_INVALID_DATA);
+        }
+    }
+    return true;
+}
+
+bool zip_stream_read_at(zip_stream_t *stream, uint64_t offset, void *buffer, size_t size, size_t *read) {
+    unsigned char discard[8192];
+    *read = 0;
+    if (size != 0 && buffer == NULL) { SetLastError(ERROR_INVALID_PARAMETER); return false; }
+    if (stream->error != ERROR_SUCCESS) { SetLastError(stream->error); return false; }
+    if (size == 0 || offset > stream->stat.m_uncomp_size) return true;
+    if (stream->stat.m_method == 0 && offset != stream->position) {
+        stream->position = offset;
+        stream->crc = 0;
+        stream->check_crc = offset == 0;
+    } else if (offset < stream->position) {
+        mz_inflateReset(&stream->inflater);
+        stream->inflater.avail_in = 0;
+        stream->inflater.next_in = NULL;
+        stream->compressed_loaded = 0;
+        stream->position = 0;
+        stream->crc = 0;
+        stream->ended = false;
+    }
+    while (stream->position < offset) {
+        size_t skipped;
+        uint64_t remaining = offset - stream->position;
+        size_t chunk = remaining < sizeof(discard) ? (size_t)remaining : sizeof(discard);
+        if (!zip_stream_decode(stream, discard, chunk, &skipped)) return false;
+    }
+    if (size > stream->stat.m_uncomp_size - offset) size = (size_t)(stream->stat.m_uncomp_size - offset);
+    return zip_stream_decode(stream, buffer, size, read);
 }

@@ -38,8 +38,11 @@ set(SMOKE_smoke_window_flash_LIBRARIES minhook user32 gdi32)
 set(SMOKE_smoke_win32_hooks_SOURCES
     ${CMAKE_SOURCE_DIR}/src/modloader/hook.c
     ${CMAKE_SOURCE_DIR}/src/modloader/hook_batch.c
-    ${CMAKE_SOURCE_DIR}/src/modloader/patches/win32_hooks.c)
-set(SMOKE_smoke_win32_hooks_LIBRARIES minhook shlwapi)
+    ${CMAKE_SOURCE_DIR}/src/modloader/patches/win32_hooks.c
+    ${CMAKE_SOURCE_DIR}/src/modloader/patches/zip_hooks.c
+    ${CMAKE_SOURCE_DIR}/src/modloader/vfs.c
+    ${CMAKE_SOURCE_DIR}/src/modloader/zip_package.c)
+set(SMOKE_smoke_win32_hooks_LIBRARIES minhook shlwapi miniz)
 set(SMOKE_smoke_win32_hooks_DEFINITIONS ML_WIN32_HOOKS_TEST)
 set(SMOKE_smoke_lifecycle_SOURCES ${CMAKE_SOURCE_DIR}/src/modloader/lifecycle.c)
 set(SMOKE_smoke_rtti_SOURCES ${CMAKE_SOURCE_DIR}/src/process/rtti.c)
