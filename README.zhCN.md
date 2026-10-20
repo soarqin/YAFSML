@@ -112,10 +112,11 @@ CPU Set 设置，并继续执行运行时初始化、VFS、Logo、属性、regul
 
 ### DLL 与模组
 
-`[dll]` 节用于在游戏启动时加载外部 DLL。路径可以相对于加载器 DLL（通常为
-`YAFSML.dll`），也可以是绝对路径。移动配置文件不会改变路径基准。未设置条件时，
-为保持向后兼容，DLL 会在 `SteamAPI_Init` 之后加载。
-配置值可以使用 `name=path_to_file.dll|conditions...` 追加由竖线分隔的条件：
+`[dll]` 节用于在游戏启动时加载外部 DLL。路径可以相对于加载器 DLL（通常为 `YAFSML.dll`），也可以是绝对路径。移动配置文件不会改变路径基准。未设置条件时，为保持向后兼容，DLL 会在 `SteamAPI_Init` 之后加载。配置格式为 `name=path_to_file.dll[:function]|conditions...`，其中 `:function` 和由竖线分隔的条件均可省略。
+
+例如，`plugin=plugin.dll:Initialize|data_ready` 会在指定阶段加载 DLL，然后调用一次导出的 `Initialize` 函数。函数 ABI 与 me3 的 `natives.initializer.function` 一致：使用 C 链接，签名为 `bool __cdecl Initialize(void)`，无参数，返回 `true` 表示成功。指定函数后不再查找 `modengine_ext_init`，即使符号不存在或函数返回 `false` 也不会回退。两种错误都会记录日志；返回 `false` 不影响后续 DLL 的加载。函数名为空时拒绝该配置项。
+
+可用条件：
 
 - `early`：在 `SteamAPI_Init` 之前加载 DLL。
 - `data_ready`：在游戏读取完全部 param 后加载 DLL。

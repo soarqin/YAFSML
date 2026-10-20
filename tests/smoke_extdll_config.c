@@ -6,12 +6,15 @@
 #include <shlwapi.h>
 
 #include "test_common.h"
+#include "log.h"
 #include "modloader/extdll.h"
 
 static wchar_t fixture_path[MAX_PATH];
+static const wchar_t *expected_path = L"extdll_fixture.dll";
+static int initializer_errors;
 
 wchar_t *config_full_path_alloc(const wchar_t *filename) {
-    if (filename != NULL && lstrcmpW(filename, L"extdll_fixture.dll") == 0) {
+    if (filename != NULL && lstrcmpW(filename, expected_path) == 0) {
         return ml_mem_strdup_w(fixture_path);
     }
     return ml_mem_strdup_w(L".");
@@ -21,6 +24,88 @@ static int expect_order(const char *first, const char *second, const char *third
     if (first != NULL && strcmp(extdlls_test_name_at(0), first) != 0) return 1;
     if (second != NULL && strcmp(extdlls_test_name_at(1), second) != 0) return 1;
     if (third != NULL && strcmp(extdlls_test_name_at(2), third) != 0) return 1;
+    return 0;
+}
+
+static void count_initializer_errors(ml_log_level_t level, const wchar_t *component,
+                                     const wchar_t *message) {
+    (void)message;
+    if (level == ML_LOG_LEVEL_ERROR && wcscmp(component, L"extdll") == 0) initializer_errors++;
+}
+
+static int expect_fixture_initialization(LONG compatibility, LONG custom, LONG failed, int errors) {
+    static const char *const counters[] = {
+        "extdll_fixture_init_count", "extdll_fixture_connector_count",
+        "extdll_fixture_custom_init_count", "extdll_fixture_failed_init_count",
+    };
+    const LONG expected[] = { compatibility, compatibility, custom, failed };
+    typedef LONG (*fixture_count_t)(void);
+    initializer_errors = 0;
+    /* Neither a successful call nor a failed or missing initializer is retried. */
+    for (int attempt = 0; attempt < 2; attempt++) {
+        HMODULE fixture;
+        extdlls_test_load_at(0);
+        fixture = GetModuleHandleW(L"extdll_fixture.dll");
+        EXPECT_NOT_NULL(fixture);
+        for (size_t i = 0; i < sizeof(counters) / sizeof(counters[0]); i++) {
+            fixture_count_t count = (fixture_count_t)GetProcAddress(fixture, counters[i]);
+            EXPECT_NOT_NULL(count);
+            EXPECT_EQ(count(), expected[i]);
+        }
+        EXPECT_EQ(initializer_errors, errors);
+    }
+    extdlls_unload_all();
+    EXPECT_NULL(GetModuleHandleW(L"extdll_fixture.dll"));
+    return 0;
+}
+
+static int test_initializers(void) {
+    static const struct { const char *spec; const wchar_t *path; } paths[] = {
+        { "extdll_fixture.dll", L"extdll_fixture.dll" },
+        { "C:\\mods\\extdll_fixture.dll", L"C:\\mods\\extdll_fixture.dll" },
+        { "C:/mods/extdll_fixture.dll", L"C:/mods/extdll_fixture.dll" },
+        { "\\\\?\\C:\\mods\\extdll_fixture.dll", L"\\\\?\\C:\\mods\\extdll_fixture.dll" },
+        { "\\\\.\\C:\\mods\\extdll_fixture.dll", L"\\\\.\\C:\\mods\\extdll_fixture.dll" },
+        { "//?/C:/mods/extdll_fixture.dll", L"//?/C:/mods/extdll_fixture.dll" },
+        { "\\\\server\\share\\extdll_fixture.dll", L"\\\\server\\share\\extdll_fixture.dll" },
+        { "\\\\?\\UNC\\server\\share\\extdll_fixture.dll", L"\\\\?\\UNC\\server\\share\\extdll_fixture.dll" },
+        { "模组/扩展.dll", L"模组/扩展.dll" },
+    };
+    static const char *const suffixes[] = {
+        "", ":extdll_fixture_init", ":extdll_fixture_init|delay,25|after,dependency",
+    };
+    char spec[512];
+    ml_log_set_sink(count_initializer_errors);
+    for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+        expected_path = paths[i].path;
+        for (size_t j = 0; j < sizeof(suffixes) / sizeof(suffixes[0]); j++) {
+            snprintf(spec, sizeof(spec), "%s%s", paths[i].spec, suffixes[j]);
+            extdlls_add_spec("fixture", spec);
+            EXPECT_EQ(extdlls_count(), 1);
+            if (j == 2) {
+                EXPECT_EQ(extdlls_test_delay_at(0), 25);
+                EXPECT_EQ(extdlls_test_after_count(0), 1);
+                EXPECT_STREQ_A(extdlls_test_after_at(0, 0), "dependency");
+            }
+            EXPECT_EQ(expect_fixture_initialization(j == 0, j != 0, 0, 0), 0);
+        }
+    }
+    expected_path = L"extdll_fixture.dll";
+    /* These DLLs also export modengine_ext_init, which must stay uncalled. */
+    extdlls_add_spec("failed", "extdll_fixture.dll:extdll_fixture_fail_init|early");
+    EXPECT_TRUE(extdlls_test_is_early_at(0));
+    EXPECT_EQ(expect_fixture_initialization(0, 0, 1, 1), 0);
+    extdlls_add_spec("missing", "extdll_fixture.dll:extdll_fixture_missing_init|data_ready");
+    EXPECT_TRUE(extdlls_test_is_data_ready_at(0));
+    EXPECT_EQ(expect_fixture_initialization(0, 0, 0, 1), 0);
+
+    extdlls_add_spec("empty", "extdll_fixture.dll:");
+    extdlls_add_spec("empty_with_options", "extdll_fixture.dll:|early");
+    extdlls_add_spec("empty_path", ":extdll_fixture_init");
+    EXPECT_EQ(extdlls_count(), 0);
+    EXPECT_NULL(GetModuleHandleW(L"extdll_fixture.dll"));
+    extdlls_unload_all();
+    ml_log_set_sink(NULL);
     return 0;
 }
 
@@ -47,6 +132,8 @@ int main(void) {
     EXPECT_EQ(init_count(), 1);
     extdlls_unload_all();
     EXPECT_NULL(GetModuleHandleW(L"extdll_fixture.dll"));
+
+    EXPECT_EQ(test_initializers(), 0);
 
     extdlls_add_spec("plain", "plain.dll");
     extdlls_add_spec("early", "early.dll|early");

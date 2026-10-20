@@ -38,6 +38,7 @@ typedef enum extdll_stage_e {
 typedef struct extdll_t {
     char *name;
     wchar_t *base_path;
+    char *initializer;
     extdll_stage_t stage;
     /* EXTDLL_STAGE_DELAY only; 0 means "as soon as the worker reaches it". */
     uint32_t delay_ms;
@@ -131,6 +132,8 @@ void extdlls_add(const char *name, const wchar_t *path) {
 
 void extdlls_add_spec(const char *name, const char *value) {
     char *spec;
+    char *path_start;
+    char *initializer;
     char *condition;
     char *next;
     wchar_t *path;
@@ -144,6 +147,22 @@ void extdlls_add_spec(const char *name, const char *value) {
     if (spec == NULL) return;
     condition = strchr(spec, '|');
     if (condition != NULL) *condition++ = '\0';
+    /* Skip the drive colon, including extended and device path prefixes. */
+    path_start = spec;
+    if ((path_start[0] == '\\' || path_start[0] == '/') &&
+        (path_start[1] == '\\' || path_start[1] == '/') &&
+        (path_start[2] == '?' || path_start[2] == '.') &&
+        (path_start[3] == '\\' || path_start[3] == '/')) path_start += 4;
+    if (path_start[0] != '\0' && path_start[1] == ':') path_start += 2;
+    initializer = strchr(path_start, ':');
+    if (initializer != NULL) {
+        *initializer++ = '\0';
+        if (initializer[0] == '\0') {
+            ML_LOG_ERROR(L"extdll", L"empty initializer name for external DLL %hs", name);
+            ml_mem_free(spec);
+            return;
+        }
+    }
     path_length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, spec, -1, NULL, 0);
     path = path_length > 1 ? ml_mem_alloc(0, (size_t)path_length * sizeof(*path)) : NULL;
     if (path == NULL || MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, spec, -1, path, path_length) == 0) {
@@ -158,10 +177,13 @@ void extdlls_add_spec(const char *name, const char *value) {
     extdll->stage = EXTDLL_STAGE_NORMAL;
     extdll->name = ml_mem_strdup_a(name);
     extdll->base_path = path;
-    if (extdll->name == NULL || extdll->base_path == NULL) {
+    extdll->initializer = initializer == NULL ? NULL : ml_mem_strdup_a(initializer);
+    if (extdll->name == NULL || extdll->base_path == NULL ||
+        (initializer != NULL && extdll->initializer == NULL)) {
         ML_LOG_ERROR(L"extdll", L"cannot allocate external DLL configuration for %hs", name);
         if (extdll->name != NULL) ml_mem_free(extdll->name);
         if (extdll->base_path != NULL) ml_mem_free(extdll->base_path);
+        if (extdll->initializer != NULL) ml_mem_free(extdll->initializer);
         memset(extdll, 0, sizeof(*extdll));
         extdll_count--;
         ml_mem_free(spec);
@@ -362,6 +384,24 @@ static bool load_extdll_one(int index) {
     if (!preload_extdll_one(index)) return false;
     if (extdll->init_attempted) return true;
     extdll->init_attempted = true;
+    if (extdll->initializer != NULL) {
+        /* me3's initializer.function uses unsafe extern "C" fn() -> bool. */
+        typedef bool (__cdecl *initializer_t)(void);
+        initializer_t initialize = (initializer_t)GetProcAddress(extdll->dll_module, extdll->initializer);
+        if (initialize == NULL) {
+            ML_LOG_ERROR(L"extdll", L"cannot find initializer %hs for external DLL %hs (error %lu)",
+                         extdll->initializer, extdll->name, GetLastError());
+            return false;
+        }
+        if (!initialize()) {
+            ML_LOG_ERROR(L"extdll", L"initializer %hs of external DLL %hs returned false",
+                         extdll->initializer, extdll->name);
+        } else {
+            ML_LOG_INFO(L"extdll", L"invoked initializer %hs for external DLL %hs",
+                        extdll->initializer, extdll->name);
+        }
+        return true;
+    }
     {
         FARPROC me_ext_init = GetProcAddress(extdll->dll_module, "modengine_ext_init");
         if (me_ext_init == NULL) return true;
@@ -530,6 +570,7 @@ void extdlls_unload_all(void) {
         ml_mem_free(extdll->after);
         ml_mem_free(extdll->name);
         ml_mem_free(extdll->base_path);
+        ml_mem_free(extdll->initializer);
         memset(extdll, 0, sizeof(*extdll));
     }
     ml_mem_free(extdlls);

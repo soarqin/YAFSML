@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `[dll]` entries support `name=path.dll:function|conditions...` to call an
+  exported initializer with me3's C ABI, `bool __cdecl function(void)`. The
+  optional `:function` skips the ModEngine2 entry point lookup and works with
+  the existing load conditions.
 - `[mod]` entries and ModEngine2 TOML `mods` paths can name ZIP files.
   `abc.zip:def` uses `def` inside the archive as the mod root. Stored and
   Deflate entries, including ZIP64, use bounded miniz streams for forward-only

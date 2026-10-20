@@ -134,8 +134,19 @@ for.
 The `[dll]` section loads external DLLs at game startup. Paths can be relative
 to the loader DLL (usually `YAFSML.dll`) or absolute. Moving the configuration
 file does not change this base directory. Without conditions, DLLs keep the
-backward-compatible behavior and load after `SteamAPI_Init`. A value can append
-pipe-separated conditions using `name=path_to_file.dll|conditions...`:
+backward-compatible behavior and load after `SteamAPI_Init`. The format is
+`name=path_to_file.dll[:function]|conditions...`, where `:function` and the
+pipe-separated conditions are optional.
+
+For example, `plugin=plugin.dll:Initialize|data_ready` calls the exported
+`Initialize` function once after loading the DLL at the selected stage. It uses
+me3's `natives.initializer.function` ABI: `bool __cdecl Initialize(void)`, with C
+linkage, no arguments, and `true` indicating success. Specifying a function skips
+the `modengine_ext_init` lookup, including when the symbol is missing or returns
+`false`. Both failures are logged; a `false` return does not stop later DLLs.
+An empty function name is rejected.
+
+Available conditions:
 
 - `early` loads the DLL before `SteamAPI_Init`.
 - `data_ready` loads the DLL once the game has finished reading every param.
