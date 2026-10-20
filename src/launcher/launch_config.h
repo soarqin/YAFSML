@@ -41,26 +41,21 @@ const ml_game_descriptor_t *ml_launcher_select_game(
     const ml_game_descriptor_t *config_game);
 /* True unless the path names a drive or starts with a separator. */
 bool ml_launcher_path_is_relative(const wchar_t *path);
-/* Owned CRT strings; release with free(). Long disk paths use an extended DOS
- * or UNC prefix, so game process manifests do not control their availability. */
-wchar_t *ml_launcher_resolve_path_alloc(const wchar_t *base_dir, const wchar_t *requested);
-wchar_t *ml_launcher_resolve_config_path_alloc(const wchar_t *module_dir, const wchar_t *requested_path);
-wchar_t *ml_launcher_config_ini_path_alloc(const wchar_t *config_path);
+/* The functions below return owned CRT strings; release them with free(). Long
+ * disk paths use an extended DOS or UNC prefix, so game process manifests do
+ * not control their availability. */
 /* Resolves `requested` to an absolute, normalized path. A relative path is
  * joined with `base_dir`, or resolved against the working directory when
- * `base_dir` is NULL. Paths that do not fit in MAX_PATH fail. */
-bool ml_launcher_resolve_path(wchar_t path[MAX_PATH], const wchar_t *base_dir,
-                              const wchar_t *requested);
+ * `base_dir` is NULL. */
+wchar_t *ml_launcher_resolve_path_alloc(const wchar_t *base_dir, const wchar_t *requested);
 /* Resolves the value exported as YAFSML_CONFIG. Relative paths are relative
  * to `module_dir`; a directory stays a directory so the DLL applies its
  * INI and ModEngine2 TOML fallback. Without a request this is YAFSML.ini in
  * `module_dir`. */
-bool ml_launcher_resolve_config_path(wchar_t path[MAX_PATH],
-                                     const wchar_t *module_dir,
-                                     const wchar_t *requested_path);
+wchar_t *ml_launcher_resolve_config_path_alloc(const wchar_t *module_dir, const wchar_t *requested_path);
 /* The INI that can select the game: YAFSML.ini in a configuration directory,
  * otherwise the configuration file itself. */
-bool ml_launcher_config_ini_path(wchar_t path[MAX_PATH], const wchar_t *config_path);
+wchar_t *ml_launcher_config_ini_path_alloc(const wchar_t *config_path);
 
 #ifdef __cplusplus
 }

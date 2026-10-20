@@ -20,19 +20,24 @@ extern "C" {
 typedef struct zip_package_s zip_package_t;
 typedef struct zip_stream_s zip_stream_t;
 
-/* The drive colon belongs to the disk path; the next colon starts the ZIP root. */
+/* The drive colon belongs to the disk path, also after a \\?\ or \\.\ prefix;
+ * the next colon starts the ZIP root. */
 static inline const wchar_t *zip_package_root_separator(const wchar_t *path) {
     if (path == NULL || path[0] == L'\0') return NULL;
     if ((path[0] == L'\\' || path[0] == L'/') &&
-        (path[1] == L'\\' || path[1] == L'/') && path[2] == L'?' &&
+        (path[1] == L'\\' || path[1] == L'/') && (path[2] == L'?' || path[2] == L'.') &&
         (path[3] == L'\\' || path[3] == L'/')) path += 4;
     return wcschr(path + (path[0] != L'\0' && path[1] == L':' ? 2 : 0), L':');
 }
 
 zip_package_t *zip_package_open(const wchar_t *path, const wchar_t *root);
+/* Packages are reference-counted; close releases one reference. */
+void zip_package_retain(zip_package_t *package);
 void zip_package_close(zip_package_t *package);
 size_t zip_package_count(const zip_package_t *package);
 const wchar_t *zip_package_relative_path(const zip_package_t *package, size_t file);
+/* The uncompressed size the central directory declares. */
+uint64_t zip_package_file_size(const zip_package_t *package, size_t file);
 /* Streams retain their package and use bounded buffers, independent of entry size. */
 zip_stream_t *zip_stream_open(zip_package_t *package, size_t file);
 void zip_stream_close(zip_stream_t *stream);

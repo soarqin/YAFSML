@@ -180,13 +180,18 @@ and Deflate-compressed data, including ZIP64, and must not be encrypted.
 
 ZIP reads follow the caller's I/O interface. Overrides opened through BND4/EBL
 containers use forward-only miniz streams. Ordinary file handles, such as those
-used for `regulation.bin`, decode the ZIP entry once on first read or seek, then
-read and seek within the decoded cache. Decoded files up to 32 MiB use memory when the
-process's 128 MiB decoded-cache budget has room; larger files, a full budget, or a
-failed memory allocation use temporary files. Closing the last duplicated handle
-releases its cache; Windows also deletes temporary caches when the process exits.
-The ZIP decoder has no seek or reset operation. The route is selected per open,
-independently of the filename or file contents.
+used for `regulation.bin`, read and seek within a decoded copy of the entry. The
+first read decodes the entry once, and all of its handles, including ones opened
+later, share that copy; moving the file pointer alone decodes nothing.
+Forward-only streams reject seeks, and a read past their end returns end of
+file. Copies of files up to 32 MiB stay in memory while the process's 128 MiB
+budget has room. Larger files, a budget held by copies in use, or a failed
+memory allocation use one temporary file per entry. Copies that no handle uses
+stay for later opens until the room is needed: unused memory copies make way
+for new ones, and unused temporary files are limited to 1 GiB in total, least
+recently used first out. Windows deletes the temporary files when the process
+exits, even if it is terminated. The ZIP decoder has no seek or reset operation.
+The route is selected per open, independently of the filename or file contents.
 
 ZIP mods remain read-only; save writes continue to use the existing save-file
 mappings. ZIP entries do not support memory mapping (`CreateFileMapping`).

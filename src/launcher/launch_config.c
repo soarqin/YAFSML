@@ -15,7 +15,6 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <shlwapi.h>
 
 #include <stdio.h>
 
@@ -99,24 +98,7 @@ const ml_game_descriptor_t *ml_launcher_select_game(
 }
 
 bool ml_launcher_path_is_relative(const wchar_t *path) {
-    return path != NULL && StrChrW(path, L':') == NULL && path[0] != L'\\' && path[0] != L'/';
-}
-
-bool ml_launcher_resolve_path(wchar_t path[MAX_PATH], const wchar_t *base_dir,
-                              const wchar_t *requested) {
-    wchar_t *resolved;
-    if (path == NULL) return false;
-    path[0] = L'\0';
-    resolved = ml_launcher_resolve_path_alloc(base_dir, requested);
-    if (resolved == NULL) return false;
-    if (wcslen(resolved) >= MAX_PATH) {
-        free(resolved);
-        SetLastError(ERROR_INSUFFICIENT_BUFFER);
-        return false;
-    }
-    wcscpy(path, resolved);
-    free(resolved);
-    return true;
+    return path != NULL && wcschr(path, L':') == NULL && path[0] != L'\\' && path[0] != L'/';
 }
 
 wchar_t *ml_launcher_resolve_path_alloc(const wchar_t *base_dir, const wchar_t *requested) {
@@ -143,30 +125,4 @@ wchar_t *ml_launcher_config_ini_path_alloc(const wchar_t *config_path) {
         return file;
     }
     return path;
-}
-
-bool ml_launcher_resolve_config_path(wchar_t path[MAX_PATH],
-                                     const wchar_t *module_dir,
-                                     const wchar_t *requested_path) {
-    if (path == NULL) return false;
-    path[0] = L'\0';
-    if (module_dir == NULL || module_dir[0] == L'\0') return false;
-    return ml_launcher_resolve_path(path, module_dir,
-                                    requested_path != NULL && requested_path[0] != L'\0'
-                                        ? requested_path : L"YAFSML.ini");
-}
-
-bool ml_launcher_config_ini_path(wchar_t path[MAX_PATH], const wchar_t *config_path) {
-    wchar_t *resolved;
-    if (path == NULL) return false;
-    path[0] = L'\0';
-    resolved = ml_launcher_config_ini_path_alloc(config_path);
-    if (resolved == NULL) return false;
-    if (wcslen(resolved) >= MAX_PATH) {
-        free(resolved);
-        return false;
-    }
-    wcscpy(path, resolved);
-    free(resolved);
-    return true;
 }

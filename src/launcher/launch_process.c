@@ -10,7 +10,6 @@
 #include "common/path.h"
 
 #include <psapi.h>
-#include <shlwapi.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -104,26 +103,34 @@ BOOL ml_launcher_create_game_process(const wchar_t *executable,
                                       const wchar_t *working_directory,
                                       STARTUPINFOW *startup,
                                       PROCESS_INFORMATION *process) {
-    const size_t length = wcslen(executable);
-    /* Without a command line the game sees the unquoted path, which splits
-     * into several arguments when it contains spaces. */
-    wchar_t *command_line = malloc((length + 3) * sizeof(*command_line));
+    /* The game inherits these spellings as its image path, argv[0] and current
+     * directory, which holds MAX_PATH - 2 characters plus a separator. */
+    wchar_t *application = ml_path_plain_alloc(executable, MAX_PATH);
+    wchar_t *directory = working_directory == NULL ? NULL : ml_path_plain_alloc(working_directory, MAX_PATH - 1);
+    wchar_t *command_line = NULL;
     wine_locale_guard_t guard;
-    if (command_line == NULL) {
-        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
-        return FALSE;
+    BOOL success = FALSE;
+    DWORD error = ERROR_NOT_ENOUGH_MEMORY;
+    if (application != NULL && (working_directory == NULL || directory != NULL)) {
+        const size_t length = wcslen(application);
+        /* Without a command line the game sees the unquoted path, which splits
+         * into several arguments when it contains spaces. */
+        command_line = malloc((length + 3) * sizeof(*command_line));
+        if (command_line != NULL) {
+            command_line[0] = L'"';
+            memcpy(command_line + 1, application, length * sizeof(*command_line));
+            command_line[length + 1] = L'"';
+            command_line[length + 2] = L'\0';
+            begin_wine_locale(&guard);
+            success = CreateProcessW(application, command_line, NULL, NULL, FALSE,
+                                     CREATE_SUSPENDED, NULL, directory, startup, process);
+            error = GetLastError();
+            end_wine_locale(&guard);
+        }
     }
-    command_line[0] = L'"';
-    memcpy(command_line + 1, executable, length * sizeof(*command_line));
-    command_line[length + 1] = L'"';
-    command_line[length + 2] = L'\0';
-    begin_wine_locale(&guard);
-    BOOL success = CreateProcessW(executable, command_line, NULL, NULL, FALSE,
-                                  CREATE_SUSPENDED, NULL, working_directory,
-                                  startup, process);
-    DWORD error = GetLastError();
-    end_wine_locale(&guard);
     free(command_line);
+    free(directory);
+    free(application);
     SetLastError(error);
     return success;
 }
@@ -298,14 +305,4 @@ wchar_t *ml_launcher_find_proxy_copy_alloc(const wchar_t *game_folder) {
         free(path);
     }
     return NULL;
-}
-
-bool ml_launcher_find_proxy_copy(const wchar_t *game_folder, wchar_t path[MAX_PATH]) {
-    wchar_t *found = ml_launcher_find_proxy_copy_alloc(game_folder);
-    path[0] = L'\0';
-    if (found == NULL) return false;
-    bool fits = wcslen(found) < MAX_PATH;
-    if (fits) wcscpy(path, found);
-    free(found);
-    return fits;
 }

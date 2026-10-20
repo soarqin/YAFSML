@@ -17,7 +17,6 @@
 #include "vfs.h"
 #include "zip_package.h"
 
-#include <shlwapi.h>
 #include <stdint.h>
 
 static wchar_t *game_folder;

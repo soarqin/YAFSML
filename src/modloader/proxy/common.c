@@ -5,8 +5,6 @@
 #include "log.h"
 #include "common/path.h"
 
-#include <shlwapi.h>
-
 #include <stdio.h>
 
 static HMODULE own_module(void) {

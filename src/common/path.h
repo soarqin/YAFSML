@@ -63,17 +63,34 @@ static inline const wchar_t *ml_path_extension(const wchar_t *path) {
     return extension == NULL ? filename + wcslen(filename) : extension;
 }
 
-/* Extended DOS/UNC names are converted back before resolving . and ..; those
- * navigation elements have no meaning after an extended prefix is applied. */
-static inline void ml_path_normalize_input(wchar_t *path) {
-    for (wchar_t *p = path; *p != L'\0'; ++p) if (*p == L'/') *p = L'\\';
-    if (_wcsnicmp(path, L"\\\\?\\UNC\\", 8) == 0) {
-        memmove(path + 2, path + 8, (wcslen(path + 8) + 1) * sizeof(*path));
-        path[0] = path[1] = L'\\';
-    } else if (wcsncmp(path, L"\\\\?\\", 4) == 0 &&
-               wcslen(path + 4) >= 3 && path[5] == L':' && path[6] == L'\\') {
-        memmove(path, path + 4, (wcslen(path + 4) + 1) * sizeof(*path));
+/* The DOS drive or UNC part of a disk path. Skips an extended (\\?\) or device
+ * (\\.\) prefix in front of a drive or UNC\ name, and the separators that start
+ * a UNC name; `unc` tells the two forms apart. Other device names, such as
+ * \\?\Volume{...}, are returned unchanged. Either separator is accepted. */
+static inline const wchar_t *ml_path_dos_body(const wchar_t *path, bool *unc) {
+    *unc = false;
+    if (!ml_path_separator(path[0]) || !ml_path_separator(path[1])) return path;
+    if ((path[2] == L'?' || path[2] == L'.') && ml_path_separator(path[3])) {
+        if (_wcsnicmp(path + 4, L"UNC", 3) == 0 && ml_path_separator(path[7])) {
+            *unc = true;
+            return path + 8;
+        }
+        return path[4] != L'\0' && path[5] == L':' && ml_path_separator(path[6]) ? path + 4 : path;
     }
+    *unc = true;
+    return path + 2;
+}
+
+/* Extended and device DOS/UNC names are converted back before resolving . and
+ * ..; those navigation elements have no meaning after an extended prefix. */
+static inline void ml_path_normalize_input(wchar_t *path) {
+    bool unc;
+    const wchar_t *body;
+    size_t offset;
+    for (wchar_t *p = path; *p != L'\0'; ++p) if (*p == L'/') *p = L'\\';
+    body = ml_path_dos_body(path, &unc);
+    offset = unc ? 2 : 0;
+    if (body != path + offset) memmove(path + offset, body, (wcslen(body) + 1) * sizeof(*path));
 }
 
 static inline bool ml_path_is_absolute(const wchar_t *path) {
@@ -85,16 +102,9 @@ static inline bool ml_path_is_absolute(const wchar_t *path) {
 /* Includes the final separator when one is present; an UNC share itself is a
  * root, so a rooted request cannot discard its server/share components. */
 static inline size_t ml_path_root_length(const wchar_t *path) {
-    const wchar_t *p;
-    if (path[0] != L'\0' && path[1] == L':' && ml_path_separator(path[2])) return 3;
-    if (!ml_path_separator(path[0]) || !ml_path_separator(path[1])) return 0;
-    p = path + 2;
-    if (wcsncmp(p, L"?\\", 2) == 0) {
-        p += 2;
-        if (_wcsnicmp(p, L"UNC\\", 4) == 0) p += 4;
-        else if (p[0] != L'\0' && p[1] == L':' && ml_path_separator(p[2])) return (size_t)(p + 3 - path);
-        else return 0;
-    }
+    bool unc;
+    const wchar_t *p = ml_path_dos_body(path, &unc);
+    if (!unc) return p[0] != L'\0' && p[1] == L':' && ml_path_separator(p[2]) ? (size_t)(p + 3 - path) : 0;
     while (*p != L'\0' && !ml_path_separator(*p)) ++p;
     if (*p == L'\0') return 0;
     ++p;
@@ -110,24 +120,32 @@ static inline void ml_path_remove_filename(wchar_t *path) {
     path[length] = L'\0';
 }
 
-/* Use an extended prefix before the directory-creation limit as well as the
- * file limit. This works inside games without a longPathAware manifest. */
-static inline wchar_t *ml_path_extended_alloc(const wchar_t *path) {
-    size_t length = wcslen(path);
-    size_t prefix;
+/* Takes ownership of a path that GetFullPathNameW normalized, possibly joined
+ * with a plain relative name. A long DOS or UNC name is replaced by its extended
+ * form before the directory-creation limit as well as the file limit, which
+ * works inside games without a longPathAware manifest. Other paths are returned
+ * as is. Returns NULL, having released `path`, if the copy cannot be made. */
+static inline wchar_t *ml_path_extend(wchar_t *path) {
+    const wchar_t *prefix;
+    size_t length, prefix_length, skip;
     wchar_t *result;
-    if (length < MAX_PATH - 12 || wcsncmp(path, L"\\\\?\\", 4) == 0 ||
-        !ml_path_is_absolute(path)) return ml_path_copy_alloc(path);
-    prefix = path[0] == L'\\' && path[1] == L'\\' ? 6 : 4;
-    result = ml_path_buffer(length + prefix + 1);
-    if (result == NULL) return NULL;
-    if (prefix == 6) {
-        memcpy(result, L"\\\\?\\UNC\\", 8 * sizeof(*result));
-        memcpy(result + 8, path + 2, (length - 1) * sizeof(*result));
+    if (path == NULL || (length = wcslen(path)) < MAX_PATH - 12) return path;
+    if (path[1] == L':' && path[2] == L'\\') {
+        prefix = L"\\\\?\\";
+        skip = 0;
+    } else if (path[0] == L'\\' && path[1] == L'\\' && path[2] != L'?' && path[2] != L'.') {
+        prefix = L"\\\\?\\UNC\\";
+        skip = 2;
     } else {
-        memcpy(result, L"\\\\?\\", 4 * sizeof(*result));
-        memcpy(result + 4, path, (length + 1) * sizeof(*result));
+        return path;
     }
+    prefix_length = wcslen(prefix);
+    result = ml_path_buffer(prefix_length + length - skip + 1);
+    if (result != NULL) {
+        memcpy(result, prefix, prefix_length * sizeof(*result));
+        memcpy(result + prefix_length, path + skip, (length - skip + 1) * sizeof(*result));
+    }
+    ML_PATH_FREE(path);
     return result;
 }
 
@@ -182,7 +200,8 @@ static inline wchar_t *ml_path_resolve_alloc(const wchar_t *base, const wchar_t 
         length = GetFullPathNameW(joined, capacity, full, NULL);
         if (length == 0) goto done;
         if (length < capacity) {
-            result = ml_path_extended_alloc(full);
+            result = ml_path_extend(full);
+            full = NULL;
             break;
         }
         ML_PATH_FREE(full);
@@ -197,6 +216,19 @@ done:
     ML_PATH_FREE(name);
     if (result == NULL) SetLastError(error);
     return result;
+}
+
+/* Copies `path` in its DOS or UNC spelling when that has fewer than `limit`
+ * characters, and as is otherwise. For paths that another process inherits,
+ * such as its image path and current directory: with an extended current
+ * directory, the child cannot resolve relative paths that contain "..". */
+static inline wchar_t *ml_path_plain_alloc(const wchar_t *path, size_t limit) {
+    wchar_t *plain = ml_path_copy_alloc(path);
+    if (plain == NULL) return NULL;
+    ml_path_normalize_input(plain);
+    if (wcslen(plain) < limit) return plain;
+    ML_PATH_FREE(plain);
+    return ml_path_copy_alloc(path);
 }
 
 static inline wchar_t *ml_path_module_filename_alloc(HMODULE module) {

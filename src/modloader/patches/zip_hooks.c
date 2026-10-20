@@ -15,6 +15,13 @@
 #define kfree(P) ml_mem_free(P)
 #include "khash.h"
 
+/* ZIP handles are event handles tagged in the low bits that the system ignores
+ * (OBJ_HANDLE_TAGBITS in ntdef.h). The tag matches no kernel or console handle
+ * and no common pseudo handle, so calls on any other handle reach the real API
+ * without a lock. Code that suspends threads and then calls CloseHandle, such as
+ * MinHook toggling a hook, must not wait for a lock a suspended thread holds. */
+#define ZIP_HANDLE_TAG ((uintptr_t)1)
+
 typedef struct zip_file_s {
     vfs_file_t *reader;
     volatile LONG references;
@@ -22,6 +29,9 @@ typedef struct zip_file_s {
     DWORD share;
     DWORD flags;
     uint64_t identity;
+    /* The file's own reference to the handles' event: a caller may close its
+     * handle, and the value be reused, while a read is still completing. */
+    HANDLE event;
     HANDLE completion_port;
     ULONG_PTR completion_key;
     UCHAR completion_modes;
@@ -37,8 +47,8 @@ KHASH_MAP_INIT_INT64(zip_handles, zip_handle_t)
 static khash_t(zip_handles) *handles;
 static SRWLOCK handles_lock = SRWLOCK_INIT;
 static volatile LONG handle_count;
-static bool accepting_handles;
-static volatile LONG stopping;
+/* Written under handles_lock; cleared while the hooks are torn down. */
+static volatile LONG accepting;
 static volatile LONG active_operations;
 static CONDITION_VARIABLE operations_idle = CONDITION_VARIABLE_INIT;
 
@@ -83,20 +93,27 @@ static ULONG (WINAPI *status_to_error)(NTSTATUS);
 
 static DWORD file_access(DWORD access) {
     GENERIC_MAPPING mapping = { FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_GENERIC_EXECUTE, FILE_ALL_ACCESS };
+    /* As for a read-only disk file, the most a caller can be granted is reading. */
+    if ((access & MAXIMUM_ALLOWED) != 0) access = (access & ~MAXIMUM_ALLOWED) | FILE_GENERIC_READ;
     MapGenericMask(&access, &mapping);
     return access;
+}
+
+static bool zip_handle_tagged(HANDLE handle) {
+    return ((uintptr_t)handle & 3) == ZIP_HANDLE_TAG;
 }
 
 static void zip_file_release(zip_file_t *file) {
     if (InterlockedDecrement(&file->references) != 0) return;
     vfs_file_close(file->reader);
+    if (file->event != NULL) old_close_handle(file->event);
     if (file->completion_port != NULL) old_close_handle(file->completion_port);
     ml_mem_free(file);
 }
 
 static void zip_operation_leave(void) {
     InterlockedDecrement(&active_operations);
-    if (ReadAcquire(&stopping)) {
+    if (!ReadAcquire(&accepting)) {
         AcquireSRWLockExclusive(&handles_lock);
         WakeAllConditionVariable(&operations_idle);
         ReleaseSRWLockExclusive(&handles_lock);
@@ -108,10 +125,26 @@ static void zip_handle_release(zip_file_t *file) {
     zip_operation_leave();
 }
 
+/* Records `handle` with handles_lock held exclusively. An entry that a handle
+ * closed behind the hooks' back (NtClose) left for the same value is replaced;
+ * the caller releases its file, returned in `stale`, after unlocking. */
+static bool zip_handle_insert(HANDLE handle, zip_file_t *file, DWORD access, zip_file_t **stale) {
+    khiter_t slot;
+    int ret;
+    *stale = NULL;
+    if (!accepting || handles == NULL) return false;
+    slot = kh_put(zip_handles, handles, (khint64_t)(uintptr_t)handle, &ret);
+    if (ret < 0) return false;
+    if (ret == 0) *stale = kh_value(handles, slot).file;
+    else InterlockedIncrement(&handle_count);
+    kh_value(handles, slot) = (zip_handle_t){ file, access };
+    return true;
+}
+
 static zip_file_t *zip_handle_get(HANDLE handle, DWORD *access) {
     zip_file_t *file = NULL;
     khiter_t slot;
-    if (vfs_recursion_guard_active() || ReadAcquire(&handle_count) == 0 || ReadAcquire(&stopping)) return NULL;
+    if (!zip_handle_tagged(handle) || ReadAcquire(&handle_count) == 0 || !ReadAcquire(&accepting)) return NULL;
     AcquireSRWLockShared(&handles_lock);
     if (handles != NULL) {
         slot = kh_get(zip_handles, handles, (khint64_t)(uintptr_t)handle);
@@ -126,13 +159,21 @@ static zip_file_t *zip_handle_get(HANDLE handle, DWORD *access) {
     return file;
 }
 
+/* For calls that a ZIP handle answers without touching its file. */
+static bool zip_handle_known(HANDLE handle) {
+    zip_file_t *file = zip_handle_get(handle, NULL);
+    if (file == NULL) return false;
+    zip_handle_release(file);
+    return true;
+}
+
 static BOOL WINAPI close_handle_hooked(HANDLE handle) {
     zip_file_t *file = NULL;
     BOOL result = FALSE;
     DWORD error = ERROR_SUCCESS;
     bool handled = false;
     khiter_t slot;
-    if (ReadAcquire(&handle_count) == 0) return old_close_handle(handle);
+    if (!zip_handle_tagged(handle) || ReadAcquire(&handle_count) == 0) return old_close_handle(handle);
     AcquireSRWLockExclusive(&handles_lock);
     if (handles != NULL) {
         slot = kh_get(zip_handles, handles, (khint64_t)(uintptr_t)handle);
@@ -160,10 +201,9 @@ static BOOL WINAPI close_handle_hooked(HANDLE handle) {
 
 HANDLE ml_zip_file_open(const wchar_t *path, DWORD access, DWORD share,
                         LPSECURITY_ATTRIBUTES security, DWORD disposition, DWORD flags) {
-    zip_file_t *file;
-    HANDLE handle;
+    zip_file_t *file, *stale;
+    HANDLE event = NULL, handle;
     DWORD error = ERROR_NOT_ENOUGH_MEMORY;
-    int ret;
     khiter_t slot;
     access = file_access(access);
     if ((access & (DELETE | WRITE_DAC | WRITE_OWNER |
@@ -177,7 +217,7 @@ HANDLE ml_zip_file_open(const wchar_t *path, DWORD access, DWORD share,
         return INVALID_HANDLE_VALUE;
     }
     AcquireSRWLockShared(&handles_lock);
-    if (!accepting_handles) {
+    if (!accepting) {
         ReleaseSRWLockShared(&handles_lock);
         SetLastError(ERROR_OPERATION_ABORTED);
         return INVALID_HANDLE_VALUE;
@@ -196,10 +236,15 @@ HANDLE ml_zip_file_open(const wchar_t *path, DWORD access, DWORD share,
     file->identity = vfs_file_identity(file->reader);
     /* A real kernel event supplies a valid, inheritable HANDLE without creating
      * a disk file. All file operations on this handle are dispatched below. */
-    handle = CreateEventW(security, TRUE, TRUE, NULL);
-    if (handle == NULL) { error = GetLastError(); goto failed; }
+    event = CreateEventW(security, TRUE, TRUE, NULL);
+    if (event == NULL || !old_duplicate(GetCurrentProcess(), event, GetCurrentProcess(), &file->event,
+                                        0, FALSE, DUPLICATE_SAME_ACCESS)) {
+        error = GetLastError();
+        goto failed;
+    }
+    handle = (HANDLE)((uintptr_t)event | ZIP_HANDLE_TAG);
     AcquireSRWLockExclusive(&handles_lock);
-    if (!accepting_handles) {
+    if (!accepting) {
         error = ERROR_OPERATION_ABORTED;
         goto failed_locked;
     }
@@ -216,48 +261,30 @@ HANDLE ml_zip_file_open(const wchar_t *path, DWORD access, DWORD share,
                 goto failed_locked;
             }
         }
-        slot = kh_put(zip_handles, handles, (khint64_t)(uintptr_t)handle, &ret);
-        if (ret >= 0) {
-            kh_value(handles, slot) = (zip_handle_t){ file, access };
-            InterlockedIncrement(&handle_count);
-            ReleaseSRWLockExclusive(&handles_lock);
-            zip_operation_leave();
-            SetLastError(disposition == OPEN_ALWAYS ? ERROR_ALREADY_EXISTS : ERROR_SUCCESS);
-            return handle;
-        }
+    }
+    if (zip_handle_insert(handle, file, access, &stale)) {
+        ReleaseSRWLockExclusive(&handles_lock);
+        if (stale != NULL) zip_file_release(stale);
+        zip_operation_leave();
+        SetLastError(disposition == OPEN_ALWAYS ? ERROR_ALREADY_EXISTS : ERROR_SUCCESS);
+        return handle;
     }
 failed_locked:
     ReleaseSRWLockExclusive(&handles_lock);
-    old_close_handle(handle);
 failed:
+    if (event != NULL) old_close_handle(event);
     zip_file_release(file);
     zip_operation_leave();
     SetLastError(error);
     return INVALID_HANDLE_VALUE;
 }
 
+/* OVERLAPPED.Internal holds an NTSTATUS. End of file keeps its native status;
+ * other errors use the NTWIN32 facility, which RtlNtStatusToDosError maps back
+ * to the error ReadFile reported. */
 static ULONG_PTR status_from_error(DWORD error) {
-    switch (error) {
-        case ERROR_SUCCESS: return 0;
-        case ERROR_HANDLE_EOF: return 0xC0000011UL;
-        case ERROR_ACCESS_DENIED: return 0xC0000022UL;
-        case ERROR_CRC: return 0xC000003FUL;
-        case ERROR_INVALID_DATA: return 0xC000003EUL;
-        case ERROR_INVALID_PARAMETER: return 0xC000000DUL;
-        default: return 0xC0000185UL;
-    }
-}
-
-static DWORD error_from_status(ULONG_PTR status) {
-    switch (status) {
-        case 0: return ERROR_SUCCESS;
-        case 0xC0000011UL: return ERROR_HANDLE_EOF;
-        case 0xC0000022UL: return ERROR_ACCESS_DENIED;
-        case 0xC000003FUL: return ERROR_CRC;
-        case 0xC000003EUL: return ERROR_INVALID_DATA;
-        case 0xC000000DUL: return ERROR_INVALID_PARAMETER;
-        default: return ERROR_READ_FAULT;
-    }
+    if (error == ERROR_SUCCESS) return 0;
+    return error == ERROR_HANDLE_EOF ? 0xC0000011UL : 0xC0070000UL | (error & 0xFFFF);
 }
 
 static DWORD read_file_data(zip_file_t *file, DWORD access, void *buffer, DWORD size, DWORD *read,
@@ -324,11 +351,11 @@ static BOOL WINAPI read_file_hooked(HANDLE handle, LPVOID buffer, DWORD size,
         SetLastError(error);
         return FALSE;
     }
-    ResetEvent(handle);
+    ResetEvent(file->event);
     error = read_file_data(file, access, buffer, size, &received, overlapped, false);
     if (read != NULL) *read = received;
     AcquireSRWLockShared(&file->lock);
-    if ((file->completion_modes & FILE_SKIP_SET_EVENT_ON_HANDLE) == 0) SetEvent(handle);
+    if ((file->completion_modes & FILE_SKIP_SET_EVENT_ON_HANDLE) == 0) SetEvent(file->event);
     if (overlapped != NULL) {
         /* A waiter may release the OVERLAPPED or close the file as soon as it
          * observes completion. Finish all updates before publishing it. */
@@ -367,9 +394,7 @@ static BOOL WINAPI read_file_ex_hooked(HANDLE handle, LPVOID buffer, DWORD size,
 
 static BOOL WINAPI write_file_hooked(HANDLE handle, LPCVOID buffer, DWORD size,
                                       LPDWORD written, LPOVERLAPPED overlapped) {
-    zip_file_t *file = zip_handle_get(handle, NULL);
-    if (file == NULL) return old_write_file(handle, buffer, size, written, overlapped);
-    zip_handle_release(file);
+    if (!zip_handle_known(handle)) return old_write_file(handle, buffer, size, written, overlapped);
     if (written != NULL) *written = 0;
     SetLastError(ERROR_ACCESS_DENIED);
     return FALSE;
@@ -448,10 +473,7 @@ static DWORD WINAPI get_size_hooked(HANDLE handle, LPDWORD high) {
 }
 
 static DWORD WINAPI get_type_hooked(HANDLE handle) {
-    zip_file_t *file = zip_handle_get(handle, NULL);
-    if (file == NULL) return old_get_type(handle);
-    zip_handle_release(file);
-    return FILE_TYPE_DISK;
+    return zip_handle_known(handle) ? FILE_TYPE_DISK : old_get_type(handle);
 }
 
 static BOOL WINAPI get_info_hooked(HANDLE handle, LPBY_HANDLE_FILE_INFORMATION info) {
@@ -506,36 +528,32 @@ static BOOL overlapped_result(LPOVERLAPPED overlapped, LPDWORD read) {
     DWORD error;
     if (overlapped == NULL || read == NULL) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
     *read = (DWORD)overlapped->InternalHigh;
-    error = overlapped->Internal == 0x103 ? ERROR_IO_INCOMPLETE : error_from_status(overlapped->Internal);
+    error = overlapped->Internal == 0x103 ? ERROR_IO_INCOMPLETE
+          : overlapped->Internal == 0 ? ERROR_SUCCESS : status_to_error((NTSTATUS)overlapped->Internal);
     SetLastError(error);
     return error == ERROR_SUCCESS;
 }
 
 static BOOL WINAPI get_overlapped_hooked(HANDLE handle, LPOVERLAPPED overlapped, LPDWORD read, BOOL wait) {
-    zip_file_t *file = zip_handle_get(handle, NULL);
-    if (file == NULL) return old_get_overlapped(handle, overlapped, read, wait);
-    zip_handle_release(file);
+    if (!zip_handle_known(handle)) return old_get_overlapped(handle, overlapped, read, wait);
     return overlapped_result(overlapped, read);
 }
 
 static BOOL WINAPI get_overlapped_ex_hooked(HANDLE handle, LPOVERLAPPED overlapped, LPDWORD read,
                                             DWORD milliseconds, BOOL alertable) {
-    zip_file_t *file = zip_handle_get(handle, NULL);
-    if (file == NULL) return old_get_overlapped_ex(handle, overlapped, read, milliseconds, alertable);
-    zip_handle_release(file);
+    if (!zip_handle_known(handle)) return old_get_overlapped_ex(handle, overlapped, read, milliseconds, alertable);
     return overlapped_result(overlapped, read);
 }
 
 static BOOL WINAPI duplicate_hooked(HANDLE source_process, HANDLE source, HANDLE target_process,
                                      LPHANDLE target, DWORD access, BOOL inherit, DWORD options) {
     DWORD source_access;
-    zip_file_t *file = ReadAcquire(&handle_count) != 0 &&
-        GetProcessId(source_process) == GetCurrentProcessId() ? zip_handle_get(source, &source_access) : NULL;
+    zip_file_t *file = zip_handle_tagged(source) && GetProcessId(source_process) == GetCurrentProcessId()
+        ? zip_handle_get(source, &source_access) : NULL;
+    zip_file_t *stale = NULL;
     HANDLE duplicate = NULL;
     BOOL result = FALSE;
     DWORD error = ERROR_NOT_SUPPORTED;
-    int ret;
-    khiter_t slot;
     if (file == NULL) return old_duplicate(source_process, source, target_process, target, access, inherit, options);
     if (target_process == NULL && (options & DUPLICATE_CLOSE_SOURCE) != 0) { result = TRUE; goto done; }
     if (target == NULL || (options & ~(DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE)) != 0) {
@@ -543,24 +561,18 @@ static BOOL WINAPI duplicate_hooked(HANDLE source_process, HANDLE source, HANDLE
     }
     access = (options & DUPLICATE_SAME_ACCESS) != 0 ? source_access : file_access(access);
     if ((access & ~source_access) != 0) { error = ERROR_ACCESS_DENIED; goto done; }
-    if (GetProcessId(source_process) != GetCurrentProcessId() ||
-        GetProcessId(target_process) != GetCurrentProcessId()) goto done;
+    if (GetProcessId(target_process) != GetCurrentProcessId()) goto done;
     if (!old_duplicate(source_process, source, target_process, &duplicate, 0, inherit, DUPLICATE_SAME_ACCESS)) {
         error = GetLastError(); goto done;
     }
+    duplicate = (HANDLE)((uintptr_t)duplicate | ZIP_HANDLE_TAG);
     AcquireSRWLockExclusive(&handles_lock);
-    slot = accepting_handles && handles != NULL
-        ? kh_put(zip_handles, handles, (khint64_t)(uintptr_t)duplicate, &ret) : 0;
-    if (!accepting_handles || handles == NULL) ret = -1;
-    if (ret >= 0) {
-        kh_value(handles, slot) = (zip_handle_t){ file, access };
-        InterlockedIncrement(&file->references);
-        InterlockedIncrement(&handle_count);
-        *target = duplicate;
-        result = TRUE;
-    }
+    result = zip_handle_insert(duplicate, file, access, &stale);
+    if (result) InterlockedIncrement(&file->references);
     ReleaseSRWLockExclusive(&handles_lock);
-    if (!result) { old_close_handle(duplicate); error = ERROR_NOT_ENOUGH_MEMORY; }
+    if (stale != NULL) zip_file_release(stale);
+    if (result) *target = duplicate;
+    else { old_close_handle(duplicate); error = ERROR_NOT_ENOUGH_MEMORY; }
 done:
     if ((options & DUPLICATE_CLOSE_SOURCE) != 0) close_handle_hooked(source);
     zip_handle_release(file);
@@ -622,50 +634,51 @@ static BOOL WINAPI completion_modes_hooked(HANDLE handle, UCHAR modes) {
 }
 
 static BOOL WINAPI cancel_io_hooked(HANDLE handle) {
-    zip_file_t *file = zip_handle_get(handle, NULL);
-    if (file == NULL) return old_cancel_io(handle);
-    zip_handle_release(file);
-    return TRUE;
+    return zip_handle_known(handle) ? TRUE : old_cancel_io(handle);
 }
 
 static BOOL WINAPI cancel_io_ex_hooked(HANDLE handle, LPOVERLAPPED overlapped) {
-    zip_file_t *file = zip_handle_get(handle, NULL);
-    if (file == NULL) return old_cancel_io_ex(handle, overlapped);
-    zip_handle_release(file);
+    if (!zip_handle_known(handle)) return old_cancel_io_ex(handle, overlapped);
     SetLastError(ERROR_NOT_FOUND);
     return FALSE;
 }
 
 static BOOL WINAPI flush_hooked(HANDLE handle) {
-    zip_file_t *file = zip_handle_get(handle, NULL);
-    if (file == NULL) return old_flush(handle);
-    zip_handle_release(file); SetLastError(ERROR_ACCESS_DENIED); return FALSE;
+    if (!zip_handle_known(handle)) return old_flush(handle);
+    SetLastError(ERROR_ACCESS_DENIED);
+    return FALSE;
 }
 
 static BOOL WINAPI set_end_hooked(HANDLE handle) {
-    zip_file_t *file = zip_handle_get(handle, NULL);
-    if (file == NULL) return old_set_end(handle);
-    zip_handle_release(file); SetLastError(ERROR_ACCESS_DENIED); return FALSE;
+    if (!zip_handle_known(handle)) return old_set_end(handle);
+    SetLastError(ERROR_ACCESS_DENIED);
+    return FALSE;
 }
 
 static BOOL WINAPI set_info_hooked(HANDLE handle, FILE_INFO_BY_HANDLE_CLASS kind, LPVOID info, DWORD size) {
-    zip_file_t *file = zip_handle_get(handle, NULL);
-    if (file == NULL) return old_set_info(handle, kind, info, size);
-    zip_handle_release(file); SetLastError(ERROR_ACCESS_DENIED); return FALSE;
+    if (!zip_handle_known(handle)) return old_set_info(handle, kind, info, size);
+    /* As on a read-only disk file, an I/O priority hint needs no write access. */
+    if (kind == FileIoPriorityHintInfo) {
+        if (info != NULL && size >= sizeof(FILE_IO_PRIORITY_HINT_INFO)) return TRUE;
+        SetLastError(ERROR_BAD_LENGTH);
+        return FALSE;
+    }
+    SetLastError(ERROR_ACCESS_DENIED);
+    return FALSE;
 }
 
 static HANDLE WINAPI mapping_w_hooked(HANDLE handle, LPSECURITY_ATTRIBUTES security,
                                        DWORD protect, DWORD high, DWORD low, LPCWSTR name) {
-    zip_file_t *file = zip_handle_get(handle, NULL);
-    if (file == NULL) return old_mapping_w(handle, security, protect, high, low, name);
-    zip_handle_release(file); SetLastError(ERROR_NOT_SUPPORTED); return NULL;
+    if (!zip_handle_known(handle)) return old_mapping_w(handle, security, protect, high, low, name);
+    SetLastError(ERROR_NOT_SUPPORTED);
+    return NULL;
 }
 
 static HANDLE WINAPI mapping_a_hooked(HANDLE handle, LPSECURITY_ATTRIBUTES security,
                                        DWORD protect, DWORD high, DWORD low, LPCSTR name) {
-    zip_file_t *file = zip_handle_get(handle, NULL);
-    if (file == NULL) return old_mapping_a(handle, security, protect, high, low, name);
-    zip_handle_release(file); SetLastError(ERROR_NOT_SUPPORTED); return NULL;
+    if (!zip_handle_known(handle)) return old_mapping_a(handle, security, protect, high, low, name);
+    SetLastError(ERROR_NOT_SUPPORTED);
+    return NULL;
 }
 
 void ml_zip_file_hook_specs(ml_hook_spec_t *specs, bool resolve_targets) {
@@ -712,8 +725,7 @@ bool ml_zip_file_hooks_prepare(void) {
     status_to_error = ntdll == NULL ? NULL : (void *)GetProcAddress(ntdll, "RtlNtStatusToDosError");
     if (query_object == NULL || queue_file_apc == NULL || status_to_error == NULL) return false;
     AcquireSRWLockExclusive(&handles_lock);
-    accepting_handles = true;
-    InterlockedExchange(&stopping, FALSE);
+    InterlockedExchange(&accepting, TRUE);
     ReleaseSRWLockExclusive(&handles_lock);
     return true;
 }
@@ -721,25 +733,20 @@ bool ml_zip_file_hooks_prepare(void) {
 void ml_zip_file_close_all(void) {
     khash_t(zip_handles) *remaining;
     AcquireSRWLockExclusive(&handles_lock);
-    accepting_handles = false;
-    InterlockedExchange(&stopping, TRUE);
+    InterlockedExchange(&accepting, FALSE);
 #ifdef ML_WIN32_HOOKS_TEST
     if (test_shutdown_entered != NULL) SetEvent(test_shutdown_entered);
 #endif
     while (ReadAcquire(&active_operations) != 0)
         SleepConditionVariableSRW(&operations_idle, &handles_lock, INFINITE, 0);
     remaining = handles;
-    if (remaining != NULL) {
-        for (khiter_t slot = kh_begin(remaining); slot != kh_end(remaining); slot++) {
-            if (!kh_exist(remaining, slot)) continue;
-            SetHandleInformation((HANDLE)(uintptr_t)kh_key(remaining, slot), HANDLE_FLAG_PROTECT_FROM_CLOSE, 0);
-            old_close_handle((HANDLE)(uintptr_t)kh_key(remaining, slot));
-        }
-    }
     handles = NULL;
     InterlockedExchange(&handle_count, 0);
     ReleaseSRWLockExclusive(&handles_lock);
     if (remaining == NULL) return;
+    /* The application still owns its handles: closing them here would make its
+     * later CloseHandle close whatever reused the value. Without the hooks, the
+     * events fail file I/O and close normally. */
     for (khiter_t slot = kh_begin(remaining); slot != kh_end(remaining); slot++)
         if (kh_exist(remaining, slot)) zip_file_release(kh_value(remaining, slot).file);
     kh_destroy(zip_handles, remaining);
@@ -748,6 +755,6 @@ void ml_zip_file_close_all(void) {
 #ifdef ML_WIN32_HOOKS_TEST
 void ml_zip_file_hooks_test_init(void) {
     old_close_handle = CloseHandle;
-    accepting_handles = true;
+    InterlockedExchange(&accepting, TRUE);
 }
 #endif

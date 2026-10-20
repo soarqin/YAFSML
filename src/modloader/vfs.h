@@ -54,9 +54,10 @@ bool vfs_has_zip_entries(void);
 /* BND4/EBL overrides use a distinct interned UID to request forward-only reads. */
 const wchar_t *vfs_uid_for_streaming(const wchar_t *uid);
 typedef struct vfs_file_s vfs_file_t;
-/* Raw ZIP files decode once into a bounded memory/disk cache; only the cache
- * supports seeking. BND4/EBL UIDs keep forward-only ZIP streams. The caller
- * serializes each file; read_at preserves its logical file position. */
+/* A raw ZIP entry decodes once into a memory or temporary-file cache that all
+ * of its seekable files share; only the cache supports seeking. BND4/EBL UIDs
+ * keep forward-only ZIP streams. The caller serializes each file, which keeps
+ * its own position; read_at preserves it. */
 vfs_file_t *vfs_file_open(const wchar_t *path);
 void vfs_file_close(vfs_file_t *file);
 uint64_t vfs_file_size(const vfs_file_t *file);

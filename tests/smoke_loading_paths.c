@@ -127,6 +127,9 @@ static int test_resolution(void) {
         { L"D:\\Pack", L"C:/other/../x.dll", L"C:\\x.dll" },
         { L"\\\\server\\share\\Pack", L"/mods/x.dll", L"\\\\server\\share\\mods\\x.dll" },
         { L"C:\\Pack", L"\\\\?\\UNC\\server\\share\\mods\\..\\x.dll", L"\\\\server\\share\\x.dll" },
+        { L"C:\\Pack", L"\\\\.\\C:\\Pack\\.\\x.dll", L"C:\\Pack\\x.dll" },
+        { L"C:\\Pack", L"//./UNC/server/share/x.dll", L"\\\\server\\share\\x.dll" },
+        { L"\\\\?\\UNC\\server\\share\\Pack", L"/mods/x.dll", L"\\\\server\\share\\mods\\x.dll" },
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         wchar_t *result = ml_path_resolve_alloc(cases[i].base, cases[i].input);
@@ -136,6 +139,13 @@ static int test_resolution(void) {
     }
     EXPECT_NULL(ml_path_resolve_alloc(L"D:\\Pack", L"C:x.dll"));
     EXPECT_EQ(GetLastError(), ERROR_BAD_PATHNAME);
+    /* Module paths can carry an extended prefix; the root is never removed. */
+    wchar_t unc_module[] = L"\\\\?\\UNC\\server\\share\\x.dll";
+    ml_path_remove_filename(unc_module);
+    EXPECT_STREQ_W(unc_module, L"\\\\?\\UNC\\server\\share\\");
+    wchar_t drive_module[] = L"\\\\?\\C:\\x.dll";
+    ml_path_remove_filename(drive_module);
+    EXPECT_STREQ_W(drive_module, L"\\\\?\\C:\\");
     wchar_t base[241] = L"C:\\";
     wmemset(base + 3, L'a', 237);
     base[240] = L'\0';
@@ -150,6 +160,15 @@ static int test_resolution(void) {
     result = ml_path_resolve_alloc(L"\\\\server\\share\\Pack", unc_tail);
     EXPECT_NOT_NULL(result);
     EXPECT_TRUE(wcsncmp(result, L"\\\\?\\UNC\\server\\share\\Pack\\", wcslen(L"\\\\?\\UNC\\server\\share\\Pack\\")) == 0);
+    ml_mem_free(result);
+    /* A long device path keeps its drive instead of becoming a UNC name. */
+    wchar_t device[288] = L"\\\\.\\C:\\";
+    wmemset(device + 7, L'b', 280);
+    device[287] = L'\0';
+    result = ml_path_resolve_alloc(NULL, device);
+    EXPECT_NOT_NULL(result);
+    EXPECT_STREQ_W(result + 4, device + 4);
+    EXPECT_TRUE(wcsncmp(result, L"\\\\?\\", 4) == 0);
     ml_mem_free(result);
     return 0;
 }

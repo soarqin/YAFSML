@@ -557,12 +557,7 @@ wchar_t *ml_boot_boost_cache_path(const wchar_t *directory, const uint64_t key[2
     if (separator) result[directory_length++] = L'\\';
     _snwprintf(result + directory_length, (size_t)suffix_length + 1, L"%016llx%016llx.bhd.zz",
                (unsigned long long)key[1], (unsigned long long)key[0]);
-    if (wcslen(result) >= MAX_PATH - 12 && ml_path_is_absolute(result) && wcsncmp(result, L"\\\\?\\", 4) != 0) {
-        wchar_t *extended = ml_path_extended_alloc(result);
-        ml_mem_free(result);
-        return extended;
-    }
-    return result;
+    return ml_path_extend(result);
 }
 
 typedef struct ml_boot_boost_cache_header_s {

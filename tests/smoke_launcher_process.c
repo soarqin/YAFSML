@@ -102,15 +102,29 @@ static void reset_wine_test(const char *locale) {
     test_reads = test_writes = test_spawns = 0;
 }
 
-static int spawn_with_test_locale(void) {
+static int spawn_game(const wchar_t *executable, const wchar_t *working_directory) {
     STARTUPINFOW startup = { 0 };
     PROCESS_INFORMATION process = { 0 };
     startup.cb = sizeof(startup);
-    EXPECT_EQ(ml_launcher_create_game_process(L"C:\\模组\\game.exe", L"C:\\模组",
+    EXPECT_EQ(ml_launcher_create_game_process(executable, working_directory,
                                                &startup, &process), test_spawn_result);
     EXPECT_EQ(GetLastError(), test_spawn_result ? ERROR_SUCCESS : ERROR_ACCESS_DENIED);
     EXPECT_TRUE(test_spawn_arguments_valid);
     EXPECT_EQ(test_spawns, 1);
+    return 0;
+}
+
+static int spawn_with_test_locale(void) {
+    return spawn_game(L"C:\\模组\\game.exe", L"C:\\模组");
+}
+
+/* Extended spellings that fit reach the game as DOS paths: with an extended
+ * current directory, the game could not resolve relative paths with "..". */
+static int test_plain_spawn_paths(void) {
+    reset_wine_test(NULL);
+    test_wine = false;
+    test_expect_locale_cleared = false;
+    EXPECT_EQ(spawn_game(L"\\\\?\\C:\\模组\\game.exe", L"\\\\?\\C:\\模组"), 0);
     return 0;
 }
 
@@ -298,12 +312,11 @@ static int test_proxy_copy(void) {
     wchar_t folder[MAX_PATH];
     wchar_t path[MAX_PATH];
     wchar_t source[MAX_PATH];
-    wchar_t found[MAX_PATH];
+    wchar_t *found;
     const wchar_t *names[] = { L"dinput8.dll", L"dxgi.dll", L"winhttp.dll" };
     FILE *file;
     EXPECT_EQ(make_temp_dir(folder), 0);
-    EXPECT_TRUE(!ml_launcher_find_proxy_copy(folder, found));
-    EXPECT_STREQ_W(found, L"");
+    EXPECT_NULL(ml_launcher_find_proxy_copy_alloc(folder));
 
     /* Unloadable files and other DLLs with proxy names are not YAFSML copies. */
     EXPECT_NOT_NULL(PathCombineW(path, folder, L"winhttp.dll"));
@@ -314,14 +327,16 @@ static int test_proxy_copy(void) {
     EXPECT_TRUE(PathAppendW(source, L"version.dll"));
     EXPECT_NOT_NULL(PathCombineW(path, folder, L"dxgi.dll"));
     EXPECT_TRUE(CopyFileW(source, path, FALSE));
-    EXPECT_TRUE(!ml_launcher_find_proxy_copy(folder, found));
+    EXPECT_NULL(ml_launcher_find_proxy_copy_alloc(folder));
 
     /* This executable exports YAFSMLInit like YAFSML.dll. */
     EXPECT_TRUE(GetModuleFileNameW(NULL, source, MAX_PATH) != 0);
     EXPECT_NOT_NULL(PathCombineW(path, folder, L"dinput8.dll"));
     EXPECT_TRUE(CopyFileW(source, path, FALSE));
-    EXPECT_TRUE(ml_launcher_find_proxy_copy(folder, found));
+    found = ml_launcher_find_proxy_copy_alloc(folder);
+    EXPECT_NOT_NULL(found);
     EXPECT_STREQ_W(found, path);
+    free(found);
 
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         EXPECT_NOT_NULL(PathCombineW(path, folder, names[i]));
@@ -389,6 +404,7 @@ static int test_injection(void) {
 int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "--exit-before-attach") == 0) return 0;
     EXPECT_EQ(test_wine_locale(), 0);
+    EXPECT_EQ(test_plain_spawn_paths(), 0);
     EXPECT_EQ(test_remote_thread_wait(), 0);
     EXPECT_EQ(test_game_exit_before_attach(), 0);
     EXPECT_EQ(test_find_module(), 0);

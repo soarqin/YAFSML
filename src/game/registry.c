@@ -12,7 +12,6 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
-#include <shlwapi.h>
 
 #define ML_PATH_USE_CRT_ALLOCATOR
 #include "../common/path.h"

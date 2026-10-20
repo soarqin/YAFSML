@@ -29,8 +29,10 @@
  * the redirected save.
  *
  * ZIP opens return stream handles, whose I/O hooks are installed before path
- * routing and removed after it. Save paths whose explicit mapping cannot be
- * produced fail closed instead of opening the primary save.
+ * routing and removed after it. If they cannot all be installed, ZIP entries
+ * keep the game's own files while save and loose-file routing still apply.
+ * Save paths whose explicit mapping cannot be produced fail closed instead of
+ * opening the primary save.
  */
 
 #define ML_PATH_HOOK_COUNT 15
@@ -70,6 +72,8 @@ static replace_file_w_t old_replace_file_w;
 static bool hooks_installed;
 static bool path_hooks_live;
 static bool zip_hooks_live;
+/* Every ZIP I/O hook is installed, so routed ZIP entries can be served. */
+static bool zip_io_ready;
 static void *hook_targets[ML_PATH_HOOK_COUNT];
 
 static HANDLE WINAPI create_file_w_hooked(LPCWSTR path, DWORD access, DWORD share,
@@ -172,6 +176,7 @@ static path_route_result_t route_wide(const wchar_t *path, DWORD access, DWORD d
     }
     *mapped = vfs_route_writable_path(path);
     if (*mapped == NULL) *mapped = mods_file_route_read(path, access, disposition);
+    if (!zip_io_ready && vfs_is_zip_path(*mapped)) *mapped = NULL;
     return *mapped != NULL ? PATH_ROUTE_MAPPED : PATH_ROUTE_UNCHANGED;
 }
 
@@ -437,31 +442,39 @@ static BOOL WINAPI replace_file_w_hooked(LPCWSTR replaced_path, LPCWSTR replacem
                               flags, exclude, reserved);
 }
 
+/* Stops ZIP handles before their I/O hooks go away. */
+static void remove_zip_hooks(const ml_hook_spec_t *specs) {
+    zip_io_ready = false;
+    ml_zip_file_close_all();
+    zip_hooks_live = !ml_hook_batch_remove(specs, ML_ZIP_HOOK_COUNT, remove_hook);
+}
+
 bool ml_win32_file_hooks_install(void) {
     ml_hook_spec_t specs[ML_WIN32_HOOK_COUNT];
     bool rollback_complete;
-    bool result = false;
+    bool result;
     if (hooks_installed) return true;
     if (path_hooks_live || zip_hooks_live) return false;
     build_hook_specs(specs, true);
     if (vfs_has_zip_entries()) {
-        if (!ml_zip_file_hooks_prepare()) goto done;
-        result = ml_hook_batch_install(specs, ML_ZIP_HOOK_COUNT, install_hook, remove_hook, &rollback_complete);
-        zip_hooks_live = result || !rollback_complete;
-        if (!result) goto done;
+        if (ml_zip_file_hooks_prepare()) {
+            zip_io_ready = ml_hook_batch_install(specs, ML_ZIP_HOOK_COUNT, install_hook, remove_hook,
+                                                 &rollback_complete);
+            zip_hooks_live = zip_io_ready || !rollback_complete;
+        }
+        if (!zip_io_ready) {
+            ml_zip_file_close_all();
+            ML_LOG_WARN(L"win32-vfs", L"ZIP I/O hooks HOOK_FAILED; ZIP entries keep the game's files");
+        }
     }
     result = ml_hook_batch_install(specs + ML_ZIP_HOOK_COUNT, ML_PATH_HOOK_COUNT,
                                    install_hook, remove_hook, &rollback_complete);
     path_hooks_live = result || !rollback_complete;
-    if (!result && !path_hooks_live && zip_hooks_live) {
-        ml_zip_file_close_all();
-        zip_hooks_live = !ml_hook_batch_remove(specs, ML_ZIP_HOOK_COUNT, remove_hook);
-    }
-done:
+    if (!result && !path_hooks_live && zip_hooks_live) remove_zip_hooks(specs);
     hooks_installed = result;
     ml_log_write(result ? ML_LOG_LEVEL_INFO : ML_LOG_LEVEL_WARN,
                  L"win32-vfs", result ? L"file hooks APPLIED" : L"file hooks HOOK_FAILED");
-    if (!result && (path_hooks_live || zip_hooks_live)) {
+    if ((!result && path_hooks_live) || (zip_hooks_live && !zip_io_ready)) {
         ML_LOG_WARN(L"win32-vfs", L"hook rollback incomplete; uninstall will retry cleanup");
     }
     return result;
@@ -477,10 +490,7 @@ void ml_win32_file_hooks_uninstall(void) {
         return;
     }
     path_hooks_live = false;
-    if (zip_hooks_live) {
-        ml_zip_file_close_all();
-        zip_hooks_live = !ml_hook_batch_remove(specs, ML_ZIP_HOOK_COUNT, remove_hook);
-    }
+    if (zip_hooks_live) remove_zip_hooks(specs);
     if (zip_hooks_live) {
         ML_LOG_WARN(L"win32-vfs", L"one or more file hooks could not be removed");
     }

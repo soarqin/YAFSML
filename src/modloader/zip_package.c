@@ -20,6 +20,7 @@
 typedef struct zip_file_s {
     wchar_t *relative;
     mz_uint archive_index;
+    uint64_t size;
 } zip_file_t;
 
 struct zip_package_s {
@@ -35,6 +36,7 @@ struct zip_package_s {
 };
 
 #define ZIP_STREAM_BUFFER_SIZE 65536
+#define ZIP_STORED_CHUNK_SIZE (1024 * 1024)
 
 #ifdef ML_VFS_FILE_TEST
 static volatile LONG64 test_read_count;
@@ -206,7 +208,7 @@ static bool zip_index(zip_package_t *package, const wchar_t *root) {
             package->capacity = capacity;
         }
         if (relative != key) memmove(key, relative, (wcslen(relative) + 1) * sizeof(*key));
-        package->files[package->count++] = (zip_file_t){ key, file };
+        package->files[package->count++] = (zip_file_t){ key, file, stat.m_uncomp_size };
     }
     if (!found_root) {
         mz_zip_set_last_error(&package->archive, MZ_ZIP_FILE_NOT_FOUND);
@@ -269,12 +271,20 @@ void zip_package_close(zip_package_t *package) {
     ml_mem_free(package);
 }
 
+void zip_package_retain(zip_package_t *package) {
+    InterlockedIncrement(&package->references);
+}
+
 size_t zip_package_count(const zip_package_t *package) {
     return package->count;
 }
 
 const wchar_t *zip_package_relative_path(const zip_package_t *package, size_t file) {
     return package->files[file].relative;
+}
+
+uint64_t zip_package_file_size(const zip_package_t *package, size_t file) {
+    return package->files[file].size;
 }
 
 static unsigned int zip_u16(const unsigned char *p) {
@@ -297,6 +307,8 @@ zip_stream_t *zip_stream_open(zip_package_t *package, size_t file) {
         zip_read(package->file, stat.m_local_header_ofs, header, sizeof(header)) != sizeof(header) ||
         memcmp(header, "PK\x03\x04", 4) != 0 || zip_u16(header + 8) != stat.m_method ||
         (zip_u16(header + 6) & (1 | 32 | 64)) != 0) goto failed;
+    /* As in miniz's extractor, a Deflate entry without compressed data is empty. */
+    if (stat.m_method == MZ_DEFLATED && stat.m_comp_size == 0 && stat.m_uncomp_size == 0) stat.m_method = 0;
     stream = ml_mem_alloc(LPTR, sizeof(*stream) + (stat.m_method == MZ_DEFLATED ? ZIP_STREAM_BUFFER_SIZE : 0));
     if (stream == NULL) { error = ERROR_NOT_ENOUGH_MEMORY; goto failed; }
     stream->stat = stat;
@@ -313,7 +325,7 @@ zip_stream_t *zip_stream_open(zip_package_t *package, size_t file) {
         error = ERROR_NOT_ENOUGH_MEMORY;
         goto failed;
     }
-    InterlockedIncrement(&package->references);
+    zip_package_retain(package);
     vfs_recursion_guard_leave();
     ReleaseSRWLockExclusive(&package->lock);
     return stream;
@@ -362,10 +374,15 @@ static bool zip_stream_decode(zip_stream_t *stream, void *buffer, size_t size, s
     unsigned char extra;
     *read = 0;
     if (stream->stat.m_method == 0) {
-        if (!zip_stream_input(stream, stream->position, buffer, size)) return false;
-        stream->crc = mz_crc32(stream->crc, buffer, size);
-        stream->position += size;
-        *read = size;
+        /* Bounded reads keep one large request from holding the archive lock. */
+        while (*read < size) {
+            unsigned char *target = (unsigned char *)buffer + *read;
+            size_t chunk = size - *read < ZIP_STORED_CHUNK_SIZE ? size - *read : ZIP_STORED_CHUNK_SIZE;
+            if (!zip_stream_input(stream, stream->position, target, chunk)) return false;
+            stream->crc = mz_crc32(stream->crc, target, chunk);
+            stream->position += chunk;
+            *read += chunk;
+        }
         if (stream->position == stream->stat.m_uncomp_size &&
             stream->crc != stream->stat.m_crc32) return zip_stream_error(stream, ERROR_CRC);
         return true;
@@ -394,10 +411,10 @@ static bool zip_stream_decode(zip_stream_t *stream, void *buffer, size_t size, s
         stream->position += produced;
         *read += produced;
         if (status == MZ_STREAM_END) {
+            /* The size and CRC validate the output. Compressed bytes after the
+             * end marker are ignored, as by miniz's extractor. */
             stream->ended = true;
-            if (stream->position != stream->stat.m_uncomp_size ||
-                stream->compressed_loaded - stream->inflater.avail_in != stream->stat.m_comp_size)
-                return zip_stream_error(stream, ERROR_INVALID_DATA);
+            if (stream->position != stream->stat.m_uncomp_size) return zip_stream_error(stream, ERROR_INVALID_DATA);
             if (stream->crc != stream->stat.m_crc32) return zip_stream_error(stream, ERROR_CRC);
         } else if ((status != MZ_OK && status != MZ_BUF_ERROR) ||
                    (produced == 0 && before_in == stream->inflater.avail_in)) {

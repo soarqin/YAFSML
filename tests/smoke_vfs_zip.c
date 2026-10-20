@@ -208,7 +208,11 @@ static int test_failed_read_retry(const wchar_t *path) {
     vfs_reset_lookup_caches();
     for (size_t i = 0; i < 2; i++) {
         vfs_file_t *stream = vfs_file_open(vfs_lookup(L"retry.bin"));
+        uint64_t archive_reads = zip_package_test_read_count();
         EXPECT_NOT_NULL(stream);
+        /* Like a disk file, moving the pointer reads nothing; the read fails. */
+        EXPECT_TRUE(vfs_file_seek(stream, 2, FILE_BEGIN, NULL));
+        EXPECT_EQ(zip_package_test_read_count(), archive_reads);
         EXPECT_TRUE(!vfs_file_read(stream, data, sizeof(data), &read));
         EXPECT_EQ(GetLastError(), ERROR_CRC);
         vfs_file_close(stream);
@@ -324,10 +328,11 @@ static int test_large_streams(const wchar_t *path) {
         }
         EXPECT_TRUE(vfs_file_read(stream, buffer, 1, &read));
         EXPECT_EQ(read, 0);
+        /* Another file of the entry reads the same decoded copy. */
+        uint64_t archive_reads = zip_package_test_read_count();
         EXPECT_TRUE(vfs_file_read(other, buffer, 37, &read));
         EXPECT_TRUE(memcmp(buffer, expected, 37) == 0);
         vfs_file_close(other);
-        uint64_t archive_reads = zip_package_test_read_count();
         for (size_t i = 0; i < 25; i++) {
             random = random * 1664525 + 1013904223;
             size_t offset = random % (length - 70001);
@@ -353,7 +358,16 @@ static int test_large_streams(const wchar_t *path) {
         EXPECT_EQ(read, 0);
         vfs_file_close(stream);
 
+        /* The decoded copy outlives its files. */
+        stream = vfs_file_open(name);
+        EXPECT_NOT_NULL(stream);
+        EXPECT_TRUE(vfs_file_read(stream, buffer, 70001, &read));
+        EXPECT_TRUE(memcmp(buffer, expected, read) == 0);
+        EXPECT_EQ(zip_package_test_read_count(), archive_reads);
+        vfs_file_close(stream);
+
         /* BND4/EBL consumes the same large entry with bounded buffers. */
+        uint64_t memory_before = vfs_file_test_memory_used();
         allocated_bytes = 0;
         track_allocations = true;
         stream = vfs_file_open(vfs_uid_for_streaming(vfs_virtual_to_uid(name)));
@@ -367,12 +381,27 @@ static int test_large_streams(const wchar_t *path) {
         }
         track_allocations = false;
         EXPECT_TRUE(allocated_bytes < 256 * 1024);
-        EXPECT_EQ(vfs_file_test_memory_used(), 0);
+        EXPECT_EQ(vfs_file_test_memory_used(), memory_before);
         EXPECT_TRUE(vfs_file_test_cache_handle(stream) == INVALID_HANDLE_VALUE);
         vfs_file_close(stream);
+
+        /* One request larger than the stored-read chunk still validates the CRC. */
+        {
+            unsigned char *whole = malloc(length);
+            EXPECT_NOT_NULL(whole);
+            stream = vfs_file_open(vfs_uid_for_streaming(vfs_virtual_to_uid(name)));
+            EXPECT_NOT_NULL(stream);
+            EXPECT_TRUE(vfs_file_read(stream, whole, length, &read));
+            EXPECT_EQ(read, length);
+            EXPECT_TRUE(memcmp(whole, expected, length) == 0);
+            vfs_file_close(stream);
+            free(whole);
+        }
     }
     EXPECT_TRUE(read_matches(vfs_lookup(L"empty.bin"), ""));
-    /* Open files remain readable after the index releases its package reference. */
+    /* Open files remain readable after the index releases its package
+     * reference, even when their entry has yet to be decoded. */
+    vfs_file_drop_caches();
     vfs_file_t *retained = vfs_file_open(L"large.bin");
     EXPECT_NOT_NULL(retained);
     vfs_uninit();
@@ -380,6 +409,7 @@ static int test_large_streams(const wchar_t *path) {
     EXPECT_TRUE(vfs_file_read(retained, buffer, 70001, &read));
     EXPECT_TRUE(memcmp(buffer, expected, read) == 0);
     vfs_file_close(retained);
+    EXPECT_EQ(vfs_file_test_memory_used(), 0);
     EXPECT_TRUE(SetEnvironmentVariableW(L"TEMP", temp_length == 0 ? NULL : old_temp));
     EXPECT_TRUE(SetEnvironmentVariableW(L"TMP", tmp_length == 0 ? NULL : old_tmp));
     free(buffer);
@@ -387,104 +417,244 @@ static int test_large_streams(const wchar_t *path) {
     return 0;
 }
 
+/* Opens entry `entry` (a.bin, b.bin, ...) of the cache fixture and checks its
+ * first byte; the read decodes the entry unless a cache already holds it. */
+static vfs_file_t *open_cached(size_t entry, const unsigned char *contents, size_t length) {
+    wchar_t name[] = L"a.bin";
+    unsigned char byte;
+    size_t received;
+    vfs_file_t *file;
+    name[0] = (wchar_t)(L'a' + entry);
+    file = vfs_file_open(name);
+    if (file != NULL && (!vfs_file_read(file, &byte, 1, &received) || received != 1 ||
+                         byte != contents[entry * length])) {
+        vfs_file_close(file);
+        file = NULL;
+    }
+    return file;
+}
+
+/* Counts the temporary cache files of this process. */
+static size_t count_cache_files(void) {
+    wchar_t pattern[MAX_PATH];
+    WIN32_FIND_DATAW data;
+    HANDLE found;
+    size_t count = 0;
+    DWORD length = GetTempPathW(MAX_PATH, pattern);
+    if (length == 0 || length >= MAX_PATH) return SIZE_MAX;
+    _snwprintf_s(pattern + length, MAX_PATH - length, _TRUNCATE, L"YAFSML-zip-%08lx-*.tmp", GetCurrentProcessId());
+    found = FindFirstFileW(pattern, &data);
+    if (found == INVALID_HANDLE_VALUE) return 0;
+    do count++; while (FindNextFileW(found, &data));
+    FindClose(found);
+    return count;
+}
+
 static int test_cache_backends(const wchar_t *path) {
     const size_t length = 65536 + 39;
-    unsigned char *contents = malloc(length), buffer[97];
+    unsigned char *contents = malloc(length * 4), buffer[97];
     mz_zip_archive archive = { 0 };
     FILE *output;
     size_t received;
-    wchar_t cache_path[32768];
+    uint64_t archive_reads, position;
+    wchar_t first_path[32768], second_path[32768];
+    vfs_file_t *files[4];
+    HANDLE disk;
     EXPECT_NOT_NULL(contents);
-    for (size_t i = 0; i < length; i++) contents[i] = (unsigned char)(i * 31 + i / 29);
+    for (size_t i = 0; i < length * 4; i++) contents[i] = (unsigned char)(i * 31 + i / 29);
     output = _wfopen(path, L"wb");
     EXPECT_NOT_NULL(output);
     EXPECT_TRUE(mz_zip_writer_init_cfile(&archive, output, 0));
-    EXPECT_TRUE(mz_zip_writer_add_mem(&archive, "regulation.bin", contents, length, 6));
+    for (size_t i = 0; i < 4; i++) {
+        char name[] = "a.bin";
+        name[0] = (char)('a' + i);
+        EXPECT_TRUE(mz_zip_writer_add_mem(&archive, name, contents + i * length, length, 6));
+    }
     EXPECT_TRUE(mz_zip_writer_finalize_archive(&archive));
     EXPECT_TRUE(mz_zip_writer_end(&archive));
     EXPECT_EQ(fclose(output), 0);
     vfs_init();
     EXPECT_TRUE(vfs_add_package(path));
     EXPECT_EQ(vfs_file_test_memory_used(), 0);
+
+    /* Opening and moving the pointer decode nothing; the next read fills the cache. */
+    archive_reads = zip_package_test_read_count();
+    files[0] = vfs_file_open(L"a.bin");
+    EXPECT_NOT_NULL(files[0]);
+    EXPECT_TRUE(vfs_file_seek(files[0], -1, FILE_END, &position));
+    EXPECT_EQ(position, length - 1);
+    EXPECT_EQ(zip_package_test_read_count(), archive_reads);
+    EXPECT_EQ(vfs_file_test_memory_used(), 0);
+    EXPECT_TRUE(vfs_file_read(files[0], buffer, sizeof(buffer), &received));
+    EXPECT_EQ(received, 1);
+    EXPECT_EQ(buffer[0], contents[length - 1]);
+    EXPECT_EQ(vfs_file_test_memory_used(), length);
+    /* Every file of the entry shares that copy, which outlives them. */
+    archive_reads = zip_package_test_read_count();
+    files[1] = open_cached(0, contents, length);
+    EXPECT_NOT_NULL(files[1]);
+    vfs_file_close(files[0]);
+    vfs_file_close(files[1]);
+    files[0] = open_cached(0, contents, length);
+    EXPECT_NOT_NULL(files[0]);
+    vfs_file_close(files[0]);
+    EXPECT_EQ(zip_package_test_read_count(), archive_reads);
+    EXPECT_EQ(vfs_file_test_memory_used(), length);
+
+    /* With room for two copies, the idle one makes way for entries in use, and
+     * an entry that finds no room left spills to a temporary file. */
     vfs_file_test_limits(length, length * 2);
-    vfs_file_t *files[3];
-    for (size_t i = 0; i < 3; i++) {
-        files[i] = vfs_file_open(L"regulation.bin");
-        EXPECT_NOT_NULL(files[i]);
-        EXPECT_TRUE(vfs_file_read(files[i], buffer, 1, &received));
-        EXPECT_EQ(received, 1);
-        EXPECT_EQ(buffer[0], contents[0]);
-    }
+    files[1] = open_cached(1, contents, length);
+    files[2] = open_cached(2, contents, length);
+    EXPECT_NOT_NULL(files[1]);
+    EXPECT_NOT_NULL(files[2]);
     EXPECT_EQ(vfs_file_test_memory_used(), length * 2);
-    EXPECT_TRUE(vfs_file_test_cache_handle(files[0]) == INVALID_HANDLE_VALUE);
     EXPECT_TRUE(vfs_file_test_cache_handle(files[1]) == INVALID_HANDLE_VALUE);
-    EXPECT_TRUE(vfs_file_test_cache_handle(files[2]) != INVALID_HANDLE_VALUE);
-    EXPECT_TRUE(GetFinalPathNameByHandleW(vfs_file_test_cache_handle(files[2]), cache_path, 32768, 0) != 0);
-    uint64_t archive_reads = zip_package_test_read_count();
+    EXPECT_TRUE(vfs_file_test_cache_handle(files[2]) == INVALID_HANDLE_VALUE);
+    archive_reads = zip_package_test_read_count();
+    files[0] = open_cached(0, contents, length);
+    EXPECT_NOT_NULL(files[0]);
+    EXPECT_TRUE(zip_package_test_read_count() != archive_reads);
+    EXPECT_EQ(vfs_file_test_memory_used(), length * 2);
+    disk = vfs_file_test_cache_handle(files[0]);
+    EXPECT_TRUE(disk != INVALID_HANDLE_VALUE);
+    EXPECT_TRUE(GetFinalPathNameByHandleW(disk, first_path, 32768, 0) != 0);
+    archive_reads = zip_package_test_read_count();
     for (size_t i = 0; i < 3; i++) {
         for (size_t step = 0; step < 250; step++) {
             size_t offset = (step * 1567) % (length - sizeof(buffer));
             EXPECT_TRUE(vfs_file_seek(files[i], (int64_t)offset, FILE_BEGIN, NULL));
             EXPECT_TRUE(vfs_file_read(files[i], buffer, sizeof(buffer), &received));
             EXPECT_EQ(received, sizeof(buffer));
-            EXPECT_TRUE(memcmp(buffer, contents + offset, received) == 0);
+            EXPECT_TRUE(memcmp(buffer, contents + i * length + offset, received) == 0);
         }
     }
     EXPECT_EQ(zip_package_test_read_count(), archive_reads);
+    /* The temporary file serves every later file of the entry. */
     vfs_file_close(files[0]);
-    EXPECT_EQ(vfs_file_test_memory_used(), length);
-    files[0] = vfs_file_open(L"regulation.bin");
+    files[0] = open_cached(0, contents, length);
+    files[3] = open_cached(0, contents, length);
     EXPECT_NOT_NULL(files[0]);
-    EXPECT_TRUE(vfs_file_read(files[0], buffer, 1, &received));
+    EXPECT_NOT_NULL(files[3]);
+    EXPECT_TRUE(vfs_file_test_cache_handle(files[0]) == disk);
+    EXPECT_TRUE(vfs_file_test_cache_handle(files[3]) == disk);
+    EXPECT_EQ(zip_package_test_read_count(), archive_reads);
+    EXPECT_EQ(count_cache_files(), 1);
+    vfs_file_close(files[3]);
+
+    /* Idle copies make way least recently released first. */
+    vfs_file_close(files[1]);
+    vfs_file_close(files[2]);
+    files[3] = open_cached(3, contents, length);
+    EXPECT_NOT_NULL(files[3]);
+    EXPECT_TRUE(vfs_file_test_cache_handle(files[3]) == INVALID_HANDLE_VALUE);
+    archive_reads = zip_package_test_read_count();
+    files[2] = open_cached(2, contents, length);
+    EXPECT_NOT_NULL(files[2]);
+    EXPECT_EQ(zip_package_test_read_count(), archive_reads);
+    files[1] = open_cached(1, contents, length);
+    EXPECT_NOT_NULL(files[1]);
+    EXPECT_TRUE(zip_package_test_read_count() != archive_reads);
+    EXPECT_TRUE(vfs_file_test_cache_handle(files[1]) != INVALID_HANDLE_VALUE);
+    EXPECT_TRUE(GetFinalPathNameByHandleW(vfs_file_test_cache_handle(files[1]), second_path, 32768, 0) != 0);
     EXPECT_EQ(vfs_file_test_memory_used(), length * 2);
-    for (size_t i = 0; i < 3; i++) vfs_file_close(files[i]);
+    EXPECT_EQ(count_cache_files(), 2);
+
+    /* Dropping the caches frees the unused ones and leaves the rest to their files. */
+    for (size_t i = 1; i < 4; i++) vfs_file_close(files[i]);
+    vfs_uninit();
     EXPECT_EQ(vfs_file_test_memory_used(), 0);
-    EXPECT_EQ(GetFileAttributesW(cache_path), INVALID_FILE_ATTRIBUTES);
+    EXPECT_EQ(GetFileAttributesW(second_path), INVALID_FILE_ATTRIBUTES);
+    EXPECT_TRUE(vfs_file_seek(files[0], 5, FILE_BEGIN, NULL));
+    EXPECT_TRUE(vfs_file_read(files[0], buffer, sizeof(buffer), &received));
+    EXPECT_EQ(received, sizeof(buffer));
+    EXPECT_TRUE(memcmp(buffer, contents + 5, received) == 0);
+    EXPECT_TRUE(GetFileAttributesW(first_path) != INVALID_FILE_ATTRIBUTES);
+    vfs_file_close(files[0]);
+    EXPECT_EQ(GetFileAttributesW(first_path), INVALID_FILE_ATTRIBUTES);
+    EXPECT_EQ(count_cache_files(), 0);
 
     /* The size threshold spills even when there is room in the total budget. */
+    vfs_init();
+    EXPECT_TRUE(vfs_add_package(path));
     vfs_file_test_limits(length - 1, length * 2);
-    files[0] = vfs_file_open(L"regulation.bin");
+    files[0] = open_cached(0, contents, length);
     EXPECT_NOT_NULL(files[0]);
-    EXPECT_TRUE(vfs_file_read(files[0], buffer, sizeof(buffer), &received));
     EXPECT_TRUE(vfs_file_test_cache_handle(files[0]) != INVALID_HANDLE_VALUE);
     EXPECT_EQ(vfs_file_test_memory_used(), 0);
     vfs_file_close(files[0]);
 
     /* A failed memory allocation releases its reservation and falls back to disk. */
     vfs_file_test_limits(length, length);
-    files[0] = vfs_file_open(L"regulation.bin");
-    EXPECT_NOT_NULL(files[0]);
+    files[1] = vfs_file_open(L"b.bin");
+    EXPECT_NOT_NULL(files[1]);
     allocation_failure_after = 1;
-    EXPECT_TRUE(vfs_file_read(files[0], buffer, sizeof(buffer), &received));
+    EXPECT_TRUE(vfs_file_read(files[1], buffer, sizeof(buffer), &received));
     allocation_failure_after = 0;
+    EXPECT_TRUE(memcmp(buffer, contents + length, received) == 0);
     EXPECT_EQ(vfs_file_test_memory_used(), 0);
-    EXPECT_TRUE(vfs_file_test_cache_handle(files[0]) != INVALID_HANDLE_VALUE);
-    vfs_file_close(files[0]);
+    EXPECT_TRUE(vfs_file_test_cache_handle(files[1]) != INVALID_HANDLE_VALUE);
+    vfs_file_close(files[1]);
+    EXPECT_EQ(count_cache_files(), 2);
 
-    /* The same entry from BND4/EBL stays sequential, with no cache allocation. */
-    const wchar_t *uid = vfs_virtual_to_uid(L"regulation.bin");
+    /* Idle temporary files keep within their limit, oldest out first, and one
+     * that exceeds it alone goes with its last file. */
+    files[0] = open_cached(0, contents, length);
+    files[1] = open_cached(1, contents, length);
+    EXPECT_NOT_NULL(files[0]);
+    EXPECT_NOT_NULL(files[1]);
+    disk = vfs_file_test_cache_handle(files[1]);
+    EXPECT_TRUE(GetFinalPathNameByHandleW(vfs_file_test_cache_handle(files[0]), first_path, 32768, 0) != 0);
+    vfs_file_test_idle_disk_limit(length);
+    vfs_file_close(files[0]);
+    vfs_file_close(files[1]);
+    EXPECT_EQ(GetFileAttributesW(first_path), INVALID_FILE_ATTRIBUTES);
+    EXPECT_EQ(count_cache_files(), 1);
+    archive_reads = zip_package_test_read_count();
+    files[1] = open_cached(1, contents, length);
+    EXPECT_NOT_NULL(files[1]);
+    EXPECT_TRUE(vfs_file_test_cache_handle(files[1]) == disk);
+    EXPECT_EQ(zip_package_test_read_count(), archive_reads);
+    vfs_file_test_idle_disk_limit(length - 1);
+    vfs_file_close(files[1]);
+    EXPECT_EQ(count_cache_files(), 0);
+    vfs_file_test_idle_disk_limit(1024 * 1024 * 1024);
+
+    /* An entry read from BND4/EBL stays sequential, with no cache at all. */
+    const wchar_t *uid = vfs_virtual_to_uid(L"c.bin");
     const wchar_t *stream_uid = vfs_uid_for_streaming(uid);
+    const unsigned char *expected = contents + length * 2;
     EXPECT_NOT_NULL(stream_uid);
     EXPECT_TRUE(stream_uid != uid);
     EXPECT_TRUE(vfs_lookup(stream_uid) == stream_uid);
     EXPECT_TRUE(vfs_uid_to_path(stream_uid) == stream_uid);
     vfs_file_test_limits(0, 0);
-    files[0] = vfs_file_open(stream_uid);
-    EXPECT_NOT_NULL(files[0]);
-    EXPECT_TRUE(vfs_file_test_is_stream(files[0]));
-    EXPECT_TRUE(vfs_file_read(files[0], buffer, sizeof(buffer), &received));
-    EXPECT_TRUE(memcmp(buffer, contents, received) == 0);
-    EXPECT_TRUE(!vfs_file_seek(files[0], 0, FILE_BEGIN, NULL));
+    files[2] = vfs_file_open(stream_uid);
+    EXPECT_NOT_NULL(files[2]);
+    EXPECT_TRUE(vfs_file_test_is_stream(files[2]));
+    EXPECT_TRUE(vfs_file_read(files[2], buffer, sizeof(buffer), &received));
+    EXPECT_TRUE(memcmp(buffer, expected, received) == 0);
+    EXPECT_TRUE(!vfs_file_seek(files[2], 0, FILE_BEGIN, NULL));
     EXPECT_EQ(GetLastError(), ERROR_NOT_SUPPORTED);
-    EXPECT_TRUE(!vfs_file_read_at(files[0], 0, buffer, sizeof(buffer), &received));
+    EXPECT_TRUE(!vfs_file_read_at(files[2], 0, buffer, sizeof(buffer), &received));
     EXPECT_EQ(GetLastError(), ERROR_NOT_SUPPORTED);
-    EXPECT_TRUE(vfs_file_read(files[0], buffer, sizeof(buffer), &received));
-    EXPECT_TRUE(memcmp(buffer, contents + sizeof(buffer), received) == 0);
-    EXPECT_TRUE(vfs_file_test_cache_handle(files[0]) == INVALID_HANDLE_VALUE);
+    /* A read past the end is end of file, as on disk, not a skip. */
+    EXPECT_TRUE(vfs_file_read_at(files[2], length + 7, buffer, sizeof(buffer), &received));
+    EXPECT_EQ(received, 0);
+    EXPECT_TRUE(vfs_file_read(files[2], buffer, sizeof(buffer), &received));
+    EXPECT_TRUE(memcmp(buffer, expected + sizeof(buffer), received) == 0);
+    EXPECT_TRUE(vfs_file_test_cache_handle(files[2]) == INVALID_HANDLE_VALUE);
     EXPECT_EQ(vfs_file_test_memory_used(), 0);
+    EXPECT_EQ(count_cache_files(), 0);
+    vfs_file_close(files[2]);
+    /* Unloading deletes the idle temporary files. */
+    files[0] = open_cached(0, contents, length);
+    EXPECT_NOT_NULL(files[0]);
     vfs_file_close(files[0]);
+    EXPECT_EQ(count_cache_files(), 1);
     vfs_file_test_limits(32 * 1024 * 1024, 128 * 1024 * 1024);
     vfs_uninit();
+    EXPECT_EQ(count_cache_files(), 0);
     free(contents);
     return 0;
 }
@@ -497,7 +667,8 @@ static int cache_child(HANDLE ready, HANDLE finish) {
     vfs_init();
     EXPECT_TRUE(vfs_add_package(archive));
     vfs_file_test_limits(0, 0);
-    vfs_file_t *file = vfs_file_open(L"regulation.bin");
+    /* The archive is the one test_cache_backends left behind. */
+    vfs_file_t *file = vfs_file_open(L"a.bin");
     EXPECT_NOT_NULL(file);
     EXPECT_TRUE(vfs_file_read(file, &byte, 1, &received));
     EXPECT_TRUE(vfs_file_test_cache_handle(file) != INVALID_HANDLE_VALUE);
@@ -614,6 +785,60 @@ static int test_deflate_integrity(const wchar_t *path) {
     return 0;
 }
 
+/* Archives that miniz's extractor accepted: a Deflate entry without compressed
+ * data, and compressed bytes declared after the Deflate end marker. */
+static int test_lenient_deflate(const wchar_t *path) {
+    char contents[1024];
+    fixture_entry_t entries[] = { { "empty.bin", "", 0 }, { "padded.bin", contents, 6 } };
+    mz_zip_archive archive = { 0 };
+    mz_zip_archive_file_stat stat[2];
+    mz_uint64 central[2];
+    FILE *file;
+    memset(contents, 'p', sizeof(contents) - 1);
+    contents[sizeof(contents) - 1] = '\0';
+    EXPECT_EQ(write_zip(path, entries, 2, 0), 0);
+    file = _wfopen(path, L"r+b");
+    EXPECT_NOT_NULL(file);
+    EXPECT_TRUE(mz_zip_reader_init_cfile(&archive, file, 0, 0));
+    for (mz_uint i = 0; i < 2; i++) {
+        EXPECT_TRUE(mz_zip_reader_file_stat(&archive, i, &stat[i]));
+        central[i] = archive.m_central_directory_file_ofs + stat[i].m_central_dir_ofs;
+    }
+    EXPECT_TRUE(mz_zip_reader_end(&archive));
+    EXPECT_EQ(stat[0].m_method, 0);
+    EXPECT_EQ(stat[1].m_method, MZ_DEFLATED);
+    {
+        const uint16_t deflated = MZ_DEFLATED;
+        const uint32_t padded_size = (uint32_t)stat[1].m_comp_size + 1;
+        EXPECT_EQ(_fseeki64(file, (mz_int64)stat[0].m_local_header_ofs + 8, SEEK_SET), 0);
+        EXPECT_EQ(fwrite(&deflated, sizeof(deflated), 1, file), 1);
+        EXPECT_EQ(_fseeki64(file, (mz_int64)central[0] + 10, SEEK_SET), 0);
+        EXPECT_EQ(fwrite(&deflated, sizeof(deflated), 1, file), 1);
+        EXPECT_EQ(_fseeki64(file, (mz_int64)central[1] + 20, SEEK_SET), 0);
+        EXPECT_EQ(fwrite(&padded_size, sizeof(padded_size), 1, file), 1);
+    }
+    EXPECT_EQ(fclose(file), 0);
+    vfs_init();
+    EXPECT_TRUE(vfs_add_package(path));
+    for (size_t variant = 0; variant < 2; variant++) {
+        const wchar_t *uid = vfs_virtual_to_uid(L"empty.bin");
+        EXPECT_TRUE(read_matches(variant == 0 ? uid : vfs_uid_for_streaming(uid), ""));
+        uid = vfs_virtual_to_uid(L"padded.bin");
+        {
+            char data[sizeof(contents)];
+            size_t read;
+            vfs_file_t *stream = vfs_file_open(variant == 0 ? uid : vfs_uid_for_streaming(uid));
+            EXPECT_NOT_NULL(stream);
+            EXPECT_TRUE(vfs_file_read(stream, data, sizeof(data), &read));
+            EXPECT_EQ(read, sizeof(contents) - 1);
+            EXPECT_TRUE(memcmp(data, contents, read) == 0);
+            vfs_file_close(stream);
+        }
+    }
+    vfs_uninit();
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc == 4 && strcmp(argv[1], "--cache-child") == 0)
         return cache_child((HANDLE)(uintptr_t)_strtoui64(argv[2], NULL, 10),
@@ -715,6 +940,9 @@ int main(int argc, char **argv) {
     EXPECT_NOT_NULL(uid);
     EXPECT_TRUE(vfs_add_package(spec));
     EXPECT_TRUE(read_matches(vfs_uid_to_path(uid), "subroot compressed"));
+    /* An override re-points the entry, so its decoded copy must not survive. */
+    EXPECT_TRUE(vfs_add_package(archive_path));
+    EXPECT_TRUE(read_matches(vfs_uid_to_path(uid), "base stored"));
     EXPECT_TRUE(vfs_add_package(loose));
     EXPECT_STREQ_W(vfs_uid_to_path(uid), loose_file);
     EXPECT_TRUE(read_matches(vfs_lookup(L"parts/base.bin"), "loose"));
@@ -781,6 +1009,7 @@ int main(int argc, char **argv) {
     EXPECT_EQ(test_cache_backends(invalid), 0);
     EXPECT_EQ(test_process_cache_cleanup(invalid), 0);
     EXPECT_EQ(test_deflate_integrity(invalid), 0);
+    EXPECT_EQ(test_lenient_deflate(invalid), 0);
     EXPECT_TRUE(DeleteFileW(invalid));
     EXPECT_TRUE(DeleteFileW(archive_path));
     EXPECT_TRUE(DeleteFileW(loose_file));

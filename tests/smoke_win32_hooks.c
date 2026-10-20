@@ -60,6 +60,72 @@ static HANDLE WINAPI competing_create_file_hook(LPCWSTR path, DWORD access, DWOR
     return competing_create_file(path, access, share, security, disposition, flags, template_file);
 }
 
+typedef BOOL (WINAPI *test_read_file_t)(HANDLE, LPVOID, DWORD, LPDWORD, LPOVERLAPPED);
+static test_read_file_t competing_read_file;
+static BOOL WINAPI competing_read_file_hook(HANDLE file, LPVOID buffer, DWORD size, LPDWORD read,
+                                            LPOVERLAPPED overlapped) {
+    return competing_read_file(file, buffer, size, read, overlapped);
+}
+
+typedef struct size_hammer_s {
+    HANDLE file;
+    volatile LONG stop;
+    volatile LONG failures;
+} size_hammer_t;
+
+static DWORD WINAPI size_hammer(void *parameter) {
+    size_hammer_t *context = parameter;
+    LARGE_INTEGER size;
+    while (!ReadAcquire(&context->stop)) {
+        if (!GetFileSizeEx(context->file, &size)) InterlockedIncrement(&context->failures);
+    }
+    return 0;
+}
+
+/* The pattern of MinHook toggling a hook: suspend every other thread, wait
+ * until each has stopped, close a handle, then resume them. */
+static DWORD WINAPI freeze_and_close(void *parameter) {
+    HANDLE *threads = parameter;
+    for (int i = 0; i < 500; i++) {
+        HANDLE event;
+        for (size_t t = 0; t < 4; t++) {
+            CONTEXT context = { 0 };
+            context.ContextFlags = CONTEXT_CONTROL;
+            if (SuspendThread(threads[t]) == (DWORD)-1 || !GetThreadContext(threads[t], &context)) return 1;
+        }
+        event = CreateEventW(NULL, TRUE, FALSE, NULL);
+        if (event == NULL || !CloseHandle(event)) return 1;
+        for (size_t t = 0; t < 4; t++) ResumeThread(threads[t]);
+    }
+    return 0;
+}
+
+/* Closing any other handle must not wait for a thread suspended inside a ZIP
+ * handle operation. */
+static int test_frozen_threads(const wchar_t *uid) {
+    size_hammer_t context = { 0 };
+    HANDLE threads[4], freezer;
+    DWORD code;
+    context.file = CreateFileW(uid, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    EXPECT_TRUE(context.file != INVALID_HANDLE_VALUE);
+    for (size_t i = 0; i < 4; i++) {
+        threads[i] = CreateThread(NULL, 0, size_hammer, &context, 0, NULL);
+        EXPECT_NOT_NULL(threads[i]);
+    }
+    freezer = CreateThread(NULL, 0, freeze_and_close, threads, 0, NULL);
+    EXPECT_NOT_NULL(freezer);
+    EXPECT_EQ(WaitForSingleObject(freezer, 20000), WAIT_OBJECT_0);
+    EXPECT_TRUE(GetExitCodeThread(freezer, &code));
+    EXPECT_EQ(code, 0);
+    InterlockedExchange(&context.stop, TRUE);
+    EXPECT_EQ(WaitForMultipleObjects(4, threads, TRUE, 10000), WAIT_OBJECT_0);
+    for (size_t i = 0; i < 4; i++) EXPECT_TRUE(CloseHandle(threads[i]));
+    EXPECT_TRUE(CloseHandle(freezer));
+    EXPECT_EQ(context.failures, 0);
+    EXPECT_TRUE(CloseHandle(context.file));
+    return 0;
+}
+
 static int compare_sync_io(const wchar_t *native_path, HANDLE stream) {
     HANDLE native = CreateFileW(native_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
     LARGE_INTEGER distance, native_position, zip_position;
@@ -231,19 +297,25 @@ static int test_forward_handle(const wchar_t *uid, const char *contents) {
     overlapped.Offset = 0;
     EXPECT_TRUE(!ReadFile(file, data, sizeof(data), &received, &overlapped));
     EXPECT_EQ(GetLastError(), ERROR_NOT_SUPPORTED);
+    /* The completion reports the same error as the call. */
+    EXPECT_TRUE(!GetOverlappedResult(file, &overlapped, &received, FALSE));
+    EXPECT_EQ(GetLastError(), ERROR_NOT_SUPPORTED);
     EXPECT_TRUE(CloseHandle(file));
     apc_calls = 0;
     return 0;
 }
 
-static int test_cache_failure(const wchar_t *uid, const wchar_t *invalid_temp) {
+static int test_cache_failure(const wchar_t *uid, const wchar_t *invalid_temp, const char *contents) {
     wchar_t old_temp[32768], old_tmp[32768];
     DWORD temp_length = GetEnvironmentVariableW(L"TEMP", old_temp, 32768);
     DWORD tmp_length = GetEnvironmentVariableW(L"TMP", old_tmp, 32768);
     DWORD received;
     char byte;
     OVERLAPPED overlapped = { 0 };
-    HANDLE file = CreateFileW(uid, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    HANDLE file, retry;
+    /* Earlier reads left the entry decoded. */
+    vfs_file_drop_caches();
+    file = CreateFileW(uid, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
     EXPECT_TRUE(file != INVALID_HANDLE_VALUE);
     vfs_file_test_limits(0, 0);
     EXPECT_TRUE(SetEnvironmentVariableW(L"TEMP", invalid_temp));
@@ -253,10 +325,19 @@ static int test_cache_failure(const wchar_t *uid, const wchar_t *invalid_temp) {
     EXPECT_EQ(GetLastError(), ERROR_PATH_NOT_FOUND);
     EXPECT_EQ(received, 0);
     EXPECT_EQ(vfs_file_test_memory_used(), 0);
-    EXPECT_TRUE(CloseHandle(file));
     EXPECT_TRUE(SetEnvironmentVariableW(L"TEMP", temp_length == 0 ? NULL : old_temp));
     EXPECT_TRUE(SetEnvironmentVariableW(L"TMP", tmp_length == 0 ? NULL : old_tmp));
     vfs_file_test_limits(32 * 1024 * 1024, 128 * 1024 * 1024);
+    /* The failed handle keeps its error, while another handle decodes again. */
+    retry = CreateFileW(uid, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    EXPECT_TRUE(retry != INVALID_HANDLE_VALUE);
+    EXPECT_TRUE(ReadFile(retry, &byte, 1, &received, &overlapped));
+    EXPECT_EQ(received, 1);
+    EXPECT_EQ(byte, contents[1]);
+    EXPECT_TRUE(!ReadFile(file, &byte, 1, &received, &overlapped));
+    EXPECT_EQ(GetLastError(), ERROR_PATH_NOT_FOUND);
+    EXPECT_TRUE(CloseHandle(retry));
+    EXPECT_TRUE(CloseHandle(file));
     return 0;
 }
 
@@ -309,7 +390,43 @@ static int test_zip_stream_hooks(const wchar_t *directory) {
         EXPECT_EQ(MH_DisableHook(ml_win32_file_hooks_test_target("ReadFile")), MH_ERROR_NOT_CREATED);
         EXPECT_EQ(MH_RemoveHook(target), MH_OK);
     }
+    /* Without every ZIP I/O hook, path routing still installs and a game path
+     * routed to a ZIP entry keeps the game's own file. */
+    {
+        void *target = ml_win32_file_hooks_test_target("ReadFile");
+        const wchar_t *saved_route = read_route_path, *saved_target = route_target;
+        wchar_t final_path[MAX_PATH];
+        EXPECT_EQ(MH_CreateHook(target, competing_read_file_hook, (void **)&competing_read_file), MH_OK);
+        EXPECT_EQ(MH_EnableHook(target), MH_OK);
+        EXPECT_TRUE(ml_win32_file_hooks_install());
+        read_route_path = native_path;
+        route_target = uid;
+        file = CreateFileW(native_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+        EXPECT_TRUE(file != INVALID_HANDLE_VALUE);
+        EXPECT_TRUE(GetFinalPathNameByHandleW(file, final_path, MAX_PATH, 0) != 0);
+        EXPECT_TRUE(CloseHandle(file));
+        read_route_path = saved_route;
+        route_target = saved_target;
+        ml_win32_file_hooks_uninstall();
+        EXPECT_EQ(MH_RemoveHook(target), MH_OK);
+    }
     EXPECT_TRUE(ml_win32_file_hooks_install());
+
+    /* As for a read-only disk file, MAXIMUM_ALLOWED grants reading, and an I/O
+     * priority hint needs no write access. */
+    file = CreateFileW(uid, MAXIMUM_ALLOWED, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    EXPECT_TRUE(file != INVALID_HANDLE_VALUE);
+    EXPECT_TRUE(ReadFile(file, buffer, 19, &read, NULL));
+    EXPECT_TRUE(memcmp(buffer, contents, 19) == 0);
+    {
+        FILE_IO_PRIORITY_HINT_INFO hint = { IoPriorityHintLow };
+        FILE_BASIC_INFO basic = { 0 };
+        EXPECT_TRUE(SetFileInformationByHandle(file, FileIoPriorityHintInfo, &hint, sizeof(hint)));
+        EXPECT_TRUE(!SetFileInformationByHandle(file, FileBasicInfo, &basic, sizeof(basic)));
+        EXPECT_EQ(GetLastError(), ERROR_ACCESS_DENIED);
+    }
+    EXPECT_TRUE(CloseHandle(file));
+    EXPECT_EQ(test_frozen_threads(uid), 0);
 
     file = CreateFileW(uid, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
     EXPECT_TRUE(file != INVALID_HANDLE_VALUE);
@@ -370,7 +487,8 @@ static int test_zip_stream_hooks(const wchar_t *directory) {
     EXPECT_NULL(CreateFileMappingW(duplicate, NULL, PAGE_READONLY, 0, 0, NULL));
     EXPECT_EQ(GetLastError(), ERROR_NOT_SUPPORTED);
     EXPECT_TRUE(CloseHandle(duplicate));
-    EXPECT_EQ(vfs_file_test_memory_used(), 0);
+    /* The decoded copy stays for the next open. */
+    EXPECT_EQ(vfs_file_test_memory_used(), sizeof(contents));
     EXPECT_TRUE(!CloseHandle(duplicate));
     EXPECT_EQ(GetLastError(), ERROR_INVALID_HANDLE);
 
@@ -472,7 +590,7 @@ static int test_zip_stream_hooks(const wchar_t *directory) {
     EXPECT_EQ(compare_read_ex(native_path, uid), 0);
     EXPECT_EQ(compare_duplicate_close(native_path, uid), 0);
     EXPECT_EQ(test_forward_handle(uid, contents), 0);
-    EXPECT_EQ(test_cache_failure(uid, path), 0);
+    EXPECT_EQ(test_cache_failure(uid, path, contents), 0);
     file = CreateFileW(vfs_virtual_to_uid(L"empty.bin"), GENERIC_READ, FILE_SHARE_READ,
                         NULL, OPEN_EXISTING, 0, NULL);
     EXPECT_TRUE(file != INVALID_HANDLE_VALUE);
@@ -480,18 +598,33 @@ static int test_zip_stream_hooks(const wchar_t *directory) {
     EXPECT_EQ(read, 0);
     EXPECT_TRUE(CloseHandle(file));
 
+    /* Concurrent first reads decode the entry once, into memory or into a
+     * temporary file, which every handle then reads at its own offsets. */
     {
-        stream_thread_t context = { uid, contents, 0 };
-        HANDLE threads[8];
-        vfs_file_test_limits(sizeof(contents), sizeof(contents) * 2);
-        for (size_t i = 0; i < 8; i++) {
-            threads[i] = CreateThread(NULL, 0, stream_reader, &context, 0, NULL);
-            EXPECT_NOT_NULL(threads[i]);
+        uint64_t decode_reads = zip_package_test_read_count();
+        vfs_file_drop_caches();
+        file = CreateFileW(uid, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+        EXPECT_TRUE(file != INVALID_HANDLE_VALUE);
+        EXPECT_TRUE(ReadFile(file, buffer, 1, &read, NULL));
+        EXPECT_TRUE(CloseHandle(file));
+        decode_reads = zip_package_test_read_count() - decode_reads;
+        for (size_t variant = 0; variant < 2; variant++) {
+            stream_thread_t context = { uid, contents, 0 };
+            HANDLE threads[8];
+            uint64_t archive_reads;
+            vfs_file_drop_caches();
+            vfs_file_test_limits(variant == 0 ? sizeof(contents) : 0, sizeof(contents));
+            archive_reads = zip_package_test_read_count();
+            for (size_t i = 0; i < 8; i++) {
+                threads[i] = CreateThread(NULL, 0, stream_reader, &context, 0, NULL);
+                EXPECT_NOT_NULL(threads[i]);
+            }
+            EXPECT_EQ(WaitForMultipleObjects(8, threads, TRUE, 30000), WAIT_OBJECT_0);
+            for (size_t i = 0; i < 8; i++) EXPECT_TRUE(CloseHandle(threads[i]));
+            EXPECT_EQ(context.failures, 0);
+            EXPECT_EQ(zip_package_test_read_count() - archive_reads, decode_reads);
+            EXPECT_EQ(vfs_file_test_memory_used(), variant == 0 ? sizeof(contents) : 0);
         }
-        EXPECT_EQ(WaitForMultipleObjects(8, threads, TRUE, 30000), WAIT_OBJECT_0);
-        for (size_t i = 0; i < 8; i++) EXPECT_TRUE(CloseHandle(threads[i]));
-        EXPECT_EQ(context.failures, 0);
-        EXPECT_EQ(vfs_file_test_memory_used(), 0);
         vfs_file_test_limits(32 * 1024 * 1024, 128 * 1024 * 1024);
     }
 
@@ -519,6 +652,9 @@ static int test_zip_stream_hooks(const wchar_t *directory) {
         EXPECT_TRUE(memcmp(context.data, contents, sizeof(context.data)) == 0);
         EXPECT_EQ(GetFileType(context.file), FILE_TYPE_UNKNOWN);
         EXPECT_EQ(GetLastError(), ERROR_INVALID_HANDLE);
+        /* The application still owns its handle, which now closes as an event. */
+        EXPECT_TRUE(SetHandleInformation(context.file, HANDLE_FLAG_PROTECT_FROM_CLOSE, 0));
+        EXPECT_TRUE(CloseHandle(context.file));
         ml_zip_file_hooks_test_read_gate(NULL, NULL, NULL);
         EXPECT_TRUE(CloseHandle(reader));
         EXPECT_TRUE(CloseHandle(teardown));

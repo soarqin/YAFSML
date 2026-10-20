@@ -12,10 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `[mod]` entries and ModEngine2 TOML `mods` paths can name ZIP files.
   `abc.zip:def` uses `def` inside the archive as the mod root. Stored and
   Deflate entries, including ZIP64, use bounded miniz streams for forward-only
-  BND4/EBL overrides. Seekable file handles decode entries once into memory or
-  temporary-file caches: 32 MiB per memory-cached file and 128 MiB total. Caches
-  are released on final handle close; temporary files are deleted on process
-  exit as well. The ZIP decoder no longer seeks or replays compressed data.
+  BND4/EBL overrides. Seekable file handles share one copy of each entry,
+  decoded on first read and kept for later opens: in memory for files up to
+  32 MiB within a 128 MiB budget, otherwise in one temporary file per entry.
+  Unused copies are evicted least recently used first when memory is needed or
+  unused temporary files exceed 1 GiB; temporary files are deleted on process
+  exit. The ZIP decoder no longer seeks or replays compressed data.
   Win32 reads, seeks, size queries, duplicate handles, and overlapped completion
   notifications use the selected backend. ZIP mods remain read-only; memory mapping is
   unsupported.
@@ -25,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configuration, external DLL, and mod disk paths now resolve relative to the
   loader DLL directory, including ModEngine2 TOML paths. Moving a configuration
   no longer changes the DLL/mod, log, or BootBoost cache base directory.
+  Drive-relative paths such as `C:mod`, including launcher arguments, are now
+  rejected instead of using that drive's current directory.
 - Updated the dearxan C11 implementation to v0.5.7 and reviewed me3 through
   `5f4fa47`, retaining the documented performance fork's cache behavior.
 - All five games now share one descriptor-driven adapter. After

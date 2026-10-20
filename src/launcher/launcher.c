@@ -17,7 +17,6 @@
 #include "common/path.h"
 
 #include <getopt.h>
-#include <shlwapi.h>
 #include <stdbool.h>
 #include <stdlib.h>
 

@@ -79,18 +79,13 @@ static bool vfs_char_equal_ignore_case(wchar_t a, wchar_t b) {
 }
 
 static const wchar_t *vfs_strip_path_prefix(const wchar_t *path, const wchar_t *prefix) {
+    bool path_unc, prefix_unc;
     if (path == NULL || prefix == NULL) return NULL;
     /* A game's Win32 calls and GetModuleFileName may spell the same disk path
      * with or without an extended prefix. Compare their DOS/UNC portions. */
-    bool path_extended = wcsncmp(path, L"\\\\?\\", 4) == 0;
-    bool prefix_extended = wcsncmp(prefix, L"\\\\?\\", 4) == 0;
-    bool path_unc = path_extended ? _wcsnicmp(path + 4, L"UNC\\", 4) == 0
-                                 : path[0] == L'\\' && path[1] == L'\\';
-    bool prefix_unc = prefix_extended ? _wcsnicmp(prefix + 4, L"UNC\\", 4) == 0
-                                     : prefix[0] == L'\\' && prefix[1] == L'\\';
+    path = ml_path_dos_body(path, &path_unc);
+    prefix = ml_path_dos_body(prefix, &prefix_unc);
     if (path_unc != prefix_unc) return NULL;
-    path += path_unc ? (path_extended ? 8 : 2) : (path_extended ? 4 : 0);
-    prefix += prefix_unc ? (prefix_extended ? 8 : 2) : (prefix_extended ? 4 : 0);
     while (*prefix != L'\0') {
         bool path_separator = *path == L'\\' || *path == L'/';
         bool prefix_separator = *prefix == L'\\' || *prefix == L'/';
@@ -112,13 +107,7 @@ static wchar_t *vfs_join(const wchar_t *left, const wchar_t *right) {
     memcpy(result, left, left_len * sizeof(*result));
     if (left_len != 0 && left[left_len - 1] != L'\\') result[left_len++] = L'\\';
     memcpy(result + left_len, right, (right_len + 1) * sizeof(*result));
-    if (left_len + right_len >= MAX_PATH - 12 && ml_path_is_absolute(result) &&
-        wcsncmp(result, L"\\\\?\\", 4) != 0) {
-        wchar_t *extended = ml_path_extended_alloc(result);
-        ml_mem_free(result);
-        return extended;
-    }
-    return result;
+    return ml_path_extend(result);
 }
 
 bool vfs_normalize_path(const wchar_t *path, wchar_t **normalized) {
@@ -321,6 +310,8 @@ static bool vfs_insert_package(const wchar_t *root, const vfs_path_list_t *files
         ml_mem_free(touched);
         return false;
     }
+    /* Entry numbers name the decoded caches, and an override re-points them. */
+    vfs_file_drop_caches();
     for (; applied < count; applied++) {
         const wchar_t *relative = zip != NULL ? zip_package_relative_path(zip, applied) : files->items[applied];
         wchar_t *path = zip != NULL ? NULL : vfs_join(root, relative);
@@ -373,6 +364,7 @@ static void clear_lookup_cache_locked(void);
 static void clear_writable_cache_locked(void);
 
 void vfs_uninit(void) {
+    vfs_file_drop_caches();
     while (zip_packages != NULL) {
         vfs_zip_t *next = zip_packages->next;
         zip_package_close(zip_packages->package);
@@ -666,35 +658,45 @@ const wchar_t *vfs_virtual_to_uid_prefixed(const wchar_t *path, const wchar_t *g
     return relative == NULL ? NULL : vfs_virtual_to_uid(relative);
 }
 
-static vfs_entry_t *vfs_uid_entry(const wchar_t *uid) {
+/* `streaming` (optional) receives whether `uid` is the forward-only variant. */
+static vfs_entry_t *vfs_uid_entry(const wchar_t *uid, bool *streaming) {
     static const wchar_t prefix[] = L"\\\\me3??";
     wchar_t *end;
     unsigned long long index_value;
+    bool forward_only;
     /* No lock: entries are only written while the configuration adds packages,
      * before any hook is installed, and are immutable once UIDs are handed out. */
     if (uid == NULL || wcsncmp(uid, prefix, (sizeof(prefix) / sizeof(prefix[0])) - 1) != 0) return NULL;
     uid += (sizeof(prefix) / sizeof(prefix[0])) - 1;
-    if (*uid == L's') uid++;
+    forward_only = *uid == L's';
+    if (forward_only) uid++;
     if (!iswxdigit(*uid)) return NULL;
     index_value = wcstoull(uid, &end, 16);
     if (end == uid || *end != L'\0' || index_value >= entry_count) return NULL;
+    if (streaming != NULL) *streaming = forward_only;
     return &entries[index_value];
 }
 
+/* The forward-only variant follows the normal UID in the same allocation. */
+static const wchar_t *vfs_entry_streaming_uid(const vfs_entry_t *entry) {
+    return entry->uid + wcslen(entry->uid) + 1;
+}
+
 const wchar_t *vfs_uid_to_path(const wchar_t *uid) {
-    vfs_entry_t *entry = vfs_uid_entry(uid);
-    if (entry != NULL && entry->zip != NULL && uid[7] == L's') return entry->uid + wcslen(entry->uid) + 1;
-    return entry == NULL ? NULL : vfs_entry_read_path(entry);
+    bool streaming;
+    vfs_entry_t *entry = vfs_uid_entry(uid, &streaming);
+    if (entry == NULL) return NULL;
+    return streaming && entry->zip != NULL ? vfs_entry_streaming_uid(entry) : vfs_entry_read_path(entry);
 }
 
 const wchar_t *vfs_uid_for_streaming(const wchar_t *uid) {
-    vfs_entry_t *entry = vfs_uid_entry(uid);
+    vfs_entry_t *entry = vfs_uid_entry(uid, NULL);
     if (entry == NULL) return NULL;
-    return entry->zip == NULL ? entry->uid : entry->uid + wcslen(entry->uid) + 1;
+    return entry->zip == NULL ? entry->uid : vfs_entry_streaming_uid(entry);
 }
 
 bool vfs_is_zip_path(const wchar_t *path) {
-    vfs_entry_t *entry = vfs_uid_entry(path);
+    vfs_entry_t *entry = vfs_uid_entry(path, NULL);
     return entry != NULL && entry->zip != NULL;
 }
 
@@ -706,12 +708,13 @@ bool vfs_has_zip_entries(void) {
 vfs_file_t *vfs_file_open(const wchar_t *path) {
     vfs_entry_t *entry;
     const wchar_t *routed;
+    bool streaming;
     if (path == NULL) { SetLastError(ERROR_INVALID_PARAMETER); return NULL; }
     routed = ml_path_is_absolute(path) ? NULL : vfs_lookup(path);
     if (routed != NULL) path = routed;
-    entry = vfs_uid_entry(path);
+    entry = vfs_uid_entry(path, &streaming);
     if (entry == NULL || entry->zip == NULL) { SetLastError(ERROR_NOT_SUPPORTED); return NULL; }
-    return vfs_file_create(entry->zip, entry->zip_file, (uint64_t)(entry - entries) + 1, path[7] == L's');
+    return vfs_file_create(entry->zip, entry->zip_file, (uint64_t)(entry - entries) + 1, streaming);
 }
 
 const wchar_t *vfs_lookup_prefixed_domain(const wchar_t *path, const wchar_t *game_root,

@@ -17,7 +17,8 @@ extern "C" {
 #endif
 
 /* Spawn suspended with the quoted executable as the command line, temporarily
- * restoring Wine's UTF-8 host locale when possible. */
+ * restoring Wine's UTF-8 host locale when possible. The game receives DOS or
+ * UNC spellings of both paths whenever they fit. */
 BOOL ml_launcher_create_game_process(const wchar_t *executable,
                                       const wchar_t *working_directory,
                                       STARTUPINFOW *startup,
@@ -33,9 +34,8 @@ HMODULE ml_launcher_find_remote_module(HANDLE process, const wchar_t *module_pat
  * initialization succeeds only when YAFSMLInit returns nonzero. */
 bool ml_launcher_inject_dll(HANDLE process, const wchar_t *dll_path);
 /* Finds a dinput8.dll, dxgi.dll or winhttp.dll in `game_folder` that exports
- * YAFSMLInit, i.e. a YAFSML proxy copy. */
-bool ml_launcher_find_proxy_copy(const wchar_t *game_folder, wchar_t path[MAX_PATH]);
-/* Long-path variant. Returns an owned CRT string, or NULL when none is found. */
+ * YAFSMLInit, i.e. a YAFSML proxy copy. Returns an owned CRT string, or NULL
+ * when none is found. */
 wchar_t *ml_launcher_find_proxy_copy_alloc(const wchar_t *game_folder);
 
 #ifdef __cplusplus

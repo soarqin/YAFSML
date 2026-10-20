@@ -163,6 +163,8 @@ endforeach()
 
 target_include_directories(smoke_ini_allocation PRIVATE ${CMAKE_SOURCE_DIR}/deps/inih)
 set_tests_properties(smoke_launcher_process PROPERTIES TIMEOUT 20)
+# A hook deadlock hangs the whole process; report it instead of waiting.
+set_tests_properties(smoke_win32_hooks PROPERTIES TIMEOUT 120)
 
 add_dependencies(smoke_extdll_config extdll_fixture)
 add_dependencies(smoke_mod_zip_config extdll_fixture)
