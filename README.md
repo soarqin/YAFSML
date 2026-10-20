@@ -85,6 +85,12 @@ Dark Souls III forces Arxan neutralization on.
 | `replace_seamless_coop_save_filename` | Empty | Replace the additional Seamless Co-op save filename. |
 | `enable_ime` | `0` | Keep IME enabled in supported games. Elden Ring, Armored Core VI, Nightreign, and Dark Souls III also allow non-Latin software-keyboard text; Sekiro only preserves IME. Restart after changing it. |
 
+BootBoost validates the complete BHD contents, game executable identity, RSA key,
+and cache integrity. Game updates or invalid caches trigger an automatic rebuild;
+there is no need to delete `cache`. The first rebuild performs full decryption,
+and later launches reuse the cache. The additional checks query EXE metadata once
+and reuse the existing decrypted header, without scanning the EXE or BDT contents.
+
 #### Dedicated heap diagnostics
 
 When `patch_mem_dedicated_heap=1`, the loader reserves the arena at the highest

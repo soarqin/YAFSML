@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- BootBoost cache keys now include the game executable's PE and file metadata
+  and the RSA key, so an EXE-only game update also rebuilds the cache. Cache
+  loads additionally compare the first 24 plaintext bytes with the live stub
+  mount. Executable metadata is queried once; full BHD hashing, integrity checks,
+  single-block stub decryption, and warm-cache acceleration are retained.
 - Configuration, external DLL, and mod disk paths now resolve relative to the
   loader DLL directory, including ModEngine2 TOML paths. Moving a configuration
   no longer changes the DLL/mod, log, or BootBoost cache base directory.

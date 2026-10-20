@@ -76,6 +76,8 @@ Elden Ring 仍是主要目标。使用 `--launch-target armoredcore6`、`--launc
 | `replace_seamless_coop_save_filename` | 留空 | 替换 Seamless Co-op 使用的额外存档文件名。 |
 | `enable_ime` | `0` | 在受支持的游戏中保持 IME 启用。Elden Ring、Armored Core VI、Nightreign 和 Dark Souls III 还允许软件键盘输入非拉丁文字；Sekiro 仅保持 IME 启用。修改后需重启游戏。 |
 
+BootBoost 会校验完整 BHD 内容、游戏 EXE 身份、RSA 密钥和缓存完整性。游戏更新或缓存校验失败后会自动重新生成缓存，无需手动删除 `cache`；首次重新生成时执行完整解密，后续启动继续使用缓存加速。新增校验只在启动时查询一次 EXE 元数据，并复用已有解密标头，不扫描整个 EXE 或 BDT。实现与性能验证见 [BootBoost 缓存校验](docs/bootboost-cache-validation.zhCN.md)。
+
 #### 专用堆诊断
 
 启用 `patch_mem_dedicated_heap=1` 后，加载器会在尽可能高的地址预留 arena，

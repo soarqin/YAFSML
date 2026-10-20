@@ -47,6 +47,8 @@ static void __cdecl test_permanent_free(dl_allocator_t *self, void *ptr) {
 
 int main(void) {
     uint8_t header[64] = { 0 };
+    uint8_t expected_header[24];
+    const uint64_t game_key[2] = { 1, 2 };
     uint64_t first[2];
     uint64_t second[2];
     wchar_t temporary[MAX_PATH];
@@ -101,9 +103,10 @@ int main(void) {
     memcpy(header + 12, &file_size, sizeof(file_size));
     memcpy(header + 16, &bucket_count, sizeof(bucket_count));
     memcpy(header + 20, &bucket_offset, sizeof(bucket_offset));
+    memcpy(expected_header, header, sizeof(expected_header));
     EXPECT_TRUE(ml_bhd5_header_valid(header, sizeof(header)));
-    EXPECT_TRUE(ml_boot_boost_cache_key(header, sizeof(header), first));
-    EXPECT_TRUE(ml_boot_boost_cache_key(header, sizeof(header), second));
+    EXPECT_TRUE(ml_boot_boost_cache_key(header, sizeof(header), game_key, "test RSA key", first));
+    EXPECT_TRUE(ml_boot_boost_cache_key(header, sizeof(header), game_key, "test RSA key", second));
     EXPECT_EQ(first[0], second[0]);
     EXPECT_EQ(first[1], second[1]);
     {
@@ -122,7 +125,7 @@ int main(void) {
     DeleteFileW(temporary);
     EXPECT_TRUE(ml_boot_boost_cache_store(temporary, first, header, sizeof(header)));
     memset(header, 0, sizeof(header));
-    EXPECT_TRUE(ml_boot_boost_cache_load(temporary, first, header, sizeof(header)));
+    EXPECT_TRUE(ml_boot_boost_cache_load(temporary, first, expected_header, header, sizeof(header)));
     DeleteFileW(temporary);
     EXPECT_TRUE(ml_boot_boost_cache_store(temporary, first, header, sizeof(header)));
     {
@@ -134,11 +137,11 @@ int main(void) {
         EXPECT_EQ(written, sizeof(trailing));
         CloseHandle(file);
     }
-    EXPECT_TRUE(!ml_boot_boost_cache_load(temporary, first, header, sizeof(header)));
+    EXPECT_TRUE(!ml_boot_boost_cache_load(temporary, first, expected_header, header, sizeof(header)));
     EXPECT_EQ(GetFileAttributesW(temporary), INVALID_FILE_ATTRIBUTES);
     EXPECT_TRUE(ml_boot_boost_cache_store(temporary, first, header, sizeof(header)));
     second[0] ^= 1;
-    EXPECT_TRUE(!ml_boot_boost_cache_load(temporary, second, header, sizeof(header)));
+    EXPECT_TRUE(!ml_boot_boost_cache_load(temporary, second, expected_header, header, sizeof(header)));
     second[0] ^= 1;
     EXPECT_EQ(GetFileAttributesW(temporary), INVALID_FILE_ATTRIBUTES);
     EXPECT_TRUE(ml_boot_boost_cache_store(temporary, first, header, sizeof(header)));
@@ -153,7 +156,7 @@ int main(void) {
         EXPECT_TRUE(SetEndOfFile(file));
         CloseHandle(file);
     }
-    EXPECT_TRUE(!ml_boot_boost_cache_load(temporary, first, header, sizeof(header)));
+    EXPECT_TRUE(!ml_boot_boost_cache_load(temporary, first, expected_header, header, sizeof(header)));
     EXPECT_EQ(GetFileAttributesW(temporary), INVALID_FILE_ATTRIBUTES);
     EXPECT_TRUE(ml_boot_boost_cache_store(temporary, first, header, sizeof(header)));
     {
@@ -172,7 +175,7 @@ int main(void) {
         EXPECT_EQ(transferred, sizeof(byte));
         CloseHandle(file);
     }
-    EXPECT_TRUE(!ml_boot_boost_cache_load(temporary, first, header, sizeof(header)));
+    EXPECT_TRUE(!ml_boot_boost_cache_load(temporary, first, expected_header, header, sizeof(header)));
     EXPECT_EQ(GetFileAttributesW(temporary), INVALID_FILE_ATTRIBUTES);
     {
         wchar_t interrupted[MAX_PATH + 32];
@@ -186,7 +189,7 @@ int main(void) {
         EXPECT_TRUE(WriteFile(file, header, 8, &written, NULL));
         CloseHandle(file);
         EXPECT_TRUE(ml_boot_boost_cache_store(temporary, first, header, sizeof(header)));
-        EXPECT_TRUE(ml_boot_boost_cache_load(temporary, first, header, sizeof(header)));
+        EXPECT_TRUE(ml_boot_boost_cache_load(temporary, first, expected_header, header, sizeof(header)));
         EXPECT_EQ(GetFileAttributesW(interrupted), INVALID_FILE_ATTRIBUTES);
         DeleteFileW(temporary);
     }
@@ -204,7 +207,7 @@ int main(void) {
         CloseHandle(threads[0]);
         CloseHandle(threads[1]);
         EXPECT_TRUE(contexts[0].result || contexts[1].result);
-        EXPECT_TRUE(ml_boot_boost_cache_load(temporary, first, header, sizeof(header)));
+        EXPECT_TRUE(ml_boot_boost_cache_load(temporary, first, expected_header, header, sizeof(header)));
         DeleteFileW(temporary);
     }
     memcpy(roots[0].root.msvc2015.storage.inline_storage, L"dataX", 12);

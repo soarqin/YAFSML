@@ -530,11 +530,46 @@ bool ml_bhd5_header_valid(const void *data, size_t size) {
            bucket_count <= (file_size - bucket_offset) / sizeof(uint32_t);
 }
 
-bool ml_boot_boost_cache_key(const void *data, size_t size, uint64_t key[2]) {
-    const uint8_t *bytes = data;
+bool ml_boot_boost_game_key(const void *image_base, HANDLE image_file, uint64_t key[2]) {
+    const IMAGE_NT_HEADERS64 *nt;
+    BY_HANDLE_FILE_INFORMATION info;
+    uint64_t identity[5];
     XXH128_hash_t hash;
-    if (bytes == NULL || key == NULL) return false;
-    hash = XXH3_128bits_withSeed(bytes, size, 1);
+    if (image_base == NULL || image_file == INVALID_HANDLE_VALUE || image_file == NULL || key == NULL ||
+        (nt = pe_nt_headers(image_base)) == NULL || !GetFileInformationByHandle(image_file, &info)) return false;
+    /* Exclude addresses, file IDs and access times: ASLR and ordinary reads must
+       not invalidate a warm cache. File metadata also covers builds that reuse
+       the PE timestamp or omit the optional PE checksum. */
+    identity[0] = nt->FileHeader.TimeDateStamp;
+    identity[1] = nt->OptionalHeader.SizeOfImage;
+    identity[2] = nt->OptionalHeader.CheckSum;
+    identity[3] = ((uint64_t)info.nFileSizeHigh << 32) | info.nFileSizeLow;
+    identity[4] = ((uint64_t)info.ftLastWriteTime.dwHighDateTime << 32) | info.ftLastWriteTime.dwLowDateTime;
+    hash = XXH3_128bits_withSeed(identity, sizeof(identity), 3);
+    key[0] = hash.low64;
+    key[1] = hash.high64;
+    return true;
+}
+
+bool ml_boot_boost_cache_key(const void *data, size_t size, const uint64_t game_key[2],
+                             const char *rsa_key, uint64_t key[2]) {
+    XXH128_hash_t source_hash;
+    XXH128_hash_t rsa_hash;
+    XXH128_hash_t hash;
+    uint64_t identity[6];
+    if (data == NULL || game_key == NULL || rsa_key == NULL || rsa_key[0] == '\0' || key == NULL) return false;
+    /* Keep the complete BHD hash. Only the small PEM and identity tuple add work
+       to the old hot path; no EXE/BDT reads or additional RSA blocks are needed. */
+    source_hash = XXH3_128bits_withSeed(data, size, 1);
+    rsa_hash = XXH3_128bits_withSeed(rsa_key, strlen(rsa_key), 1);
+    identity[0] = source_hash.low64;
+    identity[1] = source_hash.high64;
+    identity[2] = game_key[0];
+    identity[3] = game_key[1];
+    identity[4] = rsa_hash.low64;
+    identity[5] = rsa_hash.high64;
+    /* A new key namespace leaves caches from older loaders unused. */
+    hash = XXH3_128bits_withSeed(identity, sizeof(identity), 3);
     key[0] = hash.low64;
     key[1] = hash.high64;
     return true;
@@ -579,7 +614,8 @@ static uint64_t boot_boost_cache_checksum(const void *data, size_t size) {
     return XXH3_128bits_withSeed(data, size, 2).low64;
 }
 
-bool ml_boot_boost_cache_load(const wchar_t *path, const uint64_t key[2], void *output, size_t output_size) {
+bool ml_boot_boost_cache_load(const wchar_t *path, const uint64_t key[2], const void *bhd_header,
+                              void *output, size_t output_size) {
     HANDLE file = INVALID_HANDLE_VALUE;
     DWORD read;
     ml_boot_boost_cache_header_t header;
@@ -587,7 +623,8 @@ bool ml_boot_boost_cache_load(const wchar_t *path, const uint64_t key[2], void *
     uint8_t *compressed = NULL;
     size_t compressed_size;
     bool valid = false;
-    if (path == NULL || key == NULL || output == NULL || output_size > UINT32_MAX) return false;
+    if (path == NULL || key == NULL || bhd_header == NULL || output == NULL ||
+        output_size < 24 || output_size > UINT32_MAX) return false;
     file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (file == INVALID_HANDLE_VALUE) return false;
     if (!GetFileSizeEx(file, &file_size) || file_size.QuadPart < sizeof(header) || file_size.QuadPart > SIZE_MAX) goto done;
@@ -610,7 +647,7 @@ bool ml_boot_boost_cache_load(const wchar_t *path, const uint64_t key[2], void *
                                  TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF) == TINFL_STATUS_DONE &&
                 input_size == compressed_size && uncompressed_size == output_size &&
                 boot_boost_cache_checksum(output, output_size) == header.checksum &&
-                ml_bhd5_header_valid(output, output_size);
+                ml_bhd5_header_valid(output, output_size) && memcmp(output, bhd_header, 24) == 0;
     }
     ml_mem_free(compressed);
 done:

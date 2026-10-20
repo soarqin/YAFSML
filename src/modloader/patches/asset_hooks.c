@@ -12,6 +12,7 @@
 #include "log.h"
 
 #include "common/allocator.h"
+#include "common/path.h"
 #include "game/game.h"
 
 #ifndef ML_ASSET_HOOKS_TEST
@@ -148,6 +149,8 @@ static LONG logged_disk_open;
 static LONG logged_disk_open_return;
 static LONG logged_mount_ebl;
 static LONG boot_boost_status_reported;
+static uint64_t boot_boost_game_key[2];
+static bool boot_boost_game_key_valid;
 static khash_t(wstr) *logged_override_paths;
 static volatile LONG set_path_hook_settled;
 
@@ -241,7 +244,7 @@ static bool boot_boost_mount(const wchar_t *bhd_path, dl_allocator_t *allocator,
                  bhd_path, allocator, rsa_key, key_len);
     /* The PEM length comes from the string: like me3 notes, key_len can be off
      * by one (sd.bhd in Elden Ring). */
-    if (bhd_path == NULL || allocator == NULL || device_manager == NULL || rsa_key == NULL ||
+    if (!boot_boost_game_key_valid || bhd_path == NULL || allocator == NULL || device_manager == NULL || rsa_key == NULL ||
         !ml_asset_sig_rsa_block_size(rsa_key, strlen(rsa_key), &block_size)) return false;
     ML_LOG_DEBUG(L"asset-hooks", L"BootBoost RSA block size: %zu", block_size);
     if (!ml_dl_device_manager_lock(device_manager, &guard) ||
@@ -252,7 +255,8 @@ static bool boot_boost_mount(const wchar_t *bhd_path, dl_allocator_t *allocator,
         source_size.QuadPart > 64 * 1024 * 1024) goto done;
     encrypted = ml_mem_alloc(0, (size_t)source_size.QuadPart);
     if (encrypted == NULL || !ReadFile(source, encrypted, (DWORD)source_size.QuadPart, &read, NULL) ||
-        read != (DWORD)source_size.QuadPart || !ml_boot_boost_cache_key(encrypted, (size_t)source_size.QuadPart, key)) goto done;
+        read != (DWORD)source_size.QuadPart ||
+        !ml_boot_boost_cache_key(encrypted, (size_t)source_size.QuadPart, boot_boost_game_key, rsa_key, key)) goto done;
     ML_LOG_DEBUG(L"asset-hooks", L"BootBoost source loaded: %lld bytes", source_size.QuadPart);
     CloseHandle(source); source = INVALID_HANDLE_VALUE;
     cache_directory = config_full_path_alloc(L"cache");
@@ -290,7 +294,7 @@ static bool boot_boost_mount(const wchar_t *bhd_path, dl_allocator_t *allocator,
         cached = allocator->vtable->allocate_aligned(allocator, size, 4096);
         ML_LOG_TRACE(L"asset-hooks", L"BootBoost cache buffer: %p", cached);
         if (cached != NULL) {
-            if (ml_boot_boost_cache_load(cache_path, key, cached, size)) {
+            if (ml_boot_boost_cache_load(cache_path, key, holder->header, cached, size)) {
                 uint32_t bucket_count;
                 uint32_t bucket_offset;
                 ML_LOG_INFO(L"asset-hooks", L"BootBoost cache hit");
@@ -882,6 +886,18 @@ bool ml_asset_hooks_install(const ml_game_descriptor_t *game, void *image_base, 
                     game->file_step_name, game->title);
         return false;
     }
+    if (config.boot_boost) {
+        wchar_t *image_path = ml_path_module_filename_alloc(NULL);
+        HANDLE image_file = image_path == NULL ? INVALID_HANDLE_VALUE :
+            CreateFileW(image_path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_DELETE,
+                        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        boot_boost_game_key_valid = ml_boot_boost_game_key(image_base, image_file, boot_boost_game_key);
+        if (image_file != INVALID_HANDLE_VALUE) CloseHandle(image_file);
+        ml_mem_free(image_path);
+        if (!boot_boost_game_key_valid) {
+            ML_LOG_WARN(L"asset-hooks", L"BootBoost could not identify the game executable; using full archive mounts");
+        }
+    }
     if (!ml_hook_pin_module()) {
         ML_LOG_WARN(L"asset-hooks", L"could not pin FileStep hook module");
         return false;
@@ -958,6 +974,8 @@ bool ml_asset_hooks_uninstall(void) {
     logged_disk_open_return = 0;
     logged_mount_ebl = 0;
     boot_boost_status_reported = 0;
+    boot_boost_game_key_valid = false;
+    memset(boot_boost_game_key, 0, sizeof(boot_boost_game_key));
     clear_override_log();
     InterlockedExchange(&set_path_hook_settled, 0);
     set_path_hook_attempted = false;

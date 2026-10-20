@@ -125,9 +125,14 @@ void ml_dl_string_destroy(ml_dl_string_t *string, ml_stl_abi_t abi);
 const wchar_t *ml_dl_string_data(const ml_dl_string_t *string, ml_stl_abi_t abi);
 size_t ml_dl_vector_count(const ml_dl_vector_t *vector, ml_stl_abi_t abi, size_t item_size);
 bool ml_bhd5_header_valid(const void *data, size_t size);
-bool ml_boot_boost_cache_key(const void *data, size_t size, uint64_t key[2]);
+/* Read executable metadata once per loader lifecycle; never hash its contents. */
+bool ml_boot_boost_game_key(const void *image_base, HANDLE image_file, uint64_t key[2]);
+bool ml_boot_boost_cache_key(const void *data, size_t size, const uint64_t game_key[2],
+                             const char *rsa_key, uint64_t key[2]);
 wchar_t *ml_boot_boost_cache_path(const wchar_t *directory, const uint64_t key[2]);
-bool ml_boot_boost_cache_load(const wchar_t *path, const uint64_t key[2], void *output, size_t output_size);
+/* bhd_header is the first 24 plaintext bytes already decrypted by the stub mount. */
+bool ml_boot_boost_cache_load(const wchar_t *path, const uint64_t key[2], const void *bhd_header,
+                              void *output, size_t output_size);
 bool ml_boot_boost_cache_store(const wchar_t *path, const uint64_t key[2], const void *data, size_t size);
 
 #ifdef __cplusplus

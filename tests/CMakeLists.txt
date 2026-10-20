@@ -136,6 +136,8 @@ endforeach()
 set(SMOKE_smoke_dl_device_SOURCES
     ${CMAKE_SOURCE_DIR}/src/modloader/patches/dl_device.c)
 set(SMOKE_smoke_dl_device_LIBRARIES shlwapi miniz xxhash::headers)
+set(SMOKE_smoke_boot_boost_SOURCES ${SMOKE_smoke_dl_device_SOURCES})
+set(SMOKE_smoke_boot_boost_LIBRARIES ${SMOKE_smoke_dl_device_LIBRARIES})
 set(SMOKE_smoke_asset_hooks_SOURCES
     ${CMAKE_SOURCE_DIR}/src/modloader/patches/asset_hooks.c
     ${CMAKE_SOURCE_DIR}/src/modloader/patches/asset_sig.c)
