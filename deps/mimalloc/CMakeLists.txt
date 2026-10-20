@@ -676,9 +676,15 @@ if(MI_TLS_RECURSE_GUARD)
   list(APPEND mi_defines MI_TLS_RECURSE_GUARD=1)
 endif()
 
-if("$ENV{MSYSTEM}" STREQUAL "UCRT64")
-  message(STATUS "Detected MSYS2 UCRT64 environment")
-  set(MI_MINGW_UCRT64 "ON")
+if(MINGW)
+  # CLANG64 also uses UCRT, and native shells need not set MSYSTEM at all.
+  # Inspect the toolchain headers so CRT/TLS initialization is selected once.
+  include(CheckSymbolExists)
+  check_symbol_exists(_UCRT "_mingw.h" MI_MINGW_UCRT64)
+endif()
+
+if(MI_MINGW_UCRT64)
+  message(STATUS "Detected MinGW UCRT toolchain")
   list(APPEND mi_defines MI_MINGW_UCRT64=1)
 elseif("$ENV{MSYSTEM}" STREQUAL "MSYS")
   message(STATUS "Detected MSYS2 MSYS/Cygwin environment")

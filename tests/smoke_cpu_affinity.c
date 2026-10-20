@@ -142,7 +142,7 @@ static int test_strategy_one_excludes_first_logical_cpu_set(void) {
     return 0;
 }
 
-static bool query_default_cpu_sets(process_cpu_set_id_t **ids_out,
+static bool query_default_cpu_sets(ULONG **ids_out,
                                     DWORD *count_out,
                                     DWORD *error_out) {
     DWORD required = 0;
@@ -159,13 +159,12 @@ static bool query_default_cpu_sets(process_cpu_set_id_t **ids_out,
         return false;
     }
 
-    process_cpu_set_id_t *ids = (process_cpu_set_id_t *)malloc(
-        required * sizeof(process_cpu_set_id_t));
+    ULONG *ids = (ULONG *)malloc(required * sizeof(*ids));
     if (ids == NULL) {
         *error_out = ERROR_NOT_ENOUGH_MEMORY;
         return false;
     }
-    if (!GetProcessDefaultCpuSets(GetCurrentProcess(), (PULONG)ids, required,
+    if (!GetProcessDefaultCpuSets(GetCurrentProcess(), ids, required,
                                   &required)) {
         error = GetLastError();
         free(ids);
@@ -179,7 +178,7 @@ static bool query_default_cpu_sets(process_cpu_set_id_t **ids_out,
 }
 
 static int test_win32_application_path(void) {
-    process_cpu_set_id_t *original_ids = NULL;
+    ULONG *original_ids = NULL;
     DWORD original_count = 0;
     DWORD error_code = ERROR_SUCCESS;
     if (!query_default_cpu_sets(&original_ids, &original_count, &error_code)) {
@@ -189,17 +188,18 @@ static int test_win32_application_path(void) {
     }
 
     uint32_t applied_count = 0;
+    uint32_t apply_error = ERROR_SUCCESS;
     bool applied = set_process_cpu_affinity_strategy(1, &applied_count,
-                                                     &error_code);
+                                                     &apply_error);
     if (!applied) {
         printf("smoke_cpu_affinity: application path skipped error=%lu\n",
-               (unsigned long)error_code);
+               (unsigned long)apply_error);
         free(original_ids);
         return 0;
     }
     EXPECT_TRUE(applied_count > 0);
 
-    process_cpu_set_id_t *current_ids = NULL;
+    ULONG *current_ids = NULL;
     DWORD current_count = 0;
     EXPECT_TRUE(query_default_cpu_sets(&current_ids, &current_count,
                                        &error_code));

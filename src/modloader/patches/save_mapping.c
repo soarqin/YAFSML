@@ -1,6 +1,7 @@
 #include "save_mapping.h"
 
 #include "common/allocator.h"
+#include "common/atomic.h"
 #include "log.h"
 
 #include "modloader/vfs.h"
@@ -291,7 +292,7 @@ bool ml_save_mapping_route(const wchar_t *path, const wchar_t **mapped_path) {
     size_t i;
 
     if (mapped_path != NULL) *mapped_path = NULL;
-    if (path == NULL || mapped_path == NULL || ReadAcquire(&mapping_active) == 0) return false;
+    if (path == NULL || mapped_path == NULL || ml_atomic_load_acquire(&mapping_active) == 0) return false;
     raw_ext = PathFindExtensionW(path);
     AcquireSRWLockShared(&mapping_lock);
     /* Extension pre-filter. This function is on the CreateFile hot path, so

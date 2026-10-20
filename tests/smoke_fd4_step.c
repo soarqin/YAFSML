@@ -63,11 +63,20 @@ static int test_static_initializer_lookup(void) {
    function followed by a pointer to its UTF-16 name in .rdata. */
 static int step_target;
 static int late_step_target;
-static const __declspec(align(8)) wchar_t step_entry_name[] = L"SmokeStep::STEP_Mapped";
-static const __declspec(align(8)) wchar_t late_step_entry_name[] = L"SmokeStep::STEP_Late";
+_Alignas(8) static const wchar_t step_entry_name[] = L"SmokeStep::STEP_Mapped";
+_Alignas(8) static const wchar_t late_step_entry_name[] = L"SmokeStep::STEP_Late";
 static void *step_entry[2] = { &step_target, (void *)step_entry_name };
 /* Not a name until the "game" fills it in after the first map build. */
 static void *late_step_entry[2] = { &late_step_target, (void *)1 };
+
+/* The scanner discovers these fixtures by walking .data. Make the game-like
+   updates opaque to LTO, which cannot track that indirect observation. */
+static int set_step_entry(void **slot, void *value) {
+    SIZE_T written = 0;
+    EXPECT_TRUE(WriteProcessMemory(GetCurrentProcess(), slot, &value, sizeof(value), &written));
+    EXPECT_EQ(written, sizeof(value));
+    return 0;
+}
 
 static int test_map_lookup(void) {
     EXPECT_EQ(fd4_step_find_slot(L"SmokeStep::STEP_Mapped"), &step_entry[0]);
@@ -75,14 +84,14 @@ static int test_map_lookup(void) {
 
     /* A slot the game has not filled falls through to the static scan, which
        finds nothing in this image. */
-    step_entry[0] = NULL;
+    EXPECT_EQ(set_step_entry(&step_entry[0], NULL), 0);
     EXPECT_EQ(fd4_step_find_slot(L"SmokeStep::STEP_Mapped"), &step_entry[0]);
     EXPECT_NULL(fd4_step_find(L"SmokeStep::STEP_Mapped"));
-    step_entry[0] = &step_target;
+    EXPECT_EQ(set_step_entry(&step_entry[0], &step_target), 0);
 
     /* A miss rebuilds the map and picks up entries initialized since. */
     EXPECT_NULL(fd4_step_find_slot(L"SmokeStep::STEP_Late"));
-    late_step_entry[1] = (void *)late_step_entry_name;
+    EXPECT_EQ(set_step_entry(&late_step_entry[1], (void *)late_step_entry_name), 0);
     EXPECT_EQ(fd4_step_find_slot(L"SmokeStep::STEP_Late"), &late_step_entry[0]);
     EXPECT_EQ(fd4_step_find(L"SmokeStep::STEP_Late"), (void *)&late_step_target);
 

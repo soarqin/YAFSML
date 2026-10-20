@@ -9,6 +9,7 @@
 #include "zip_package.h"
 
 #include "allocator.h"
+#include "common/atomic.h"
 #include "log.h"
 #include "vfs.h"
 
@@ -40,7 +41,7 @@ struct zip_package_s {
 
 #ifdef ML_VFS_FILE_TEST
 static volatile LONG64 test_read_count;
-uint64_t zip_package_test_read_count(void) { return (uint64_t)ReadAcquire64(&test_read_count); }
+uint64_t zip_package_test_read_count(void) { return (uint64_t)ml_atomic_load_acquire64(&test_read_count); }
 #endif
 
 struct zip_stream_s {

@@ -5,6 +5,7 @@
 
 #include "vfs_file.h"
 #include "common/allocator.h"
+#include "common/atomic.h"
 #include "common/path.h"
 
 #define kcalloc(N,Z) ml_mem_alloc(LPTR, (N) * (Z))
@@ -139,7 +140,7 @@ static vfs_cache_t *idle_evict(vfs_cache_t *cache, vfs_cache_t *chain) {
 static bool try_reserve_memory(uint64_t size) {
     LONG64 used;
     do {
-        used = ReadAcquire64(&memory_used);
+        used = ml_atomic_load_acquire64(&memory_used);
         if ((uint64_t)used > memory_total_limit - size) return false;
     } while (InterlockedCompareExchange64(&memory_used, used + (LONG64)size, used) != used);
     return true;
@@ -153,7 +154,7 @@ static bool reserve_memory(uint64_t size) {
         vfs_cache_t *victim = NULL;
         uint64_t used;
         AcquireSRWLockExclusive(&cache_lock);
-        used = (uint64_t)ReadAcquire64(&memory_used);
+        used = (uint64_t)ml_atomic_load_acquire64(&memory_used);
         if (idle_memory.oldest != NULL && used >= idle_memory.bytes &&
             used - idle_memory.bytes <= memory_total_limit - size)
             victim = idle_evict(idle_memory.oldest, NULL);
@@ -273,9 +274,9 @@ done:
  * so a later read through another file tries again. */
 static bool cache_prepare(vfs_cache_t *cache) {
     bool result = true;
-    if (ReadAcquire(&cache->state) != CACHE_EMPTY) return true;
+    if (ml_atomic_load_acquire(&cache->state) != CACHE_EMPTY) return true;
     AcquireSRWLockExclusive(&cache->lock);
-    if (ReadAcquire(&cache->state) == CACHE_EMPTY) result = cache_decode(cache);
+    if (ml_atomic_load_acquire(&cache->state) == CACHE_EMPTY) result = cache_decode(cache);
     ReleaseSRWLockExclusive(&cache->lock);
     return result;
 }
@@ -487,7 +488,7 @@ void vfs_file_test_limits(size_t file_limit, size_t total_limit) {
     memory_total_limit = total_limit;
 }
 void vfs_file_test_idle_disk_limit(uint64_t limit) { idle_disk_limit = limit; }
-uint64_t vfs_file_test_memory_used(void) { return (uint64_t)ReadAcquire64(&memory_used); }
+uint64_t vfs_file_test_memory_used(void) { return (uint64_t)ml_atomic_load_acquire64(&memory_used); }
 HANDLE vfs_file_test_cache_handle(const vfs_file_t *file) {
     return file->cache == NULL ? INVALID_HANDLE_VALUE : file->cache->disk;
 }

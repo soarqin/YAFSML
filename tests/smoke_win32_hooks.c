@@ -1,6 +1,7 @@
 #include <stdio.h>
 
 #include "test_common.h"
+#include "common/atomic.h"
 #include "modloader/patches/win32_hooks.h"
 #include "modloader/patches/zip_hooks.h"
 #include "modloader/vfs.h"
@@ -76,7 +77,7 @@ typedef struct size_hammer_s {
 static DWORD WINAPI size_hammer(void *parameter) {
     size_hammer_t *context = parameter;
     LARGE_INTEGER size;
-    while (!ReadAcquire(&context->stop)) {
+    while (!ml_atomic_load_acquire(&context->stop)) {
         if (!GetFileSizeEx(context->file, &size)) InterlockedIncrement(&context->failures);
     }
     return 0;

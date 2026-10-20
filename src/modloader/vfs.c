@@ -9,6 +9,7 @@
 #include "vfs.h"
 
 #include "allocator.h"
+#include "common/atomic.h"
 #include "common/path.h"
 #include "zip_package.h"
 #include "vfs_file.h"
@@ -60,7 +61,11 @@ static volatile LONG64 generation;
 static volatile LONG64 generation_sequence;
 static SRWLOCK lookup_cache_lock = SRWLOCK_INIT;
 static SRWLOCK writable_lock = SRWLOCK_INIT;
+#ifdef _MSC_VER
 static __declspec(thread) unsigned int vfs_recursion_depth;
+#else
+static _Thread_local unsigned int vfs_recursion_depth;
+#endif
 static vfs_writable_entry_t *writable_entries;
 static size_t writable_count;
 static size_t writable_capacity;
@@ -563,7 +568,7 @@ const wchar_t *vfs_lookup_domain(const wchar_t *path, vfs_lookup_domain_t domain
 }
 
 uint64_t vfs_generation(void) {
-    return (uint64_t)ReadAcquire64(&generation);
+    return (uint64_t)ml_atomic_load_acquire64(&generation);
 }
 
 static void clear_lookup_cache_locked(void) {

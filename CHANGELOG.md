@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Fixed MinGW Clang builds with compatible acquire loads, C11 thread-local
+  VFS recursion guards, and correctly typed CPU Set smoke-test arguments.
+  mimalloc now detects UCRT from the toolchain headers, avoiding duplicate
+  initialization when building outside an MSYS2 UCRT64 shell. Step lookup smoke
+  tests retain their alignment and runtime fixture updates under Clang LTO.
 - BootBoost cache keys now include the game executable's PE and file metadata
   and the RSA key, so an EXE-only game update also rebuilds the cache. Cache
   loads additionally compare the first 24 plaintext bytes with the live stub

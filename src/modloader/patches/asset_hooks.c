@@ -12,6 +12,7 @@
 #include "log.h"
 
 #include "common/allocator.h"
+#include "common/atomic.h"
 #include "common/path.h"
 #include "game/game.h"
 
@@ -475,7 +476,7 @@ static void *__cdecl disk_open_file_hooked(ml_dl_device_t *device, ml_dl_string_
     ml_dl_string_t replacement = { 0 };
     bool overridden = make_override_path(path, &replacement, L"disk open_file", false);
     dl_open_file_t original = old_disk_open_file;
-    if (ReadAcquire(&logged_disk_open) == 0 && InterlockedCompareExchange(&logged_disk_open, 1, 0) == 0) {
+    if (ml_atomic_load_acquire(&logged_disk_open) == 0 && InterlockedCompareExchange(&logged_disk_open, 1, 0) == 0) {
         ML_LOG_DEBUG(L"asset-hooks", L"disk open_file enter: device=%p path=%p path_cstr=%p container=%p allocator=%p temporary=%d",
                      device, path, path_cstr, container, allocator, temporary ? 1 : 0);
     }
@@ -486,7 +487,7 @@ static void *__cdecl disk_open_file_hooked(ml_dl_device_t *device, ml_dl_string_
     if (original == NULL) { ml_dl_string_destroy(&replacement, game_stl_abi); return NULL; }
     result = original(device, path, path_cstr, container, allocator, temporary);
     ml_dl_string_destroy(&replacement, game_stl_abi);
-    if (ReadAcquire(&logged_disk_open_return) == 0 &&
+    if (ml_atomic_load_acquire(&logged_disk_open_return) == 0 &&
         InterlockedCompareExchange(&logged_disk_open_return, 1, 0) == 0) {
         ML_LOG_DEBUG(L"asset-hooks", L"disk open_file returned: operator=%p", result);
     }
@@ -507,7 +508,7 @@ static void *__cdecl ebl_open_file_hooked(ml_dl_device_t *device, ml_dl_string_t
     ml_dl_string_t replacement = { 0 };
     dl_open_file_t original = device == NULL || device->vtable == NULL ? NULL :
                               ebl_open_original(device->vtable->open_file);
-    if (ReadAcquire(&logged_ebl_open) == 0 && InterlockedCompareExchange(&logged_ebl_open, 1, 0) == 0) {
+    if (ml_atomic_load_acquire(&logged_ebl_open) == 0 && InterlockedCompareExchange(&logged_ebl_open, 1, 0) == 0) {
         ML_LOG_DEBUG(L"asset-hooks", L"BND4 open_file enter: device=%p path=%ls original=%p",
                      device, path_cstr == NULL ? L"<null>" : path_cstr, original);
     }
@@ -601,7 +602,7 @@ static bool hook_file_operator(ml_dl_file_operator_t *file_operator) {
      * so keep the settled case off the exclusive lock. `set_path_hook_settled` is
      * published after `set_path_hook_result` is final, and both are only ever
      * written under the exclusive lock. */
-    if (ReadAcquire(&set_path_hook_settled) != 0) return set_path_hook_result;
+    if (ml_atomic_load_acquire(&set_path_hook_settled) != 0) return set_path_hook_result;
     AcquireSRWLockExclusive(&set_path_hook_lock);
     if (set_path_hook_attempted) {
         result = set_path_hook_result;

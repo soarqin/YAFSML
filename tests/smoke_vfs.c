@@ -37,6 +37,19 @@ wchar_t *ml_mem_strdup_w(const wchar_t *str) {
     return result;
 }
 
+static DWORD WINAPI recursion_guard_worker(void *parameter) {
+    (void)parameter;
+    EXPECT_TRUE(!vfs_recursion_guard_active());
+    vfs_recursion_guard_enter();
+    vfs_recursion_guard_enter();
+    EXPECT_TRUE(vfs_recursion_guard_active());
+    vfs_recursion_guard_leave();
+    EXPECT_TRUE(vfs_recursion_guard_active());
+    vfs_recursion_guard_leave();
+    EXPECT_TRUE(!vfs_recursion_guard_active());
+    return 0;
+}
+
 int main(void) {
     wchar_t root[MAX_PATH];
     wchar_t first[MAX_PATH];
@@ -206,7 +219,18 @@ int main(void) {
     EXPECT_TRUE(!vfs_register_writable_path(L"settings/test.ini", L"C:\\other\\test.ini"));
     vfs_recursion_guard_enter();
     EXPECT_NULL(vfs_route_read_path(L"parts/test.bin", GENERIC_READ, OPEN_EXISTING));
+    {
+        DWORD exit_code;
+        HANDLE thread = CreateThread(NULL, 0, recursion_guard_worker, NULL, 0, NULL);
+        EXPECT_NOT_NULL(thread);
+        EXPECT_EQ(WaitForSingleObject(thread, 30000), WAIT_OBJECT_0);
+        EXPECT_TRUE(GetExitCodeThread(thread, &exit_code));
+        CloseHandle(thread);
+        EXPECT_EQ(exit_code, 0);
+        EXPECT_TRUE(vfs_recursion_guard_active());
+    }
     vfs_recursion_guard_leave();
+    EXPECT_TRUE(!vfs_recursion_guard_active());
     EXPECT_NULL(vfs_lookup(L"parts/missing.bin"));
     {
         const wchar_t *uid = vfs_virtual_to_uid(L"parts/test.bin");

@@ -6,6 +6,7 @@
 #include "zip_hooks.h"
 
 #include "common/allocator.h"
+#include "common/atomic.h"
 #include "modloader/vfs.h"
 #include <winternl.h>
 
@@ -113,7 +114,7 @@ static void zip_file_release(zip_file_t *file) {
 
 static void zip_operation_leave(void) {
     InterlockedDecrement(&active_operations);
-    if (!ReadAcquire(&accepting)) {
+    if (!ml_atomic_load_acquire(&accepting)) {
         AcquireSRWLockExclusive(&handles_lock);
         WakeAllConditionVariable(&operations_idle);
         ReleaseSRWLockExclusive(&handles_lock);
@@ -144,7 +145,7 @@ static bool zip_handle_insert(HANDLE handle, zip_file_t *file, DWORD access, zip
 static zip_file_t *zip_handle_get(HANDLE handle, DWORD *access) {
     zip_file_t *file = NULL;
     khiter_t slot;
-    if (!zip_handle_tagged(handle) || ReadAcquire(&handle_count) == 0 || !ReadAcquire(&accepting)) return NULL;
+    if (!zip_handle_tagged(handle) || ml_atomic_load_acquire(&handle_count) == 0 || !ml_atomic_load_acquire(&accepting)) return NULL;
     AcquireSRWLockShared(&handles_lock);
     if (handles != NULL) {
         slot = kh_get(zip_handles, handles, (khint64_t)(uintptr_t)handle);
@@ -173,7 +174,7 @@ static BOOL WINAPI close_handle_hooked(HANDLE handle) {
     DWORD error = ERROR_SUCCESS;
     bool handled = false;
     khiter_t slot;
-    if (!zip_handle_tagged(handle) || ReadAcquire(&handle_count) == 0) return old_close_handle(handle);
+    if (!zip_handle_tagged(handle) || ml_atomic_load_acquire(&handle_count) == 0) return old_close_handle(handle);
     AcquireSRWLockExclusive(&handles_lock);
     if (handles != NULL) {
         slot = kh_get(zip_handles, handles, (khint64_t)(uintptr_t)handle);
@@ -737,7 +738,7 @@ void ml_zip_file_close_all(void) {
 #ifdef ML_WIN32_HOOKS_TEST
     if (test_shutdown_entered != NULL) SetEvent(test_shutdown_entered);
 #endif
-    while (ReadAcquire(&active_operations) != 0)
+    while (ml_atomic_load_acquire(&active_operations) != 0)
         SleepConditionVariableSRW(&operations_idle, &handles_lock, INFINITE, 0);
     remaining = handles;
     handles = NULL;
