@@ -41,9 +41,10 @@ set(SMOKE_smoke_win32_hooks_SOURCES
     ${CMAKE_SOURCE_DIR}/src/modloader/patches/win32_hooks.c
     ${CMAKE_SOURCE_DIR}/src/modloader/patches/zip_hooks.c
     ${CMAKE_SOURCE_DIR}/src/modloader/vfs.c
+    ${CMAKE_SOURCE_DIR}/src/modloader/vfs_file.c
     ${CMAKE_SOURCE_DIR}/src/modloader/zip_package.c)
 set(SMOKE_smoke_win32_hooks_LIBRARIES minhook shlwapi miniz)
-set(SMOKE_smoke_win32_hooks_DEFINITIONS ML_WIN32_HOOKS_TEST)
+set(SMOKE_smoke_win32_hooks_DEFINITIONS ML_WIN32_HOOKS_TEST ML_VFS_FILE_TEST)
 set(SMOKE_smoke_lifecycle_SOURCES ${CMAKE_SOURCE_DIR}/src/modloader/lifecycle.c)
 set(SMOKE_smoke_rtti_SOURCES ${CMAKE_SOURCE_DIR}/src/process/rtti.c)
 set(SMOKE_smoke_rtti_DEFINITIONS ML_RTTI_TEST)
@@ -63,6 +64,7 @@ set(SMOKE_smoke_mod_zip_config_SOURCES
     ${CMAKE_SOURCE_DIR}/src/modloader/config.c
     ${CMAKE_SOURCE_DIR}/src/modloader/mod.c
     ${CMAKE_SOURCE_DIR}/src/modloader/vfs.c
+    ${CMAKE_SOURCE_DIR}/src/modloader/vfs_file.c
     ${CMAKE_SOURCE_DIR}/src/modloader/zip_package.c)
 set(SMOKE_smoke_mod_zip_config_LIBRARIES shlwapi inih miniz)
 set(SMOKE_smoke_loading_paths_SOURCES ${SMOKE_smoke_mod_zip_config_SOURCES}
@@ -115,15 +117,17 @@ set_target_properties(extdll_fixture PROPERTIES
 foreach(SMOKE_TARGET smoke_vfs smoke_vfs_writable_mt smoke_vfs_generation_mt smoke_vfs_zip)
     set(SMOKE_${SMOKE_TARGET}_SOURCES
         ${CMAKE_SOURCE_DIR}/src/modloader/vfs.c
+        ${CMAKE_SOURCE_DIR}/src/modloader/vfs_file.c
         ${CMAKE_SOURCE_DIR}/src/modloader/zip_package.c)
     set(SMOKE_${SMOKE_TARGET}_LIBRARIES shlwapi miniz)
 endforeach()
 set(SMOKE_smoke_vfs_DEFINITIONS ML_USE_TEST_ALLOCATOR)
-set(SMOKE_smoke_vfs_zip_DEFINITIONS ML_USE_TEST_ALLOCATOR)
+set(SMOKE_smoke_vfs_zip_DEFINITIONS ML_USE_TEST_ALLOCATOR ML_VFS_FILE_TEST)
 
 foreach(SMOKE_TARGET smoke_save_mapping smoke_save_mapping_mt)
     set(SMOKE_${SMOKE_TARGET}_SOURCES
         ${CMAKE_SOURCE_DIR}/src/modloader/vfs.c
+        ${CMAKE_SOURCE_DIR}/src/modloader/vfs_file.c
         ${CMAKE_SOURCE_DIR}/src/modloader/zip_package.c
         ${CMAKE_SOURCE_DIR}/src/modloader/patches/save_mapping.c)
     set(SMOKE_${SMOKE_TARGET}_LIBRARIES shlwapi miniz)

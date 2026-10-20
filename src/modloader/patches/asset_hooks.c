@@ -123,7 +123,7 @@ typedef struct ebl_open_hook_s {
 
 static bool remove_asset_hook(void *target);
 static bool make_override_path(const ml_dl_string_t *path, ml_dl_string_t *replacement,
-                               const wchar_t *route);
+                               const wchar_t *route, bool streaming);
 static void *__cdecl disk_open_file_hooked(ml_dl_device_t *device, ml_dl_string_t *path,
                                            const wchar_t *path_cstr, void *container,
                                            void *allocator, bool temporary);
@@ -429,7 +429,7 @@ static void clear_override_log(void) {
 }
 
 static bool make_override_path(const ml_dl_string_t *path, ml_dl_string_t *replacement,
-                               const wchar_t *route) {
+                               const wchar_t *route, bool streaming) {
     ml_dl_device_manager_guard_t guard = { 0 };
     wchar_t *expanded = NULL;
     const wchar_t *uid;
@@ -446,7 +446,9 @@ static bool make_override_path(const ml_dl_string_t *path, ml_dl_string_t *repla
     if (!expanded_ok) return false;
     uid = mods_file_virtual_to_uid_prefixed(expanded);
     if (uid == NULL) uid = vfs_virtual_to_uid(expanded);
-    /* ZIP UIDs are opened by the Win32 hooks as independent VFS streams. */
+    /* The BND4/EBL caller has no seek operation. Preserve that origin through
+     * the disk-device redirect; ordinary file handles use the decoded cache. */
+    if (streaming && uid != NULL) uid = vfs_uid_for_streaming(uid);
     physical = uid == NULL ? NULL : vfs_uid_to_path(uid);
     if (physical != NULL) {
         result = ml_dl_string_clone_replace(path, game_stl_abi, uid, replacement);
@@ -467,7 +469,7 @@ static void *__cdecl disk_open_file_hooked(ml_dl_device_t *device, ml_dl_string_
                                             const wchar_t *path_cstr, void *container, void *allocator, bool temporary) {
     void *result;
     ml_dl_string_t replacement = { 0 };
-    bool overridden = make_override_path(path, &replacement, L"disk open_file");
+    bool overridden = make_override_path(path, &replacement, L"disk open_file", false);
     dl_open_file_t original = old_disk_open_file;
     if (ReadAcquire(&logged_disk_open) == 0 && InterlockedCompareExchange(&logged_disk_open, 1, 0) == 0) {
         ML_LOG_DEBUG(L"asset-hooks", L"disk open_file enter: device=%p path=%p path_cstr=%p container=%p allocator=%p temporary=%d",
@@ -505,7 +507,7 @@ static void *__cdecl ebl_open_file_hooked(ml_dl_device_t *device, ml_dl_string_t
         ML_LOG_DEBUG(L"asset-hooks", L"BND4 open_file enter: device=%p path=%ls original=%p",
                      device, path_cstr == NULL ? L"<null>" : path_cstr, original);
     }
-    if (make_override_path(path, &replacement, L"BND4 open_file")) {
+    if (make_override_path(path, &replacement, L"BND4 open_file", true)) {
         void *result;
         const wchar_t *replacement_cstr = ml_dl_string_data(&replacement, game_stl_abi);
         result = disk_open_file_hooked(disk_device, &replacement, replacement_cstr,
@@ -567,7 +569,7 @@ static bool set_path_with_override(ml_dl_file_operator_t *file_operator, ml_dl_s
                                    bool p3, bool p4, size_t index) {
     dl_set_path_t original = old_set_path[index];
     ml_dl_string_t replacement = { 0 };
-    bool overridden = make_override_path(path, &replacement, L"DlFileOperator::SetPath");
+    bool overridden = make_override_path(path, &replacement, L"DlFileOperator::SetPath", false);
     bool result;
     if (overridden) path = &replacement;
     result = original != NULL && original(file_operator, path, p3, p4);

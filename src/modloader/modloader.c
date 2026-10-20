@@ -185,8 +185,8 @@ BOOL APIENTRY DllMain(const HMODULE module, const DWORD ul_reason_for_call, LPVO
             if (reserved != NULL) {
                 /* Process exit: every other thread is already gone, possibly
                    while holding a lock or inside a hook, so the teardown below
-                   could hang. No ZIP files are materialized on disk, so let
-                   the system reclaim all streams and allocations. */
+                   could hang. The system reclaims ZIP streams, memory caches
+                   and delete-on-close cache files with the process. */
                 break;
             }
             extdlls_unload_all();

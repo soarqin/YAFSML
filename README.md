@@ -176,13 +176,22 @@ selected=abc.zip:def
 `abc.zip` uses the archive root. `abc.zip:def` and `abc.zip:/def` both use `/def`
 inside the archive as the mod root: `def/parts/example.bin` overrides `parts/example.bin`.
 The same path syntax works in ModEngine2 TOML `mods` entries. ZIP files support stored
-and Deflate-compressed data, including ZIP64, and must not be encrypted. The VFS
-reads entries directly through miniz's zlib-compatible streams without extracting
-files to disk. Each open has its own position and bounded decoding buffers;
-backward seeks restart decoding from the beginning of the entry. ZIP mods remain
-read-only; save writes continue to use the existing save-file mappings. ZIP entries
-do not support memory mapping (`CreateFileMapping`). Overlapped reads decode on the
-calling thread, then deliver their event, IOCP, or APC completion notification.
+and Deflate-compressed data, including ZIP64, and must not be encrypted.
+
+ZIP reads follow the caller's I/O interface. Overrides opened through BND4/EBL
+containers use forward-only miniz streams. Ordinary file handles, such as those
+used for `regulation.bin`, decode the ZIP entry once on first read or seek, then
+read and seek within the decoded cache. Decoded files up to 32 MiB use memory when the
+process's 128 MiB decoded-cache budget has room; larger files, a full budget, or a
+failed memory allocation use temporary files. Closing the last duplicated handle
+releases its cache; Windows also deletes temporary caches when the process exits.
+The ZIP decoder has no seek or reset operation. The route is selected per open,
+independently of the filename or file contents.
+
+ZIP mods remain read-only; save writes continue to use the existing save-file
+mappings. ZIP entries do not support memory mapping (`CreateFileMapping`).
+Overlapped reads complete decoding or cache access on the calling thread, then
+deliver their event, IOCP, or APC completion notification.
 
 ZIP subpaths support `/`, `\`, nested directories, and mixed separators.
 `abc.zip:def\subdir\mod`, `abc.zip:\def\subdir\mod`, `abc.zip:/def/subdir/mod`,

@@ -4,6 +4,7 @@
 #include "modloader/patches/win32_hooks.h"
 #include "modloader/patches/zip_hooks.h"
 #include "modloader/vfs.h"
+#include "modloader/vfs_file.h"
 #include <miniz.h>
 #include <MinHook.h>
 
@@ -195,6 +196,70 @@ static DWORD WINAPI stream_reader(void *parameter) {
     return 0;
 }
 
+static int test_forward_handle(const wchar_t *uid, const char *contents) {
+    const wchar_t *stream_uid = vfs_uid_for_streaming(uid);
+    char ansi_uid[64], data[31];
+    HANDLE file;
+    DWORD received;
+    LARGE_INTEGER distance = { 0 }, position;
+    EXPECT_NOT_NULL(stream_uid);
+    EXPECT_TRUE(WideCharToMultiByte(CP_ACP, 0, stream_uid, -1, ansi_uid, sizeof(ansi_uid), NULL, NULL) != 0);
+    file = CreateFileA(ansi_uid, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    EXPECT_TRUE(file != INVALID_HANDLE_VALUE);
+    EXPECT_TRUE(ReadFile(file, data, sizeof(data), &received, NULL));
+    EXPECT_EQ(received, sizeof(data));
+    EXPECT_TRUE(memcmp(data, contents, received) == 0);
+    EXPECT_TRUE(!SetFilePointerEx(file, distance, NULL, FILE_BEGIN));
+    EXPECT_EQ(GetLastError(), ERROR_NOT_SUPPORTED);
+    EXPECT_TRUE(SetFilePointerEx(file, distance, &position, FILE_CURRENT));
+    EXPECT_EQ(position.QuadPart, sizeof(data));
+    EXPECT_TRUE(ReadFile(file, data, sizeof(data), &received, NULL));
+    EXPECT_TRUE(memcmp(data, contents + sizeof(data), received) == 0);
+    EXPECT_TRUE(CloseHandle(file));
+
+    file = CreateFileW(stream_uid, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL);
+    EXPECT_TRUE(file != INVALID_HANDLE_VALUE);
+    OVERLAPPED overlapped = { 0 };
+    EXPECT_TRUE(ReadFileEx(file, data, sizeof(data), &overlapped, read_completed));
+    EXPECT_EQ(SleepEx(1000, TRUE), WAIT_IO_COMPLETION);
+    EXPECT_EQ(apc_bytes, sizeof(data));
+    EXPECT_EQ(apc_error, ERROR_SUCCESS);
+    EXPECT_TRUE(memcmp(data, contents, sizeof(data)) == 0);
+    overlapped.Offset = sizeof(data);
+    EXPECT_TRUE(ReadFile(file, data, sizeof(data), &received, &overlapped));
+    EXPECT_TRUE(memcmp(data, contents + sizeof(data), received) == 0);
+    overlapped.Offset = 0;
+    EXPECT_TRUE(!ReadFile(file, data, sizeof(data), &received, &overlapped));
+    EXPECT_EQ(GetLastError(), ERROR_NOT_SUPPORTED);
+    EXPECT_TRUE(CloseHandle(file));
+    apc_calls = 0;
+    return 0;
+}
+
+static int test_cache_failure(const wchar_t *uid, const wchar_t *invalid_temp) {
+    wchar_t old_temp[32768], old_tmp[32768];
+    DWORD temp_length = GetEnvironmentVariableW(L"TEMP", old_temp, 32768);
+    DWORD tmp_length = GetEnvironmentVariableW(L"TMP", old_tmp, 32768);
+    DWORD received;
+    char byte;
+    OVERLAPPED overlapped = { 0 };
+    HANDLE file = CreateFileW(uid, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    EXPECT_TRUE(file != INVALID_HANDLE_VALUE);
+    vfs_file_test_limits(0, 0);
+    EXPECT_TRUE(SetEnvironmentVariableW(L"TEMP", invalid_temp));
+    EXPECT_TRUE(SetEnvironmentVariableW(L"TMP", invalid_temp));
+    overlapped.Offset = 1;
+    EXPECT_TRUE(!ReadFile(file, &byte, 1, &received, &overlapped));
+    EXPECT_EQ(GetLastError(), ERROR_PATH_NOT_FOUND);
+    EXPECT_EQ(received, 0);
+    EXPECT_EQ(vfs_file_test_memory_used(), 0);
+    EXPECT_TRUE(CloseHandle(file));
+    EXPECT_TRUE(SetEnvironmentVariableW(L"TEMP", temp_length == 0 ? NULL : old_temp));
+    EXPECT_TRUE(SetEnvironmentVariableW(L"TMP", tmp_length == 0 ? NULL : old_tmp));
+    vfs_file_test_limits(32 * 1024 * 1024, 128 * 1024 * 1024);
+    return 0;
+}
+
 static int test_zip_stream_hooks(const wchar_t *directory) {
     wchar_t path[MAX_PATH], native_path[MAX_PATH];
     char contents[8192], buffer[97], ansi_uid[64];
@@ -260,11 +325,13 @@ static int test_zip_stream_hooks(const wchar_t *directory) {
     EXPECT_TRUE(ReadFile(file, buffer, sizeof(buffer), &read, NULL));
     EXPECT_EQ(read, sizeof(buffer));
     EXPECT_TRUE(memcmp(buffer, contents, read) == 0);
+    EXPECT_EQ(vfs_file_test_memory_used(), sizeof(contents));
     EXPECT_TRUE(DuplicateHandle(GetCurrentProcess(), file, GetCurrentProcess(), &duplicate,
                                 0, FALSE, DUPLICATE_SAME_ACCESS));
     EXPECT_TRUE(ReadFile(duplicate, buffer, 13, &read, NULL));
     EXPECT_TRUE(memcmp(buffer, contents + sizeof(buffer), 13) == 0);
     EXPECT_TRUE(CloseHandle(file));
+    EXPECT_EQ(vfs_file_test_memory_used(), sizeof(contents));
     offset.QuadPart = -17;
     EXPECT_TRUE(SetFilePointerEx(duplicate, offset, &length, FILE_END));
     EXPECT_EQ(length.QuadPart, sizeof(contents) - 17);
@@ -303,6 +370,7 @@ static int test_zip_stream_hooks(const wchar_t *directory) {
     EXPECT_NULL(CreateFileMappingW(duplicate, NULL, PAGE_READONLY, 0, 0, NULL));
     EXPECT_EQ(GetLastError(), ERROR_NOT_SUPPORTED);
     EXPECT_TRUE(CloseHandle(duplicate));
+    EXPECT_EQ(vfs_file_test_memory_used(), 0);
     EXPECT_TRUE(!CloseHandle(duplicate));
     EXPECT_EQ(GetLastError(), ERROR_INVALID_HANDLE);
 
@@ -403,6 +471,8 @@ static int test_zip_stream_hooks(const wchar_t *directory) {
     EXPECT_TRUE(CloseHandle(file));
     EXPECT_EQ(compare_read_ex(native_path, uid), 0);
     EXPECT_EQ(compare_duplicate_close(native_path, uid), 0);
+    EXPECT_EQ(test_forward_handle(uid, contents), 0);
+    EXPECT_EQ(test_cache_failure(uid, path), 0);
     file = CreateFileW(vfs_virtual_to_uid(L"empty.bin"), GENERIC_READ, FILE_SHARE_READ,
                         NULL, OPEN_EXISTING, 0, NULL);
     EXPECT_TRUE(file != INVALID_HANDLE_VALUE);
@@ -413,6 +483,7 @@ static int test_zip_stream_hooks(const wchar_t *directory) {
     {
         stream_thread_t context = { uid, contents, 0 };
         HANDLE threads[8];
+        vfs_file_test_limits(sizeof(contents), sizeof(contents) * 2);
         for (size_t i = 0; i < 8; i++) {
             threads[i] = CreateThread(NULL, 0, stream_reader, &context, 0, NULL);
             EXPECT_NOT_NULL(threads[i]);
@@ -420,6 +491,8 @@ static int test_zip_stream_hooks(const wchar_t *directory) {
         EXPECT_EQ(WaitForMultipleObjects(8, threads, TRUE, 30000), WAIT_OBJECT_0);
         for (size_t i = 0; i < 8; i++) EXPECT_TRUE(CloseHandle(threads[i]));
         EXPECT_EQ(context.failures, 0);
+        EXPECT_EQ(vfs_file_test_memory_used(), 0);
+        vfs_file_test_limits(32 * 1024 * 1024, 128 * 1024 * 1024);
     }
 
     /* Teardown waits for an in-flight reader before freeing its I/O trampolines. */

@@ -16,7 +16,7 @@
 #include "khash.h"
 
 typedef struct zip_file_s {
-    vfs_stream_t *stream;
+    vfs_file_t *reader;
     volatile LONG references;
     DWORD access;
     DWORD share;
@@ -89,7 +89,7 @@ static DWORD file_access(DWORD access) {
 
 static void zip_file_release(zip_file_t *file) {
     if (InterlockedDecrement(&file->references) != 0) return;
-    vfs_stream_close(file->stream);
+    vfs_file_close(file->reader);
     if (file->completion_port != NULL) old_close_handle(file->completion_port);
     ml_mem_free(file);
 }
@@ -191,9 +191,9 @@ HANDLE ml_zip_file_open(const wchar_t *path, DWORD access, DWORD share,
     file->share = share;
     file->flags = flags;
     InitializeSRWLock(&file->lock);
-    file->stream = vfs_stream_open(path);
-    if (file->stream == NULL) { error = GetLastError(); goto failed; }
-    file->identity = vfs_stream_identity(file->stream);
+    file->reader = vfs_file_open(path);
+    if (file->reader == NULL) { error = GetLastError(); goto failed; }
+    file->identity = vfs_file_identity(file->reader);
     /* A real kernel event supplies a valid, inheritable HANDLE without creating
      * a disk file. All file operations on this handle are dispatched below. */
     handle = CreateEventW(security, TRUE, TRUE, NULL);
@@ -260,7 +260,7 @@ static DWORD error_from_status(ULONG_PTR status) {
     }
 }
 
-static DWORD read_stream(zip_file_t *file, DWORD access, void *buffer, DWORD size, DWORD *read,
+static DWORD read_file_data(zip_file_t *file, DWORD access, void *buffer, DWORD size, DWORD *read,
                           OVERLAPPED *overlapped, bool apc) {
     size_t received = 0;
     DWORD error = ERROR_SUCCESS;
@@ -282,14 +282,18 @@ static DWORD read_stream(zip_file_t *file, DWORD access, void *buffer, DWORD siz
         if (overlapped != NULL) {
             uint64_t offset = ((uint64_t)overlapped->OffsetHigh << 32) | overlapped->Offset;
             if ((file->flags & FILE_FLAG_OVERLAPPED) != 0) {
-                result = vfs_stream_read_at(file->stream, offset, buffer, size, &received);
+                result = vfs_file_read_at(file->reader, offset, buffer, size, &received);
             } else {
-                result = offset <= INT64_MAX && vfs_stream_seek(file->stream, (int64_t)offset, FILE_BEGIN, NULL);
-                if (!result) SetLastError(ERROR_INVALID_PARAMETER);
-                else result = vfs_stream_read(file->stream, buffer, size, &received);
+                if (offset > INT64_MAX) {
+                    result = false;
+                    SetLastError(ERROR_INVALID_PARAMETER);
+                } else {
+                    result = vfs_file_seek(file->reader, (int64_t)offset, FILE_BEGIN, NULL);
+                    if (result) result = vfs_file_read(file->reader, buffer, size, &received);
+                }
             }
         } else {
-            result = vfs_stream_read(file->stream, buffer, size, &received);
+            result = vfs_file_read(file->reader, buffer, size, &received);
         }
         if (!result) error = GetLastError();
         else if (overlapped != NULL && size != 0 && received == 0) error = ERROR_HANDLE_EOF;
@@ -321,7 +325,7 @@ static BOOL WINAPI read_file_hooked(HANDLE handle, LPVOID buffer, DWORD size,
         return FALSE;
     }
     ResetEvent(handle);
-    error = read_stream(file, access, buffer, size, &received, overlapped, false);
+    error = read_file_data(file, access, buffer, size, &received, overlapped, false);
     if (read != NULL) *read = received;
     AcquireSRWLockShared(&file->lock);
     if ((file->completion_modes & FILE_SKIP_SET_EVENT_ON_HANDLE) == 0) SetEvent(handle);
@@ -351,7 +355,7 @@ static BOOL WINAPI read_file_ex_hooked(HANDLE handle, LPVOID buffer, DWORD size,
         (file->flags & FILE_FLAG_OVERLAPPED) == 0) {
         zip_handle_release(file); SetLastError(ERROR_INVALID_PARAMETER); return FALSE;
     }
-    error = read_stream(file, access, buffer, size, &received, overlapped, true);
+    error = read_file_data(file, access, buffer, size, &received, overlapped, true);
     zip_handle_release(file);
     if (error != ERROR_SUCCESS && error != ERROR_HANDLE_EOF) { SetLastError(error); return FALSE; }
     /* Queue the caller's routine directly: no heap context to leak if its
@@ -371,16 +375,16 @@ static BOOL WINAPI write_file_hooked(HANDLE handle, LPCVOID buffer, DWORD size,
     return FALSE;
 }
 
-static BOOL seek_stream(zip_file_t *file, int64_t distance, DWORD origin, uint64_t limit, uint64_t *next) {
+static BOOL seek_file_position(zip_file_t *file, int64_t distance, DWORD origin, uint64_t limit, uint64_t *next) {
     uint64_t previous;
     BOOL result;
     DWORD error;
     AcquireSRWLockExclusive(&file->lock);
-    vfs_stream_seek(file->stream, 0, FILE_CURRENT, &previous);
-    result = vfs_stream_seek(file->stream, distance, origin, next);
+    vfs_file_seek(file->reader, 0, FILE_CURRENT, &previous);
+    result = vfs_file_seek(file->reader, distance, origin, next);
     error = GetLastError();
     if (result && *next > limit) {
-        vfs_stream_seek(file->stream, (int64_t)previous, FILE_BEGIN, NULL);
+        vfs_file_seek(file->reader, (int64_t)previous, FILE_BEGIN, NULL);
         result = FALSE;
         error = ERROR_INVALID_PARAMETER;
     }
@@ -396,7 +400,7 @@ static BOOL WINAPI set_pointer_ex_hooked(HANDLE handle, LARGE_INTEGER distance,
     BOOL result;
     DWORD error;
     if (file == NULL) return old_set_pointer_ex(handle, distance, position, origin);
-    result = seek_stream(file, distance.QuadPart, origin, INT64_MAX, &next);
+    result = seek_file_position(file, distance.QuadPart, origin, INT64_MAX, &next);
     error = GetLastError();
     zip_handle_release(file);
     if (result && position != NULL) position->QuadPart = (LONGLONG)next;
@@ -413,7 +417,7 @@ static DWORD WINAPI set_pointer_hooked(HANDLE handle, LONG low, PLONG high, DWOR
     if (file == NULL) return old_set_pointer(handle, low, high, origin);
     if (high != NULL) { distance.LowPart = (DWORD)low; distance.HighPart = *high; }
     else distance.QuadPart = low;
-    result = seek_stream(file, distance.QuadPart, origin, high != NULL ? INT64_MAX : MAXDWORD, &next);
+    result = seek_file_position(file, distance.QuadPart, origin, high != NULL ? INT64_MAX : MAXDWORD, &next);
     error = GetLastError();
     zip_handle_release(file);
     SetLastError(error);
@@ -426,7 +430,7 @@ static DWORD WINAPI set_pointer_hooked(HANDLE handle, LONG low, PLONG high, DWOR
 static BOOL WINAPI get_size_ex_hooked(HANDLE handle, PLARGE_INTEGER size) {
     zip_file_t *file = zip_handle_get(handle, NULL);
     if (file == NULL) return old_get_size_ex(handle, size);
-    if (size != NULL) size->QuadPart = (LONGLONG)vfs_stream_size(file->stream);
+    if (size != NULL) size->QuadPart = (LONGLONG)vfs_file_size(file->reader);
     zip_handle_release(file);
     if (size == NULL) SetLastError(ERROR_INVALID_PARAMETER);
     return size != NULL;
@@ -436,7 +440,7 @@ static DWORD WINAPI get_size_hooked(HANDLE handle, LPDWORD high) {
     zip_file_t *file = zip_handle_get(handle, NULL);
     uint64_t size;
     if (file == NULL) return old_get_size(handle, high);
-    size = vfs_stream_size(file->stream);
+    size = vfs_file_size(file->reader);
     zip_handle_release(file);
     if (high != NULL) *high = (DWORD)(size >> 32);
     SetLastError(ERROR_SUCCESS);
@@ -454,7 +458,7 @@ static BOOL WINAPI get_info_hooked(HANDLE handle, LPBY_HANDLE_FILE_INFORMATION i
     zip_file_t *file = zip_handle_get(handle, NULL);
     uint64_t size, identity;
     if (file == NULL) return old_get_info(handle, info);
-    size = vfs_stream_size(file->stream);
+    size = vfs_file_size(file->reader);
     identity = file->identity;
     zip_handle_release(file);
     if (info == NULL) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
@@ -473,7 +477,7 @@ static BOOL WINAPI get_info_ex_hooked(HANDLE handle, FILE_INFO_BY_HANDLE_CLASS k
     DWORD required = 0;
     uint64_t length, identity;
     if (file == NULL) return old_get_info_ex(handle, kind, info, size);
-    length = vfs_stream_size(file->stream);
+    length = vfs_file_size(file->reader);
     identity = file->identity;
     switch (kind) {
         case FileBasicInfo: required = sizeof(FILE_BASIC_INFO); break;

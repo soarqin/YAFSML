@@ -11,6 +11,7 @@
 #include "allocator.h"
 #include "common/path.h"
 #include "zip_package.h"
+#include "vfs_file.h"
 
 #include <shlwapi.h>
 
@@ -217,7 +218,9 @@ static bool vfs_insert(const wchar_t *relative, wchar_t *path, zip_package_t *zi
     kh_key(index, slot) = key;
     kh_value(index, slot) = entry_count;
     int uid_length = _scwprintf(L"\\\\me3??%zx", entry_count);
-    wchar_t *uid = uid_length < 0 ? NULL : ml_mem_alloc(0, ((size_t)uid_length + 1) * sizeof(*uid));
+    /* Both routes share one allocation: the normal UID, then its forward-only
+     * BND4/EBL variant. Routing must never return a caller-owned path buffer. */
+    wchar_t *uid = uid_length < 0 ? NULL : ml_mem_alloc(0, ((size_t)uid_length * 2 + 3) * sizeof(*uid));
     if (uid == NULL) {
         kh_del(vfs_index, index, slot);
         ml_mem_free(key);
@@ -225,6 +228,7 @@ static bool vfs_insert(const wchar_t *relative, wchar_t *path, zip_package_t *zi
         return false;
     }
     _snwprintf(uid, (size_t)uid_length + 1, L"\\\\me3??%zx", entry_count);
+    _snwprintf(uid + uid_length + 1, (size_t)uid_length + 2, L"\\\\me3??s%zx", entry_count);
     entries[entry_count] = (vfs_entry_t){ key, path, uid, zip, zip_file };
     *previous = (vfs_entry_t){ 0 };
     *touched = entry_count;
@@ -670,6 +674,7 @@ static vfs_entry_t *vfs_uid_entry(const wchar_t *uid) {
      * before any hook is installed, and are immutable once UIDs are handed out. */
     if (uid == NULL || wcsncmp(uid, prefix, (sizeof(prefix) / sizeof(prefix[0])) - 1) != 0) return NULL;
     uid += (sizeof(prefix) / sizeof(prefix[0])) - 1;
+    if (*uid == L's') uid++;
     if (!iswxdigit(*uid)) return NULL;
     index_value = wcstoull(uid, &end, 16);
     if (end == uid || *end != L'\0' || index_value >= entry_count) return NULL;
@@ -678,7 +683,14 @@ static vfs_entry_t *vfs_uid_entry(const wchar_t *uid) {
 
 const wchar_t *vfs_uid_to_path(const wchar_t *uid) {
     vfs_entry_t *entry = vfs_uid_entry(uid);
+    if (entry != NULL && entry->zip != NULL && uid[7] == L's') return entry->uid + wcslen(entry->uid) + 1;
     return entry == NULL ? NULL : vfs_entry_read_path(entry);
+}
+
+const wchar_t *vfs_uid_for_streaming(const wchar_t *uid) {
+    vfs_entry_t *entry = vfs_uid_entry(uid);
+    if (entry == NULL) return NULL;
+    return entry->zip == NULL ? entry->uid : entry->uid + wcslen(entry->uid) + 1;
 }
 
 bool vfs_is_zip_path(const wchar_t *path) {
@@ -691,14 +703,7 @@ bool vfs_has_zip_entries(void) {
     return false;
 }
 
-struct vfs_stream_s {
-    zip_stream_t *zip;
-    uint64_t position;
-    uint64_t identity;
-};
-
-vfs_stream_t *vfs_stream_open(const wchar_t *path) {
-    vfs_stream_t *stream;
+vfs_file_t *vfs_file_open(const wchar_t *path) {
     vfs_entry_t *entry;
     const wchar_t *routed;
     if (path == NULL) { SetLastError(ERROR_INVALID_PARAMETER); return NULL; }
@@ -706,65 +711,7 @@ vfs_stream_t *vfs_stream_open(const wchar_t *path) {
     if (routed != NULL) path = routed;
     entry = vfs_uid_entry(path);
     if (entry == NULL || entry->zip == NULL) { SetLastError(ERROR_NOT_SUPPORTED); return NULL; }
-    stream = ml_mem_alloc(LPTR, sizeof(*stream));
-    if (stream == NULL) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
-    stream->zip = zip_stream_open(entry->zip, entry->zip_file);
-    if (stream->zip == NULL) {
-        DWORD error = GetLastError();
-        ml_mem_free(stream);
-        SetLastError(error);
-        return NULL;
-    }
-    stream->identity = (uint64_t)(entry - entries) + 1;
-    return stream;
-}
-
-void vfs_stream_close(vfs_stream_t *stream) {
-    if (stream == NULL) return;
-    zip_stream_close(stream->zip);
-    ml_mem_free(stream);
-}
-
-uint64_t vfs_stream_size(const vfs_stream_t *stream) {
-    return zip_stream_size(stream->zip);
-}
-
-uint64_t vfs_stream_identity(const vfs_stream_t *stream) {
-    return stream->identity;
-}
-
-bool vfs_stream_read(vfs_stream_t *stream, void *buffer, size_t size, size_t *read) {
-    size_t received;
-    bool result = zip_stream_read_at(stream->zip, stream->position, buffer, size, &received);
-    stream->position += received;
-    if (read != NULL) *read = received;
-    return result;
-}
-
-bool vfs_stream_read_at(vfs_stream_t *stream, uint64_t offset, void *buffer, size_t size, size_t *read) {
-    size_t received;
-    bool result = zip_stream_read_at(stream->zip, offset, buffer, size, &received);
-    if (read != NULL) *read = received;
-    return result;
-}
-
-bool vfs_stream_seek(vfs_stream_t *stream, int64_t distance, DWORD origin, uint64_t *position) {
-    uint64_t base, next;
-    bool result = false;
-    base = origin == FILE_BEGIN ? 0 : origin == FILE_CURRENT ? stream->position : vfs_stream_size(stream);
-    if (origin > FILE_END) {
-        SetLastError(ERROR_INVALID_PARAMETER);
-    } else if (distance < 0 && (uint64_t)(-(distance + 1)) + 1 > base) {
-        SetLastError(ERROR_NEGATIVE_SEEK);
-    } else if (distance > 0 && (uint64_t)distance > INT64_MAX - base) {
-        SetLastError(ERROR_INVALID_PARAMETER);
-    } else {
-        next = distance < 0 ? base - ((uint64_t)(-(distance + 1)) + 1) : base + (uint64_t)distance;
-        stream->position = next;
-        if (position != NULL) *position = next;
-        result = true;
-    }
-    return result;
+    return vfs_file_create(entry->zip, entry->zip_file, (uint64_t)(entry - entries) + 1, path[7] == L's');
 }
 
 const wchar_t *vfs_lookup_prefixed_domain(const wchar_t *path, const wchar_t *game_root,

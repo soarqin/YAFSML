@@ -36,6 +36,11 @@ struct zip_package_s {
 
 #define ZIP_STREAM_BUFFER_SIZE 65536
 
+#ifdef ML_VFS_FILE_TEST
+static volatile LONG64 test_read_count;
+uint64_t zip_package_test_read_count(void) { return (uint64_t)ReadAcquire64(&test_read_count); }
+#endif
+
 struct zip_stream_s {
     zip_package_t *package;
     mz_zip_archive_file_stat stat;
@@ -46,7 +51,6 @@ struct zip_stream_s {
     mz_ulong crc;
     DWORD error;
     bool ended;
-    bool check_crc;
     unsigned char input[];
 };
 
@@ -73,6 +77,9 @@ static size_t zip_read(void *opaque, mz_uint64 offset, void *buffer, size_t size
     HANDLE file = opaque;
     LARGE_INTEGER position;
     size_t total = 0;
+#ifdef ML_VFS_FILE_TEST
+    InterlockedIncrement64(&test_read_count);
+#endif
     if (offset > INT64_MAX) return 0;
     position.QuadPart = (LONGLONG)offset;
     if (!SetFilePointerEx(file, position, NULL, FILE_BEGIN)) return 0;
@@ -294,7 +301,6 @@ zip_stream_t *zip_stream_open(zip_package_t *package, size_t file) {
     if (stream == NULL) { error = ERROR_NOT_ENOUGH_MEMORY; goto failed; }
     stream->stat = stat;
     stream->package = package;
-    stream->check_crc = true;
     stream->data_offset = stream->stat.m_local_header_ofs + sizeof(header) +
                           zip_u16(header + 26) + zip_u16(header + 28);
     if (stream->data_offset > package->archive.m_archive_size ||
@@ -360,7 +366,7 @@ static bool zip_stream_decode(zip_stream_t *stream, void *buffer, size_t size, s
         stream->crc = mz_crc32(stream->crc, buffer, size);
         stream->position += size;
         *read = size;
-        if (stream->position == stream->stat.m_uncomp_size && stream->check_crc &&
+        if (stream->position == stream->stat.m_uncomp_size &&
             stream->crc != stream->stat.m_crc32) return zip_stream_error(stream, ERROR_CRC);
         return true;
     }
@@ -401,31 +407,12 @@ static bool zip_stream_decode(zip_stream_t *stream, void *buffer, size_t size, s
     return true;
 }
 
-bool zip_stream_read_at(zip_stream_t *stream, uint64_t offset, void *buffer, size_t size, size_t *read) {
-    unsigned char discard[8192];
+bool zip_stream_read(zip_stream_t *stream, void *buffer, size_t size, size_t *read) {
     *read = 0;
     if (size != 0 && buffer == NULL) { SetLastError(ERROR_INVALID_PARAMETER); return false; }
     if (stream->error != ERROR_SUCCESS) { SetLastError(stream->error); return false; }
-    if (size == 0 || offset > stream->stat.m_uncomp_size) return true;
-    if (stream->stat.m_method == 0 && offset != stream->position) {
-        stream->position = offset;
-        stream->crc = 0;
-        stream->check_crc = offset == 0;
-    } else if (offset < stream->position) {
-        mz_inflateReset(&stream->inflater);
-        stream->inflater.avail_in = 0;
-        stream->inflater.next_in = NULL;
-        stream->compressed_loaded = 0;
-        stream->position = 0;
-        stream->crc = 0;
-        stream->ended = false;
-    }
-    while (stream->position < offset) {
-        size_t skipped;
-        uint64_t remaining = offset - stream->position;
-        size_t chunk = remaining < sizeof(discard) ? (size_t)remaining : sizeof(discard);
-        if (!zip_stream_decode(stream, discard, chunk, &skipped)) return false;
-    }
-    if (size > stream->stat.m_uncomp_size - offset) size = (size_t)(stream->stat.m_uncomp_size - offset);
+    if (size == 0) return true;
+    if (size > stream->stat.m_uncomp_size - stream->position)
+        size = (size_t)(stream->stat.m_uncomp_size - stream->position);
     return zip_stream_decode(stream, buffer, size, read);
 }

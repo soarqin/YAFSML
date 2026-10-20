@@ -37,8 +37,12 @@ const wchar_t *zip_package_relative_path(const zip_package_t *package, size_t fi
 zip_stream_t *zip_stream_open(zip_package_t *package, size_t file);
 void zip_stream_close(zip_stream_t *stream);
 uint64_t zip_stream_size(const zip_stream_t *stream);
-bool zip_stream_read_at(zip_stream_t *stream, uint64_t offset, void *buffer,
-                        size_t size, size_t *read);
+/* Forward-only: seeking belongs to the decoded-file cache, never the inflater. */
+bool zip_stream_read(zip_stream_t *stream, void *buffer, size_t size, size_t *read);
+
+#ifdef ML_VFS_FILE_TEST
+uint64_t zip_package_test_read_count(void);
+#endif
 
 #ifdef __cplusplus
 }

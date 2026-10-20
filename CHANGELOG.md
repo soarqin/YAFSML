@@ -11,11 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `[mod]` entries and ModEngine2 TOML `mods` paths can name ZIP files.
   `abc.zip:def` uses `def` inside the archive as the mod root. Stored and
-  Deflate entries, including ZIP64, are read directly through bounded,
-  zlib-compatible VFS streams without temporary extraction files. Each open has
-  an independent position; backward seeks replay the entry's Deflate stream.
+  Deflate entries, including ZIP64, use bounded miniz streams for forward-only
+  BND4/EBL overrides. Seekable file handles decode entries once into memory or
+  temporary-file caches: 32 MiB per memory-cached file and 128 MiB total. Caches
+  are released on final handle close; temporary files are deleted on process
+  exit as well. The ZIP decoder no longer seeks or replays compressed data.
   Win32 reads, seeks, size queries, duplicate handles, and overlapped completion
-  notifications use these streams. ZIP mods remain read-only; memory mapping is
+  notifications use the selected backend. ZIP mods remain read-only; memory mapping is
   unsupported.
 
 ### Changed

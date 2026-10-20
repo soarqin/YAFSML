@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 
 #include <windows.h>
 #include <shlwapi.h>
@@ -8,6 +9,7 @@
 #include "test_vfs.h"
 #include "modloader/vfs.h"
 #include "modloader/zip_package.h"
+#include "modloader/vfs_file.h"
 
 static size_t allocation_failure_after;
 static bool allocation_failure_triggered;
@@ -205,11 +207,11 @@ static int test_failed_read_retry(const wchar_t *path) {
     EXPECT_TRUE(vfs_add_package(path));
     vfs_reset_lookup_caches();
     for (size_t i = 0; i < 2; i++) {
-        vfs_stream_t *stream = vfs_stream_open(vfs_lookup(L"retry.bin"));
+        vfs_file_t *stream = vfs_file_open(vfs_lookup(L"retry.bin"));
         EXPECT_NOT_NULL(stream);
-        EXPECT_TRUE(!vfs_stream_read(stream, data, sizeof(data), &read));
+        EXPECT_TRUE(!vfs_file_read(stream, data, sizeof(data), &read));
         EXPECT_EQ(GetLastError(), ERROR_CRC);
-        vfs_stream_close(stream);
+        vfs_file_close(stream);
     }
     EXPECT_NOT_NULL(vfs_uid_to_path(vfs_virtual_to_uid(L"retry.bin")));
     vfs_uninit();
@@ -224,7 +226,7 @@ static int test_failed_read_retry(const wchar_t *path) {
         zip_stream_t *stream = zip_stream_open(package, 0);
         EXPECT_NOT_NULL(stream);
         zip_package_close(package);
-        EXPECT_TRUE(zip_stream_read_at(stream, 0, data, sizeof(data), &read));
+        EXPECT_TRUE(zip_stream_read(stream, data, sizeof(data), &read));
         EXPECT_EQ(read, 7);
         EXPECT_TRUE(memcmp(data, "correct", 7) == 0);
         zip_stream_close(stream);
@@ -297,71 +299,272 @@ static int test_large_streams(const wchar_t *path) {
     EXPECT_TRUE(vfs_add_package(path));
     for (size_t variant = 0; variant < 2; variant++) {
         const wchar_t *name = variant == 0 ? L"large.bin" : L"stored.bin";
-        vfs_stream_t *stream, *other;
+        vfs_file_t *stream, *other;
         size_t read;
         uint64_t position;
         allocated_bytes = 0;
         track_allocations = true;
-        stream = vfs_stream_open(name);
+        stream = vfs_file_open(name);
         track_allocations = false;
         EXPECT_NOT_NULL(stream);
         EXPECT_TRUE(allocated_bytes < (variant == 0 ? 256 * 1024 : 16 * 1024));
-        EXPECT_EQ(vfs_stream_size(stream), length);
-        EXPECT_TRUE(!vfs_stream_read(stream, NULL, 1, &read));
+        EXPECT_EQ(vfs_file_size(stream), length);
+        EXPECT_TRUE(!vfs_file_read(stream, NULL, 1, &read));
         EXPECT_EQ(GetLastError(), ERROR_INVALID_PARAMETER);
         EXPECT_EQ(read, 0);
-        other = vfs_stream_open(name);
+        other = vfs_file_open(name);
         EXPECT_NOT_NULL(other);
         for (size_t offset = 0; offset < length;) {
             size_t chunk = offset % 3 == 0 ? 1 : offset % 3 == 1 ? 70001 : 32767;
             if (chunk > length - offset) chunk = length - offset;
-            EXPECT_TRUE(vfs_stream_read(stream, buffer, chunk, &read));
+            EXPECT_TRUE(vfs_file_read(stream, buffer, chunk, &read));
             EXPECT_EQ(read, chunk);
             EXPECT_TRUE(memcmp(buffer, expected + offset, read) == 0);
             offset += read;
         }
-        EXPECT_TRUE(vfs_stream_read(stream, buffer, 1, &read));
+        EXPECT_TRUE(vfs_file_read(stream, buffer, 1, &read));
         EXPECT_EQ(read, 0);
-        EXPECT_TRUE(vfs_stream_read(other, buffer, 37, &read));
+        EXPECT_TRUE(vfs_file_read(other, buffer, 37, &read));
         EXPECT_TRUE(memcmp(buffer, expected, 37) == 0);
-        vfs_stream_close(other);
+        vfs_file_close(other);
+        uint64_t archive_reads = zip_package_test_read_count();
         for (size_t i = 0; i < 25; i++) {
             random = random * 1664525 + 1013904223;
             size_t offset = random % (length - 70001);
-            EXPECT_TRUE(vfs_stream_seek(stream, (int64_t)offset, FILE_BEGIN, &position));
+            EXPECT_TRUE(vfs_file_seek(stream, (int64_t)offset, FILE_BEGIN, &position));
             EXPECT_EQ(position, offset);
-            EXPECT_TRUE(vfs_stream_read(stream, buffer, 70001, &read));
+            EXPECT_TRUE(vfs_file_read(stream, buffer, 70001, &read));
             EXPECT_EQ(read, 70001);
             EXPECT_TRUE(memcmp(buffer, expected + offset, read) == 0);
         }
-        EXPECT_TRUE(vfs_stream_seek(stream, -73, FILE_END, &position));
-        EXPECT_TRUE(vfs_stream_read_at(stream, 3, buffer, 41, &read));
+        EXPECT_EQ(zip_package_test_read_count(), archive_reads);
+        EXPECT_TRUE(vfs_file_seek(stream, -73, FILE_END, &position));
+        EXPECT_TRUE(vfs_file_read_at(stream, 3, buffer, 41, &read));
         EXPECT_TRUE(memcmp(buffer, expected + 3, 41) == 0);
-        EXPECT_TRUE(vfs_stream_read(stream, buffer, 70001, &read));
+        EXPECT_TRUE(vfs_file_read(stream, buffer, 70001, &read));
         EXPECT_EQ(read, 73);
         EXPECT_TRUE(memcmp(buffer, expected + length - 73, 73) == 0);
-        EXPECT_TRUE(!vfs_stream_seek(stream, -1, FILE_BEGIN, NULL));
+        EXPECT_TRUE(!vfs_file_seek(stream, -1, FILE_BEGIN, NULL));
         EXPECT_EQ(GetLastError(), ERROR_NEGATIVE_SEEK);
-        EXPECT_TRUE(!vfs_stream_seek(stream, INT64_MIN, FILE_CURRENT, NULL));
-        EXPECT_TRUE(!vfs_stream_seek(stream, INT64_MAX, FILE_END, NULL));
-        EXPECT_TRUE(vfs_stream_seek(stream, (int64_t)length + 5, FILE_BEGIN, NULL));
-        EXPECT_TRUE(vfs_stream_read(stream, buffer, 10, &read));
+        EXPECT_TRUE(!vfs_file_seek(stream, INT64_MIN, FILE_CURRENT, NULL));
+        EXPECT_TRUE(!vfs_file_seek(stream, INT64_MAX, FILE_END, NULL));
+        EXPECT_TRUE(vfs_file_seek(stream, (int64_t)length + 5, FILE_BEGIN, NULL));
+        EXPECT_TRUE(vfs_file_read(stream, buffer, 10, &read));
         EXPECT_EQ(read, 0);
-        vfs_stream_close(stream);
+        vfs_file_close(stream);
+
+        /* BND4/EBL consumes the same large entry with bounded buffers. */
+        allocated_bytes = 0;
+        track_allocations = true;
+        stream = vfs_file_open(vfs_uid_for_streaming(vfs_virtual_to_uid(name)));
+        EXPECT_NOT_NULL(stream);
+        for (size_t offset = 0; offset < length;) {
+            size_t chunk = length - offset < 70001 ? length - offset : 70001;
+            EXPECT_TRUE(vfs_file_read(stream, buffer, chunk, &read));
+            EXPECT_EQ(read, chunk);
+            EXPECT_TRUE(memcmp(buffer, expected + offset, read) == 0);
+            offset += read;
+        }
+        track_allocations = false;
+        EXPECT_TRUE(allocated_bytes < 256 * 1024);
+        EXPECT_EQ(vfs_file_test_memory_used(), 0);
+        EXPECT_TRUE(vfs_file_test_cache_handle(stream) == INVALID_HANDLE_VALUE);
+        vfs_file_close(stream);
     }
     EXPECT_TRUE(read_matches(vfs_lookup(L"empty.bin"), ""));
     /* Open files remain readable after the index releases its package reference. */
-    vfs_stream_t *retained = vfs_stream_open(L"large.bin");
+    vfs_file_t *retained = vfs_file_open(L"large.bin");
     EXPECT_NOT_NULL(retained);
     vfs_uninit();
     size_t read;
-    EXPECT_TRUE(vfs_stream_read(retained, buffer, 70001, &read));
+    EXPECT_TRUE(vfs_file_read(retained, buffer, 70001, &read));
     EXPECT_TRUE(memcmp(buffer, expected, read) == 0);
-    vfs_stream_close(retained);
+    vfs_file_close(retained);
     EXPECT_TRUE(SetEnvironmentVariableW(L"TEMP", temp_length == 0 ? NULL : old_temp));
     EXPECT_TRUE(SetEnvironmentVariableW(L"TMP", tmp_length == 0 ? NULL : old_tmp));
     free(buffer);
     free(expected);
+    return 0;
+}
+
+static int test_cache_backends(const wchar_t *path) {
+    const size_t length = 65536 + 39;
+    unsigned char *contents = malloc(length), buffer[97];
+    mz_zip_archive archive = { 0 };
+    FILE *output;
+    size_t received;
+    wchar_t cache_path[32768];
+    EXPECT_NOT_NULL(contents);
+    for (size_t i = 0; i < length; i++) contents[i] = (unsigned char)(i * 31 + i / 29);
+    output = _wfopen(path, L"wb");
+    EXPECT_NOT_NULL(output);
+    EXPECT_TRUE(mz_zip_writer_init_cfile(&archive, output, 0));
+    EXPECT_TRUE(mz_zip_writer_add_mem(&archive, "regulation.bin", contents, length, 6));
+    EXPECT_TRUE(mz_zip_writer_finalize_archive(&archive));
+    EXPECT_TRUE(mz_zip_writer_end(&archive));
+    EXPECT_EQ(fclose(output), 0);
+    vfs_init();
+    EXPECT_TRUE(vfs_add_package(path));
+    EXPECT_EQ(vfs_file_test_memory_used(), 0);
+    vfs_file_test_limits(length, length * 2);
+    vfs_file_t *files[3];
+    for (size_t i = 0; i < 3; i++) {
+        files[i] = vfs_file_open(L"regulation.bin");
+        EXPECT_NOT_NULL(files[i]);
+        EXPECT_TRUE(vfs_file_read(files[i], buffer, 1, &received));
+        EXPECT_EQ(received, 1);
+        EXPECT_EQ(buffer[0], contents[0]);
+    }
+    EXPECT_EQ(vfs_file_test_memory_used(), length * 2);
+    EXPECT_TRUE(vfs_file_test_cache_handle(files[0]) == INVALID_HANDLE_VALUE);
+    EXPECT_TRUE(vfs_file_test_cache_handle(files[1]) == INVALID_HANDLE_VALUE);
+    EXPECT_TRUE(vfs_file_test_cache_handle(files[2]) != INVALID_HANDLE_VALUE);
+    EXPECT_TRUE(GetFinalPathNameByHandleW(vfs_file_test_cache_handle(files[2]), cache_path, 32768, 0) != 0);
+    uint64_t archive_reads = zip_package_test_read_count();
+    for (size_t i = 0; i < 3; i++) {
+        for (size_t step = 0; step < 250; step++) {
+            size_t offset = (step * 1567) % (length - sizeof(buffer));
+            EXPECT_TRUE(vfs_file_seek(files[i], (int64_t)offset, FILE_BEGIN, NULL));
+            EXPECT_TRUE(vfs_file_read(files[i], buffer, sizeof(buffer), &received));
+            EXPECT_EQ(received, sizeof(buffer));
+            EXPECT_TRUE(memcmp(buffer, contents + offset, received) == 0);
+        }
+    }
+    EXPECT_EQ(zip_package_test_read_count(), archive_reads);
+    vfs_file_close(files[0]);
+    EXPECT_EQ(vfs_file_test_memory_used(), length);
+    files[0] = vfs_file_open(L"regulation.bin");
+    EXPECT_NOT_NULL(files[0]);
+    EXPECT_TRUE(vfs_file_read(files[0], buffer, 1, &received));
+    EXPECT_EQ(vfs_file_test_memory_used(), length * 2);
+    for (size_t i = 0; i < 3; i++) vfs_file_close(files[i]);
+    EXPECT_EQ(vfs_file_test_memory_used(), 0);
+    EXPECT_EQ(GetFileAttributesW(cache_path), INVALID_FILE_ATTRIBUTES);
+
+    /* The size threshold spills even when there is room in the total budget. */
+    vfs_file_test_limits(length - 1, length * 2);
+    files[0] = vfs_file_open(L"regulation.bin");
+    EXPECT_NOT_NULL(files[0]);
+    EXPECT_TRUE(vfs_file_read(files[0], buffer, sizeof(buffer), &received));
+    EXPECT_TRUE(vfs_file_test_cache_handle(files[0]) != INVALID_HANDLE_VALUE);
+    EXPECT_EQ(vfs_file_test_memory_used(), 0);
+    vfs_file_close(files[0]);
+
+    /* A failed memory allocation releases its reservation and falls back to disk. */
+    vfs_file_test_limits(length, length);
+    files[0] = vfs_file_open(L"regulation.bin");
+    EXPECT_NOT_NULL(files[0]);
+    allocation_failure_after = 1;
+    EXPECT_TRUE(vfs_file_read(files[0], buffer, sizeof(buffer), &received));
+    allocation_failure_after = 0;
+    EXPECT_EQ(vfs_file_test_memory_used(), 0);
+    EXPECT_TRUE(vfs_file_test_cache_handle(files[0]) != INVALID_HANDLE_VALUE);
+    vfs_file_close(files[0]);
+
+    /* The same entry from BND4/EBL stays sequential, with no cache allocation. */
+    const wchar_t *uid = vfs_virtual_to_uid(L"regulation.bin");
+    const wchar_t *stream_uid = vfs_uid_for_streaming(uid);
+    EXPECT_NOT_NULL(stream_uid);
+    EXPECT_TRUE(stream_uid != uid);
+    EXPECT_TRUE(vfs_lookup(stream_uid) == stream_uid);
+    EXPECT_TRUE(vfs_uid_to_path(stream_uid) == stream_uid);
+    vfs_file_test_limits(0, 0);
+    files[0] = vfs_file_open(stream_uid);
+    EXPECT_NOT_NULL(files[0]);
+    EXPECT_TRUE(vfs_file_test_is_stream(files[0]));
+    EXPECT_TRUE(vfs_file_read(files[0], buffer, sizeof(buffer), &received));
+    EXPECT_TRUE(memcmp(buffer, contents, received) == 0);
+    EXPECT_TRUE(!vfs_file_seek(files[0], 0, FILE_BEGIN, NULL));
+    EXPECT_EQ(GetLastError(), ERROR_NOT_SUPPORTED);
+    EXPECT_TRUE(!vfs_file_read_at(files[0], 0, buffer, sizeof(buffer), &received));
+    EXPECT_EQ(GetLastError(), ERROR_NOT_SUPPORTED);
+    EXPECT_TRUE(vfs_file_read(files[0], buffer, sizeof(buffer), &received));
+    EXPECT_TRUE(memcmp(buffer, contents + sizeof(buffer), received) == 0);
+    EXPECT_TRUE(vfs_file_test_cache_handle(files[0]) == INVALID_HANDLE_VALUE);
+    EXPECT_EQ(vfs_file_test_memory_used(), 0);
+    vfs_file_close(files[0]);
+    vfs_file_test_limits(32 * 1024 * 1024, 128 * 1024 * 1024);
+    vfs_uninit();
+    free(contents);
+    return 0;
+}
+
+static int cache_child(HANDLE ready, HANDLE finish) {
+    wchar_t archive[32768];
+    char byte;
+    size_t received;
+    EXPECT_TRUE(GetEnvironmentVariableW(L"YAFSML_ZIP_TEST_ARCHIVE", archive, 32768) != 0);
+    vfs_init();
+    EXPECT_TRUE(vfs_add_package(archive));
+    vfs_file_test_limits(0, 0);
+    vfs_file_t *file = vfs_file_open(L"regulation.bin");
+    EXPECT_NOT_NULL(file);
+    EXPECT_TRUE(vfs_file_read(file, &byte, 1, &received));
+    EXPECT_TRUE(vfs_file_test_cache_handle(file) != INVALID_HANDLE_VALUE);
+    EXPECT_TRUE(SetEvent(ready));
+    EXPECT_EQ(WaitForSingleObject(finish, 30000), WAIT_OBJECT_0);
+    /* Deliberately omit loader cleanup: the kernel must remove the cache. */
+    ExitProcess(0);
+}
+
+static int test_process_cache_cleanup(const wchar_t *archive) {
+    wchar_t executable[32768], command[32768], directory[MAX_PATH], pattern[MAX_PATH], cached[MAX_PATH];
+    wchar_t old_temp[32768], old_tmp[32768], old_archive[32768];
+    DWORD temp_length = GetEnvironmentVariableW(L"TEMP", old_temp, 32768);
+    DWORD tmp_length = GetEnvironmentVariableW(L"TMP", old_tmp, 32768);
+    DWORD archive_length = GetEnvironmentVariableW(L"YAFSML_ZIP_TEST_ARCHIVE", old_archive, 32768);
+    SECURITY_ATTRIBUTES security = { sizeof(security), NULL, TRUE };
+    HANDLE ready = CreateEventW(&security, TRUE, FALSE, NULL);
+    HANDLE finish = CreateEventW(&security, TRUE, FALSE, NULL);
+    EXPECT_NOT_NULL(ready);
+    EXPECT_NOT_NULL(finish);
+    EXPECT_TRUE(GetModuleFileNameW(NULL, executable, 32768) != 0);
+    wcscpy_s(directory, MAX_PATH, archive);
+    EXPECT_TRUE(PathRemoveFileSpecW(directory));
+    EXPECT_TRUE(SetEnvironmentVariableW(L"TEMP", directory));
+    EXPECT_TRUE(SetEnvironmentVariableW(L"TMP", directory));
+    EXPECT_TRUE(SetEnvironmentVariableW(L"YAFSML_ZIP_TEST_ARCHIVE", archive));
+    for (size_t terminate = 0; terminate < 2; terminate++) {
+        STARTUPINFOW startup = { sizeof(startup) };
+        PROCESS_INFORMATION process;
+        WIN32_FIND_DATAW data;
+        HANDLE found;
+        DWORD exit_code;
+        EXPECT_TRUE(ResetEvent(ready));
+        EXPECT_TRUE(ResetEvent(finish));
+        _snwprintf(command, 32768, L"\"%ls\" --cache-child %llu %llu", executable,
+                   (unsigned long long)(uintptr_t)ready, (unsigned long long)(uintptr_t)finish);
+        EXPECT_TRUE(CreateProcessW(executable, command, NULL, NULL, TRUE, CREATE_NO_WINDOW,
+                                   NULL, NULL, &startup, &process));
+        DWORD wait = WaitForSingleObject(ready, 5000);
+        if (wait != WAIT_OBJECT_0) {
+            TerminateProcess(process.hProcess, 1);
+            WaitForSingleObject(process.hProcess, 5000);
+            CloseHandle(process.hThread);
+            CloseHandle(process.hProcess);
+            EXPECT_EQ(wait, WAIT_OBJECT_0);
+        }
+        _snwprintf(pattern, MAX_PATH, L"%ls\\YAFSML-zip-%08lx-*.tmp", directory, process.dwProcessId);
+        found = FindFirstFileW(pattern, &data);
+        if (found != INVALID_HANDLE_VALUE) {
+            _snwprintf(cached, MAX_PATH, L"%ls\\%ls", directory, data.cFileName);
+            FindClose(found);
+        }
+        if (terminate) EXPECT_TRUE(TerminateProcess(process.hProcess, 0));
+        else EXPECT_TRUE(SetEvent(finish));
+        EXPECT_EQ(WaitForSingleObject(process.hProcess, 5000), WAIT_OBJECT_0);
+        EXPECT_TRUE(GetExitCodeProcess(process.hProcess, &exit_code));
+        EXPECT_TRUE(CloseHandle(process.hThread));
+        EXPECT_TRUE(CloseHandle(process.hProcess));
+        EXPECT_EQ(exit_code, 0);
+        EXPECT_TRUE(found != INVALID_HANDLE_VALUE);
+        EXPECT_EQ(GetFileAttributesW(cached), INVALID_FILE_ATTRIBUTES);
+    }
+    EXPECT_TRUE(CloseHandle(ready));
+    EXPECT_TRUE(CloseHandle(finish));
+    EXPECT_TRUE(SetEnvironmentVariableW(L"TEMP", temp_length == 0 ? NULL : old_temp));
+    EXPECT_TRUE(SetEnvironmentVariableW(L"TMP", tmp_length == 0 ? NULL : old_tmp));
+    EXPECT_TRUE(SetEnvironmentVariableW(L"YAFSML_ZIP_TEST_ARCHIVE", archive_length == 0 ? NULL : old_archive));
     return 0;
 }
 
@@ -370,14 +573,14 @@ static int test_deflate_integrity(const wchar_t *path) {
     fixture_entry_t entry = { "integrity.bin", contents, 6 };
     memset(contents, 'z', sizeof(contents) - 1);
     contents[sizeof(contents) - 1] = '\0';
-    for (size_t variant = 0; variant < 4; variant++) {
+    for (size_t variant = 0; variant < 8; variant++) {
         FILE *file;
         mz_zip_archive archive = { 0 };
         mz_zip_archive_file_stat stat;
         mz_uint64 central;
         size_t read;
         uint32_t replacement;
-        vfs_stream_t *stream;
+        vfs_file_t *stream;
         EXPECT_EQ(write_zip(path, &entry, 1, 0), 0);
         file = _wfopen(path, L"r+b");
         EXPECT_NOT_NULL(file);
@@ -387,26 +590,34 @@ static int test_deflate_integrity(const wchar_t *path) {
         central = archive.m_central_directory_file_ofs + stat.m_central_dir_ofs;
         EXPECT_TRUE(mz_zip_reader_end(&archive));
         /* Corrupt CRC, shorten/extend the declared output, or truncate Deflate. */
-        if (variant == 0) replacement = stat.m_crc32 ^ 1;
-        else if (variant == 1) replacement = (uint32_t)stat.m_uncomp_size - 1;
-        else if (variant == 2) replacement = (uint32_t)stat.m_uncomp_size + 1;
+        size_t damage = variant % 4;
+        if (damage == 0) replacement = stat.m_crc32 ^ 1;
+        else if (damage == 1) replacement = (uint32_t)stat.m_uncomp_size - 1;
+        else if (damage == 2) replacement = (uint32_t)stat.m_uncomp_size + 1;
         else replacement = (uint32_t)stat.m_comp_size - 1;
-        EXPECT_EQ(_fseeki64(file, (mz_int64)central + (variant == 0 ? 16 : variant == 3 ? 20 : 24), SEEK_SET), 0);
+        EXPECT_EQ(_fseeki64(file, (mz_int64)central + (damage == 0 ? 16 : damage == 3 ? 20 : 24), SEEK_SET), 0);
         EXPECT_EQ(fwrite(&replacement, sizeof(replacement), 1, file), 1);
         EXPECT_EQ(fclose(file), 0);
         vfs_init();
         EXPECT_TRUE(vfs_add_package(path));
-        stream = vfs_stream_open(L"integrity.bin");
+        vfs_file_test_limits(variant < 4 ? 32 * 1024 * 1024 : 0, 128 * 1024 * 1024);
+        stream = vfs_file_open(L"integrity.bin");
         EXPECT_NOT_NULL(stream);
-        EXPECT_TRUE(!vfs_stream_read(stream, buffer, sizeof(buffer), &read));
-        EXPECT_EQ(GetLastError(), variant == 0 ? ERROR_CRC : ERROR_INVALID_DATA);
-        vfs_stream_close(stream);
+        EXPECT_TRUE(!vfs_file_read(stream, buffer, sizeof(buffer), &read));
+        EXPECT_EQ(GetLastError(), damage == 0 ? ERROR_CRC : ERROR_INVALID_DATA);
+        EXPECT_EQ(vfs_file_test_memory_used(), 0);
+        EXPECT_TRUE(vfs_file_test_cache_handle(stream) == INVALID_HANDLE_VALUE);
+        vfs_file_close(stream);
         vfs_uninit();
     }
+    vfs_file_test_limits(32 * 1024 * 1024, 128 * 1024 * 1024);
     return 0;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc == 4 && strcmp(argv[1], "--cache-child") == 0)
+        return cache_child((HANDLE)(uintptr_t)_strtoui64(argv[2], NULL, 10),
+                           (HANDLE)(uintptr_t)_strtoui64(argv[3], NULL, 10));
     static const fixture_entry_t entries[] = {
         { "./", "", 0 },
         { "./parts/base.bin", "base stored", 0 },
@@ -567,6 +778,8 @@ int main(void) {
     EXPECT_EQ(test_allocation_rollback(invalid, loose), 0);
     EXPECT_EQ(test_directory_rollback(root, loose), 0);
     EXPECT_EQ(test_large_streams(invalid), 0);
+    EXPECT_EQ(test_cache_backends(invalid), 0);
+    EXPECT_EQ(test_process_cache_cleanup(invalid), 0);
     EXPECT_EQ(test_deflate_integrity(invalid), 0);
     EXPECT_TRUE(DeleteFileW(invalid));
     EXPECT_TRUE(DeleteFileW(archive_path));
